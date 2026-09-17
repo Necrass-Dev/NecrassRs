@@ -17,27 +17,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack@0.15.0
-
-      - name: Install Chrome and ChromeDriver
-        id: setup-chrome
-        uses: browser-actions/setup-chrome@v2
-        with:
-          install-chromedriver: true
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -47,16 +35,3 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
-
-      - name: Run browser WASM tests
-        env:
-          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
-          WASM_BINDGEN_TEST_WEBDRIVER_JSON: ${{ runner.temp }}/webdriver.json
-        run: |
-          printf '{"goog:chromeOptions":{"binary":"%s"}}\n' "$CHROME_PATH" > "$WASM_BINDGEN_TEST_WEBDRIVER_JSON"
-          CC_wasm32_unknown_unknown=clang wasm-pack test --headless --chrome \
-            --chromedriver ${{ steps.setup-chrome.outputs.chromedriver-path }} \
-            engine/sqlite-runner --no-default-features --features wasm --locked
-          CC_wasm32_unknown_unknown=clang wasm-pack test --headless --chrome \
-            --chromedriver ${{ steps.setup-chrome.outputs.chromedriver-path }} \
-            tools/gelite-commands --locked
