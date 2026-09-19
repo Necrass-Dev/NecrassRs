@@ -1,3 +1,3 @@
 # NecrassRs
 
-Modern, Robust GraphQL Sever written in Rust.
+Your schema leads. Rust delivers. An SDL-first GraphQL server framework.
