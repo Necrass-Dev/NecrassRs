@@ -17,13 +17,6 @@ body:
     validations:
       required: true
   - type: textarea
-    id: work
-    attributes:
-      label: Sub-issues and dependencies
-      description: Link actual sub-issues and their dependencies. Mark uncreated tasks as proposals; do not invent issue numbers.
-    validations:
-      required: true
-  - type: textarea
     id: acceptance
     attributes:
       label: Completion criteria
