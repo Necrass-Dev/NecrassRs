@@ -1,0 +1,6 @@
+[package]
+name = "necrassrs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
