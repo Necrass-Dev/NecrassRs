@@ -1,3 +1,38 @@
+use apollo_compiler::{ExecutableDocument, response::GraphQLError, validation::Valid};
+
+pub struct Request {
+    query: String,
+}
+
+impl Request {
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+        }
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "used by the execution entry point once it is added"
+    )
+)]
+pub(crate) fn prepare_request(
+    schema: &Valid<apollo_compiler::Schema>,
+    request: &Request,
+) -> Result<Valid<ExecutableDocument>, Vec<GraphQLError>> {
+    ExecutableDocument::parse_and_validate(schema, request.query.as_str(), "request.graphql")
+        .map_err(|error| {
+            error
+                .errors
+                .iter()
+                .map(|diagnostic| diagnostic.to_json())
+                .collect()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
