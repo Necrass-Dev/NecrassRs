@@ -1,6 +1,7 @@
 # NecrassRs architecture and development plan
 
 Date: 2026-09-17
+Updated: 2026-09-19
 
 This document defines the target product structure, crate responsibilities, development and release practices, and consumer workflow. It does not describe a completed implementation. Package names and directory layouts are proposed; concrete Rust API signatures remain subject to design.
 
@@ -24,7 +25,7 @@ After initialization, building and running the application does not require an i
 - Use Apollo Compiler's schema models and validation rather than duplicating a GraphQL schema model and validator.
 - Parsing uses `apollo-parser` through Apollo Compiler. Do not add a direct parser dependency unless direct CST access is needed.
 - Adopting Apollo's models and validation does not select its execution engine. Execution remains an open decision.
-- Organize layers as local crates in one Cargo workspace.
+- Use four packages in one Cargo workspace: the runtime, build library, Axum adapter, and CLI. Keep code generation and Cargo integration as separate modules within the build library.
 - Axum is the first officially supported HTTP adapter. The execution core does not depend on Axum.
 - Applications own their Context types and construction.
 - Generated code belongs in `OUT_DIR`; user implementations belong in `src`. Regeneration must not edit user files.
@@ -53,7 +54,7 @@ Static request validation does not establish that runtime variable coercion or c
 
 The current architecture does not include `necrassrs-schema`. Do not copy Apollo's entire type, field, and argument model into local types or create a crate solely to wrap dependencies.
 
-Keep generation-specific information, such as Rust identifiers, generated type names, and recursive input representations, inside `necrassrs-codegen`. Extract a shared model or policy only when a concrete NecrassRs requirement spans the generator and runtime.
+Keep generation-specific information, such as Rust identifiers, generated type names, and recursive input representations, inside the codegen module of `necrassrs-build`. Extract a shared model or policy only when a concrete NecrassRs requirement spans the generator and runtime.
 
 Distinguish consumer APIs from internal schema representation. Users should not need Apollo internals to implement resolvers or Context. Generated code should access runtime contracts through public `necrassrs` paths.
 
@@ -70,12 +71,21 @@ The prototype's Apollo Compiler 1.32.0 execution path exhibited incorrect nullab
 | Package | Responsibility | Direct consumers |
 | --- | --- | --- |
 | `necrassrs` | Public runtime API and integration of request validation, input processing, resolver execution, and response completion | Applications and HTTP adapters |
-| `necrassrs-codegen` | Generate Rust types, traits, wrappers, and dispatch from a validated Apollo schema | Build integration |
-| `necrassrs-build` | Discover SDL files, invoke validation and generation, emit Cargo rebuild instructions, and manage output | Consumer `build.rs` |
+| `necrassrs-build` | Discover and validate SDL, generate Rust types, traits, wrappers, and dispatch, emit Cargo rebuild instructions, and manage output | Consumer `build.rs` |
 | `necrassrs-axum` | GraphQL HTTP extraction, response conversion, and development UI integration | Axum applications |
 | `necrassrs-cli` | The `necrass` binary, initialization templates, and file creation | Developers |
 
-Codegen transforms schemas into code without managing Cargo environment variables or consumer directories. Build integration manages files and Cargo. The runtime depends on neither build tool.
+Within `necrassrs-build`, keep code generation independent of Cargo environment variables and filesystem operations so it can be tested directly. Cargo integration manages inputs, rebuild instructions, and output. The runtime does not depend on the build library.
+
+There is no separate codegen package: it currently has no independent consumer or release lifecycle. A module boundary preserves testability without adding another published dependency. Extract a crate only when another tool needs independent reuse or a concrete dependency or release boundary emerges.
+
+An initial internal layout is sufficient:
+
+```text
+necrassrs-build/src/
+├── lib.rs       # Public build API and Cargo integration
+└── codegen.rs   # Validated schema to Rust code
+```
 
 The CLI prepares projects from templates. If initialization needs schema processing or generation, reuse the corresponding library instead of duplicating its logic.
 
@@ -88,9 +98,7 @@ Arrows below indicate dependencies.
 ```text
 Consumer build.rs
   └─ necrassrs-build
-       ├─ apollo-compiler
-       └─ necrassrs-codegen
-            └─ apollo-compiler
+       └─ apollo-compiler
 
 Consumer server and generated code
   ├─ necrassrs
@@ -108,8 +116,10 @@ A build-time `Schema` instance does not survive into the running server. How gen
 The complete workflow is:
 
 ```text
-necrass init
-  → Create a consumer project
+cargo install necrassrs-cli --locked
+  → Install the necrass executable
+  → necrass init in an empty project directory
+  → Create Cargo.toml, build.rs, SDL, and user source files
 
 Edit SDL
   → cargo build
@@ -154,7 +164,20 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 ### 7.1 MVP initialization
 
-The proposed MVP default for `necrass init` is a small, runnable Axum application. Do not add framework selection options or empty templates for other adapters. Exact arguments and support for initializing existing projects remain open.
+The MVP `necrass init` creates a small, runnable Axum application in an empty project directory, including `Cargo.toml`, `build.rs`, SDL, and user source files. Users do not need to add dependencies before initialization. Do not add framework selection options or empty templates for other adapters.
+
+The intended installation and initialization flow is shown below. These commands describe the planned product, not an available release:
+
+```sh
+cargo install necrassrs-cli --locked
+mkdir my-api
+cd my-api
+necrass init
+```
+
+The package is named `necrassrs-cli`; its installed executable is named `necrass`. It is a separately installed development tool, not a consumer `dev-dependency`. Adding a package to `[dev-dependencies]` does not install its executable as a shell command.
+
+The MVP does not merge dependencies into an existing `Cargo.toml`. Existing applications follow manual integration instructions. Exact CLI arguments remain open; automatic existing-project integration is deferred until its configuration-preservation behavior is designed.
 
 Generated server code is ordinary application-owned source. The execution core remains independent of Axum. Existing projects can integrate `necrassrs`, `necrassrs-build`, and `necrassrs-axum` without using the CLI.
 
@@ -181,11 +204,20 @@ my-api/
 | `generated.rs` | Module that includes generated code from `OUT_DIR` |
 | Rust files in `OUT_DIR` | Automatically generated; not edited manually |
 
-Normal dependencies contain the runtime, Axum adapter, and application libraries. Build dependencies contain `necrassrs-build`. Ordinary consumers should not need direct dependencies on Apollo Compiler or the internal codegen package.
+Initialization writes the appropriate dependency sections using a tested release combination:
+
+| Installation or manifest location | Contents |
+| --- | --- |
+| `cargo install` | `necrassrs-cli`, providing the `necrass` executable |
+| `[dependencies]` | `necrassrs`, `necrassrs-axum`, Axum, the async runtime, and other libraries directly used by the application |
+| `[build-dependencies]` | `necrassrs-build`, called by `build.rs` |
+| `[dev-dependencies]` | Test and example dependencies only when needed; not the CLI |
+
+Ordinary consumers should not need a direct Apollo Compiler dependency. Once initialized, the application builds and runs with Cargo without an installed CLI.
 
 ### 7.2 Everyday development
 
-1. Initialize a project or add the libraries and build script to an existing application.
+1. Install the CLI and initialize an empty project directory, or manually add the libraries and build script to an existing application.
 2. Define objects, fields, arguments, and nullability in SDL.
 3. Generate Rust contracts and wiring through Cargo.
 4. Implement generated resolver traits on user structs.
@@ -214,7 +246,6 @@ necrassrs/
 ├── Cargo.lock
 ├── crates/
 │   ├── necrassrs/
-│   ├── necrassrs-codegen/
 │   ├── necrassrs-build/
 │   ├── necrassrs-axum/
 │   └── necrassrs-cli/
@@ -243,8 +274,8 @@ Official repository documentation is written in English. Agent workflow and AI-a
 - Consumers resolve dependencies with their own lockfiles. The repository lockfile does not pin consumer dependencies.
 - Use `path + version` for local package dependencies. Publish internal crates required as build or runtime dependencies of public packages.
 - Mark examples and integration packages `publish = false`.
-- Initially plan to version product packages together. Release automation remains a separate decision.
-- Define generator/runtime version compatibility. Publishing matching versions alone does not prevent incompatible consumer combinations.
+- Initially version and release all four product packages together, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Release automation remains a separate decision.
+- Define compatibility between `necrassrs-build` and `necrassrs`, including runtime contracts called by generated code. Publishing matching versions alone does not prevent incompatible consumer combinations. Validate the supported combination with the consumer example and use that combination in CLI templates.
 - Before release, verify packaging and consumer builds without relying on local-only paths.
 
 Apollo Compiler documents testing on the latest stable Rust. Check the NecrassRs MSRV separately when updating dependencies.
