@@ -8,4 +8,4 @@ edition = "2024"
 
 [workspace.dependencies]
 apollo-compiler = "=1.32.0"
-serde = "1.0.229"
+serde = { version = "1.0.229", features = ["derive"] }
