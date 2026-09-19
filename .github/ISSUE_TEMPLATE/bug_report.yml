@@ -1,5 +1,5 @@
 name: Bug report
-description: Report behavior that does not match the specs or current docs.
+description: Report behavior that does not match the documented contracts or current behavior.
 title: "bug: "
 labels:
   - bug
@@ -15,7 +15,7 @@ body:
     attributes:
       label: Summary
       description: Describe the incorrect behavior in one or two paragraphs.
-      placeholder: The resolver accepts a path that should be rejected by spec/query.md.
+      placeholder: The server invokes a resolver even though its required argument is missing.
     validations:
       required: true
 
@@ -25,7 +25,7 @@ body:
       label: Reproduction
       description: Provide the smallest command, input, or test case that reproduces the bug.
       placeholder: |
-        1. Run `cargo test -p query-resolver ...`
+        1. Run `cargo test --workspace --locked`
         2. Use this schema/query input:
            ```text
            ...
@@ -38,8 +38,8 @@ body:
     id: expected
     attributes:
       label: Expected behavior
-      description: State what should happen and cite the relevant spec or plan when possible.
-      placeholder: The resolver should reject the path because spec/query.md only allows ...
+      description: State what should happen and cite the relevant contract or design document when possible.
+      placeholder: The request should be rejected before resolver execution.
     validations:
       required: true
 
@@ -47,7 +47,7 @@ body:
     id: actual
     attributes:
       label: Actual behavior
-      description: Include the exact error, panic, SQL output, or test failure when available.
+      description: Include the exact error, panic, GraphQL response, or test failure when available.
       render: text
     validations:
       required: true
@@ -56,8 +56,8 @@ body:
     id: affected_area
     attributes:
       label: Affected area
-      description: Name the crate, command, spec section, or plan step involved.
-      placeholder: query-parser, query-resolver, sqlite-query-plan, gelite repl, spec/query.md
+      description: Name the crate, command, API contract, or design section involved.
+      placeholder: SDL generation, resolver execution, Axum integration, docs/architecture.md
     validations:
       required: true
 
@@ -70,7 +70,7 @@ body:
         - OS:
         - Rust:
         - Cargo:
-        - SQLite, if relevant:
+        - NecrassRs and relevant dependency versions:
     validations:
       required: false
 
@@ -81,5 +81,5 @@ body:
       options:
         - label: I searched existing issues for the same report.
           required: true
-        - label: I checked the relevant `spec/` or `plan/` document when one exists.
+        - label: I checked the relevant design or behavior document when one exists.
           required: true

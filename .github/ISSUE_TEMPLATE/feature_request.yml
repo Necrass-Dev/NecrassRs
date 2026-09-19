@@ -1,5 +1,5 @@
 name: Feature or task
-description: Propose or track a scoped change to Gelite.
+description: Propose or track a scoped change to NecrassRs.
 title: "feat: "
 labels:
   - enhancement
@@ -9,14 +9,14 @@ body:
       value: |
         Use this template for new behavior, planned implementation work, and
         documentation changes that should be tracked before opening a pull
-        request.
+        request. Use the tracking template for milestones spanning multiple sub-issues.
 
   - type: textarea
     id: objective
     attributes:
       label: Objective
       description: State the concrete result this issue should deliver.
-      placeholder: Add `gelite query plan` so users can inspect the SQLite query plan for a parsed select query.
+      placeholder: Generate resolver contracts from SDL during the consumer Cargo build.
     validations:
       required: true
 
@@ -25,7 +25,7 @@ body:
     attributes:
       label: Motivation or use case
       description: Explain the workflow, bug prevention, learning goal, or project need behind the change.
-      placeholder: This exposes an existing compiler stage from the CLI and makes query planning easier to test manually.
+      placeholder: This keeps SDL as the public API contract while preserving user-written resolver code.
     validations:
       required: true
 
@@ -35,7 +35,7 @@ body:
       label: Expected outcome
       description: Describe the behavior, API, command, documentation, or internal contract that should exist when this is done.
       placeholder: |
-        `gelite query plan <query.geliql> --schema <schema.geli>` prints ...
+        `cargo build` regenerates Rust contracts in `OUT_DIR` without modifying user source.
     validations:
       required: true
 
@@ -45,20 +45,20 @@ body:
       label: Scope
       description: List the crates, commands, docs, or tests expected to change. Use "unknown" if this issue still needs design.
       placeholder: |
-        - `tools/gelite-cli`
-        - `tools/gelite-commands`
-        - CLI tests for success and parse failure paths
+        - `necrassrs-build`
+        - Generated consumer code
+        - Build checks for valid and invalid SDL
     validations:
       required: false
 
   - type: textarea
     id: references
     attributes:
-      label: Related specs and plans
+      label: Related design and behavior documents
       description: Link the relevant files and note whether they already define the change.
       placeholder: |
-        - `spec/query.md`: defines ...
-        - `plan/cli-and-tooling-plan.md`: tracks ...
+        - `docs/architecture.md`: defines crate boundaries and code ownership.
+        - Related issue: defines the expected consumer behavior.
     validations:
       required: true
 
@@ -67,7 +67,7 @@ body:
     attributes:
       label: Boundaries and non-goals
       description: List behavior that should stay out of this issue.
-      placeholder: This issue does not add query execution or result shaping.
+      placeholder: This issue does not add database integration or another HTTP adapter.
     validations:
       required: false
 
@@ -77,9 +77,9 @@ body:
       label: Acceptance criteria
       description: Use concrete, testable statements when the scope is known.
       placeholder: |
-        - The command returns a non-zero exit code for invalid query syntax.
-        - The command prints the structured SQLite plan for valid input.
-        - `cargo test --workspace` passes.
+        - Invalid SDL fails the build with a source diagnostic.
+        - Generated contracts compile with user implementations.
+        - `cargo test --workspace --locked` passes.
     validations:
       required: false
 
@@ -88,7 +88,7 @@ body:
     attributes:
       label: Branch
       description: Name the branch that should carry this work, if known.
-      placeholder: issue-123-query-plan-command
+      placeholder: issue-123-sdl-build-integration
     validations:
       required: false
 
@@ -99,5 +99,5 @@ body:
       options:
         - label: I searched existing issues for the same request or task.
           required: true
-        - label: I checked the relevant `spec/` or `plan/` document when one exists.
+        - label: I checked the relevant design or behavior document when one exists.
           required: true

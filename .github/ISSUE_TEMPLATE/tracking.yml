@@ -1,0 +1,51 @@
+name: Tracking issue
+description: Coordinate a milestone across scoped sub-issues.
+title: "tracking: "
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: Describe the user-visible outcome and why this milestone matters.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and behavior
+      description: Define the required behavior, examples, and affected components.
+    validations:
+      required: true
+  - type: textarea
+    id: work
+    attributes:
+      label: Sub-issues and dependencies
+      description: Link actual sub-issues and their dependencies. Mark uncreated tasks as proposals; do not invent issue numbers.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Completion criteria
+      description: List observable outcomes required to close this parent issue, including integration checks.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Non-goals and open decisions
+      description: State exclusions and decisions that child issues must resolve.
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link available design documents. Clearly identify local drafts that are not published yet.
+    validations:
+      required: true
+  - type: textarea
+    id: ai_assistance
+    attributes:
+      label: AI assistance
+      description: If applicable, identify tools, scope, human edits, review status, and validation. Do not claim unconfirmed human review.
