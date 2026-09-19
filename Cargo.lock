@@ -290,6 +290,7 @@ name = "necrassrs"
 version = "0.1.0"
 dependencies = [
  "apollo-compiler",
+ "serde",
 ]
 
 [[package]]

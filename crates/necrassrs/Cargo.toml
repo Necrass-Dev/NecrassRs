@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 apollo-compiler.workspace = true
+serde.workspace = true
