@@ -24,10 +24,10 @@ After initialization, building and running the application does not require an i
 - SDL is the sole source of the public GraphQL contract. Do not synchronize Rust implementations back into SDL.
 - Use Apollo Compiler's schema models and validation rather than duplicating a GraphQL schema model and validator.
 - Parsing uses `apollo-parser` through Apollo Compiler. Do not add a direct parser dependency unless direct CST access is needed.
-- Adopting Apollo's models and validation does not select its execution engine. Execution remains an open decision.
+- Implement execution inside `necrassrs`, retaining Apollo's models and validation. Do not require an Apollo executor patch or a separate executor crate.
 - Use four packages in one Cargo workspace: the runtime, build library, Axum adapter, and CLI. Keep code generation and Cargo integration as separate modules within the build library.
 - Axum is the first officially supported HTTP adapter. The execution core does not depend on Axum.
-- Applications own their Context types and construction.
+- Applications own one Context type per schema and construct its values per request. Generate a struct for each field's arguments.
 - Generated code belongs in `OUT_DIR`; user implementations belong in `src`. Regeneration must not edit user files.
 - Treat every output field as a resolver. Argument presence does not determine whether a field is an automatic getter.
 - Allow partially implemented applications to build and run. Calling an unimplemented field panics, with process termination enforced by the executable's policy.
@@ -44,11 +44,11 @@ At build time, use SDL parsing, schema validation, and the `Schema` model. At ru
 | --- | --- | --- |
 | SDL | Parsing, semantic validation, type and field lookup | Supported-feature restrictions and Rust generation checks |
 | Code generation | Validated schema model | Rust naming and type mapping, traits, wrappers, and dispatch |
-| Request documents | Parsing and schema-aware document validation | Execution entry points and error-response integration |
-| Input processing | Coercion APIs remain under review | Assign responsibility for runtime variable values and custom scalar conversion |
-| Execution | Execution APIs are evaluated separately | Context and resolver integration and the complete execution contract |
+| Request documents | Parsing, schema-aware document validation, and operation selection | Execution entry points and error-response integration |
+| Input processing | Public variable-value coercion API | Field-argument processing, generated argument conversion, and custom scalar integration when supported |
+| Execution | Validated schema and executable-document models | Field collection, resolver dispatch, Context propagation, result coercion, errors, and null propagation |
 
-Static request validation does not establish that runtime variable coercion or custom scalar input validation has completed. Define these boundaries in the execution design.
+Static request validation does not establish that runtime variable coercion or custom scalar input validation has completed. Reuse `request::coerce_variable_values` for variables. Apollo Compiler 1.32.0's field-argument coercion implementation is crate-private; do not rely on it as a consumer API.
 
 ### 3.2 No separate schema crate for now
 
@@ -60,11 +60,36 @@ Distinguish consumer APIs from internal schema representation. Users should not 
 
 ### 3.3 Adoption limits
 
-Apollo Compiler targets specification compliance; this does not establish exhaustive correctness for every feature in a particular version. Select the target GraphQL specification edition and NecrassRs support scope separately.
+Use the GraphQL September 2025 specification as the reference for supported behavior. The greeting MVP's scope and completion criteria are already defined in [issue #1](https://github.com/Necrass-Dev/NecrassRs/issues/1). Neither dependency adoption nor the MVP implies complete GraphQL conformance.
 
 Upstream release notes include fixes for interface implementation types and fragment validation. Record dependency versions and retain regression checks for important integration paths and known failures. Do not promise stable diagnostic wording or drive behavior by parsing error strings.
 
-The prototype's Apollo Compiler 1.32.0 execution path exhibited incorrect nullable-list-item error propagation and a non-`Send` execution future. These must be addressed when choosing an executor; they do not automatically disqualify the schema models and validation.
+The prototype's Apollo Compiler 1.32.0 execution path exhibited incorrect nullable-list-item error propagation and a non-`Send` execution future. Its resolver-error boundary also lost application error codes and prefixed messages. The list behavior concerns specification correctness; `Send`, extension preservation, and exact MVP message wording are NecrassRs integration requirements. These findings do not disqualify Apollo's schema models and validation.
+
+### 3.4 Feasibility evidence and limits
+
+A disposable experiment using unmodified Apollo Compiler 1.32.0 executed the greeting example without calling Apollo's executor. It reused document validation, operation selection, public variable coercion, and response error types. The caller parsed the fixed schema once and borrowed it during execution.
+
+| Verified in the experiment | Evidence |
+| --- | --- |
+| Complete execution future is `Send` | Compile-time bound on the future, including a resolver suspension point |
+| Resolver and Context borrowing | Borrowed request-local values survive the await; overlapping requests use distinct Context values |
+| Greeting inputs | Literal and variable strings, a variable default, and named operation selection |
+| Invalid inputs | Missing, null, and incompatible inputs are rejected before resolver invocation; request-error responses omit `data` |
+| Domain error response | Exact message and application code, alias-aware path, source location, and `data: null` for the non-null root field |
+| Execution after a domain error | A later successful request completes |
+
+The focused check, formatting, and Clippy passed. The observation suite passed three tests and one compile-fail doctest with an explicitly excluded, unchanged Apollo error-code regression. This is feasibility evidence, not product validation or a passing unfiltered prototype suite.
+
+The experiment supports only one directly selected `hello` field against its fixed schema. It rejects repeated fields, fragments, and field directives. It does not establish field collection, general argument processing, nested or list completion, arbitrary extension maps, generated dispatch, HTTP integration, cancellation, or multithreaded execution. Parse/validation diagnostics were aggregated rather than preserving individual locations. In particular, hardcoded root-null handling is not evidence of recursive null propagation or a fix for the nullable-list regression. These experiment limits do not redefine the MVP scope.
+
+### 3.5 Execution and error responsibilities
+
+Generated dispatch knows which Rust resolver to invoke and converts prepared arguments into its generated argument struct. The runtime executor owns GraphQL field collection and merging, applicable fragment/directive evaluation, invocation scheduling, and result completion according to the schema. Settle concrete Rust signatures while implementing this boundary, rather than adding an interchangeable executor-backend abstraction.
+
+Resolvers return a NecrassRs error containing a message and optional extension map. Application codes such as `USER_NOT_FOUND` belong in that map; they are not required by the GraphQL specification. The executor supplies source locations and response paths, including aliases and list indices, collects execution errors, and propagates null to the correct nullable boundary. The HTTP adapter converts the completed result without taking over these responsibilities.
+
+Request errors omit the `data` entry. Execution results contain `data`, which may be partial or null, and include errors when execution fails. Ordinary domain errors must remain separate from the deliberate process-termination policy for selected unimplemented resolvers. Reuse Apollo response types where suitable without exposing Apollo internals in user resolver implementations.
 
 ## 4. Crates
 
@@ -111,7 +136,7 @@ necrassrs-cli
   └─ Project initialization templates
 ```
 
-A build-time `Schema` instance does not survive into the running server. How generated applications obtain their runtime schema remains open. Compare embedding SDL and parsing during initialization with generating schema-construction code; do not invent a schema serialization format first.
+A build-time `Schema` instance does not survive into the running server. Start by embedding the validated SDL and parsing and validating it once during server initialization, then reuse that runtime schema across requests. The prototype verified caller-owned schema borrowing; generated embedding and initialization remain product implementation work. Do not introduce a schema serialization format.
 
 The complete workflow is:
 
@@ -162,9 +187,9 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 ## 7. Initialization and consumer projects
 
-### 7.1 MVP initialization
+### 7.1 Initial CLI scope
 
-The MVP `necrass init` creates a small, runnable Axum application in an empty project directory, including `Cargo.toml`, `build.rs`, SDL, and user source files. Users do not need to add dependencies before initialization. Do not add framework selection options or empty templates for other adapters.
+The initial `necrass init` creates a small, runnable Axum application in an empty project directory, including `Cargo.toml`, `build.rs`, SDL, and user source files. This is a later consumer convenience, not a prerequisite for the greeting MVP in issue #1. Users do not need to add dependencies before initialization. Do not add framework selection options or empty templates for other adapters.
 
 The intended installation and initialization flow is shown below. These commands describe the planned product, not an available release:
 
@@ -177,7 +202,7 @@ necrass init
 
 The package is named `necrassrs-cli`; its installed executable is named `necrass`. It is a separately installed development tool, not a consumer `dev-dependency`. Adding a package to `[dev-dependencies]` does not install its executable as a shell command.
 
-The MVP does not merge dependencies into an existing `Cargo.toml`. Existing applications follow manual integration instructions. Exact CLI arguments remain open; automatic existing-project integration is deferred until its configuration-preservation behavior is designed.
+The initial CLI does not merge dependencies into an existing `Cargo.toml`. Existing applications follow manual integration instructions. Exact CLI arguments remain open; automatic existing-project integration is deferred until its configuration-preservation behavior is designed.
 
 Generated server code is ordinary application-owned source. The execution core remains independent of Axum. Existing projects can integrate `necrassrs`, `necrassrs-build`, and `necrassrs-axum` without using the CLI.
 
@@ -295,17 +320,30 @@ Apollo Compiler documents testing on the latest stable Rust. Check the NecrassRs
 
 Test process termination with separate executable processes, not by catching a panic inside the test runner. When providing GraphiQL, define development introspection settings and UI asset delivery as well.
 
-This table is not a claim of exhaustive GraphQL conformance. Specify detailed feature support and conformance coverage once the specification edition and execution engine are selected.
+This table describes target-product validation, not exhaustive GraphQL conformance or an expansion of issue #1. Document implemented coverage and explicit feature restrictions as execution work proceeds against the September 2025 specification.
+
+### 10.1 MVP implementation work breakdown
+
+The executor direction is recorded in this document; it does not need a separate design-only issue. Register concrete implementation tasks as GitHub sub-issues of #1. The labels below describe proposed tasks, not assigned issue numbers.
+
+| Task | Deliverable and acceptance boundary | Dependencies |
+| --- | --- | --- |
+| Implement the MVP runtime and execution core | `necrassrs` request, resolver, Context, error, and response contracts plus execution over Apollo models. Verify the greeting behavior with a handwritten test adapter, full-future `Send`, request borrowing, invalid inputs, error paths, and specification-based completion regressions. No production greeting-specific dispatch or hardcoded root-null handling. Establish the workspace as needed. | None |
+| Generate resolver contracts and dispatch from SDL | `necrassrs-build` codegen module producing argument structs, resolver contracts, wrappers/dispatch as needed, and embedded SDL. Compile generated code with user implementations; diagnose invalid/unsupported schemas and Rust naming collisions. Verify partial-implementation behavior with the runtime, including subprocess termination checks. | Runtime contracts |
+| Integrate generation with Cargo builds | Build-library entry point, SDL discovery, rebuild tracking, `OUT_DIR` output, and runtime schema initialization wiring. Verify additions/changes/deletions and preservation of user files with a consumer build. | Code generation |
+| Implement the Axum adapter | `necrassrs-axum` extraction and response conversion with documented methods, media types, status codes, and body limits. Verify user-owned handlers and per-request Context construction through HTTP checks. | Runtime request/response API |
+| Deliver the greeting example and integration checks | Real consumer example with hardcoded names, Cargo generation, user resolvers, Axum handler, and runnable instructions. Verify all acceptance criteria of #1 together. | All preceding tasks |
+
+Each task includes its own relevant checks. The final example verifies integration rather than postponing component testing. Code generation and Axum work can proceed independently once their runtime contracts are stable. CLI initialization, development UI, and release automation remain follow-up work outside #1.
 
 ## 11. Open decisions
 
-1. **Execution engine:** Whether to adopt Apollo execution, how to address list-error and `Send` issues, and the responsibilities of alternatives.
-2. **Public resolver contract:** Context type integration, arguments, errors, wrapper ownership and lifetimes, and internal type erasure.
-3. **Build/runtime boundary:** Runtime schema construction and the generated dispatch contract.
-4. **Partial implementation:** Adoption of trait default methods and initial user implementation scaffolding.
-5. **GraphQL scope:** Specification edition, supported types/features, explicitly rejected features, runtime variable and custom scalar validation boundaries.
-6. **HTTP and development UI:** Methods, media types, status codes, introspection settings, and asset distribution.
-7. **Release contract:** MSRV, default features, generator/runtime compatibility, and CLI initialization details.
+1. **Public resolver and dispatch API:** Concrete Rust signatures, wrapper ownership and lifetimes, internal type erasure if needed, and `Send`/`Sync` bounds. One Context type per schema, argument structs, and the resolver/executor error responsibilities are established.
+2. **Execution details:** Field scheduling, recursive completion representation, and generated-dispatch handoff. Ownership of execution and reuse of Apollo validation are established.
+3. **Partial implementation:** Adoption of trait default methods and initial user implementation scaffolding.
+4. **Coverage beyond the greeting MVP:** Additional supported types/features, explicit rejection diagnostics, and custom scalar conversion. Do not reopen #1's agreed behavior as an executor-selection task.
+5. **HTTP and development UI:** Methods, media types, status codes, introspection settings, and asset distribution.
+6. **Release contract:** MSRV, default features, generator/runtime compatibility, and CLI initialization details.
 
 SQL generation, ORM integration, automatic batching, a separate non-`Send` mode, standalone watch, and performance optimization are not prerequisites for this architecture.
 
@@ -313,6 +351,9 @@ SQL generation, ORM integration, automatic batching, a separate non-`Send` mode,
 
 - Internal design basis: the 2026-09-17 prototype report, cumulative development article, and subsequent architecture discussions. Do not reproduce private development records in the public repository.
 - [Apollo Compiler API](https://docs.rs/apollo-compiler/1.32.0/apollo_compiler/): models, parsing, and validation.
+- [GraphQL September 2025: Execution](https://spec.graphql.org/September2025/#sec-Execution): execution semantics.
+- [GraphQL September 2025: Errors](https://spec.graphql.org/September2025/#sec-Errors): request and execution error response formats.
+- [GraphQL September 2025: Handling Execution Errors](https://spec.graphql.org/September2025/#sec-Handling-Execution-Errors): null propagation.
 - [Apollo Compiler changelog](https://github.com/apollographql/apollo-rs/blob/main/crates/apollo-compiler/CHANGELOG.md): versioned features and specification-related fixes.
 - [Apollo project and Rust version policy](https://github.com/apollographql/apollo-rs): purpose, license, and support policy.
 - [Validation error codes, issue #855](https://github.com/apollographql/apollo-rs/issues/855): diagnostic wording versus programmatic error contracts.
