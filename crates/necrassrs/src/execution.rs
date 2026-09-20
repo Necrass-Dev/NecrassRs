@@ -264,7 +264,10 @@ fn new_coercion_error(
 #[cfg(test)]
 mod tests {
     use crate::{Request, request::prepare_request};
-    use apollo_compiler::{Schema, response::JsonMap, response::serde_json_bytes::json};
+    use apollo_compiler::{
+        Schema,
+        response::{JsonMap, ResponseDataPathSegment, serde_json_bytes::json},
+    };
 
     fn coerce_arguments(schema_source: &str, request: Request) -> JsonMap {
         let schema = Schema::parse_and_validate(schema_source, "schema.graphql").unwrap();
@@ -412,5 +415,36 @@ mod tests {
         );
 
         assert_eq!(arguments.get("input"), Some(&json!({ "name": "Sheri" })));
+    }
+
+    #[test]
+    fn argument_coercion_error_contains_alias_aware_path() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query {
+                    hello(name: String! = "Sheri"): String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+
+        let variables = json!({ "name": null }).as_object().unwrap().clone();
+        let request = Request::new(
+            r#"
+                query Greeting($name: String) {
+                    greeting: hello(name: $name)
+                }
+            "#,
+        )
+        .with_variables(variables);
+
+        let prepared = prepare_request(&schema, &request).unwrap();
+        let field = super::collect_fields(&prepared).get("greeting").unwrap()[0];
+        let path = vec![ResponseDataPathSegment::Field(field.response_key().clone())];
+
+        let error = super::coerce_argument_values(&schema, &prepared, field, &path).unwrap_err();
+
+        assert_eq!(error.path, path);
     }
 }
