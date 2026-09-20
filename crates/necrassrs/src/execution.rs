@@ -57,7 +57,7 @@ fn coerce_argument_values(
                     definition.default_value.as_ref().unwrap()
                 }
                 None if definition.ty.is_non_null() => {
-                    return Err(coercion_error(
+                    return Err(new_coercion_error(
                         prepared,
                         format!("missing value for required argument '{}'", definition.name),
                         definition.location(),
@@ -71,7 +71,7 @@ fn coerce_argument_values(
                     Some(variable_value)
                         if variable_value.is_null() && definition.ty.is_non_null() =>
                     {
-                        return Err(coercion_error(
+                        return Err(new_coercion_error(
                             prepared,
                             format!("null value for non-null argument '{}'", definition.name),
                             argument_value.location(),
@@ -85,7 +85,7 @@ fn coerce_argument_values(
                         definition.default_value.as_ref().unwrap(),
                     )?,
                     None if definition.ty.is_non_null() => {
-                        return Err(coercion_error(
+                        return Err(new_coercion_error(
                             prepared,
                             format!("missing value for required argument '{}'", definition.name),
                             argument_value.location(),
@@ -111,14 +111,14 @@ fn coerce_literal_value(
     if let Some(variable_name) = value.as_variable() {
         return match prepared.variables.get(variable_name.as_str()) {
             Some(variable_value) if variable_value.is_null() && ty.is_non_null() => {
-                Err(coercion_error(
+                Err(new_coercion_error(
                     prepared,
                     format!("null variable '${variable_name}' for non-null type '{ty}'"),
                     value.location(),
                 ))
             }
             Some(variable_value) => Ok(variable_value.clone()),
-            None if ty.is_non_null() => Err(coercion_error(
+            None if ty.is_non_null() => Err(new_coercion_error(
                 prepared,
                 format!("missing variable '${variable_name}' for non-null type '{ty}'"),
                 value.location(),
@@ -129,7 +129,7 @@ fn coerce_literal_value(
 
     if value.is_null() {
         return if ty.is_non_null() {
-            Err(coercion_error(
+            Err(new_coercion_error(
                 prepared,
                 format!("null value for non-null type '{ty}'"),
                 value.location(),
@@ -154,7 +154,7 @@ fn coerce_literal_value(
 
     if let Some(ExtendedType::InputObject(input)) = schema.types.get(type_name) {
         let object = value.as_object().ok_or_else(|| {
-            coercion_error(
+            new_coercion_error(
                 prepared,
                 format!("could not coerce value to input object '{type_name}'"),
                 value.location(),
@@ -189,7 +189,7 @@ fn coerce_literal_value(
                         );
                     }
                     None if definition.ty.is_non_null() => {
-                        return Err(coercion_error(
+                        return Err(new_coercion_error(
                             prepared,
                             format!("missing value for required input field '{type_name}.{name}'"),
                             definition.location(),
@@ -216,14 +216,14 @@ fn graphql_value_to_json(
         Value::String(value) => Ok(value.as_str().into()),
         Value::Boolean(value) => Ok((*value).into()),
         Value::Int(number) => number.as_str().parse().map(JsonValue::Number).map_err(|_| {
-            coercion_error(
+            new_coercion_error(
                 prepared,
                 "integer argument is outside the supported JSON range",
                 value.location(),
             )
         }),
         Value::Float(number) => number.as_str().parse().map(JsonValue::Number).map_err(|_| {
-            coercion_error(
+            new_coercion_error(
                 prepared,
                 "float argument is outside the supported JSON range",
                 value.location(),
@@ -244,7 +244,7 @@ fn graphql_value_to_json(
             })
             .collect::<Result<JsonMap, _>>()
             .map(Into::into),
-        Value::Variable(name) => Err(coercion_error(
+        Value::Variable(name) => Err(new_coercion_error(
             prepared,
             format!("unresolved variable '${name}'"),
             value.location(),
@@ -252,7 +252,7 @@ fn graphql_value_to_json(
     }
 }
 
-fn coercion_error(
+fn new_coercion_error(
     prepared: &PreparedRequest,
     message: impl Into<String>,
     location: Option<apollo_compiler::parser::SourceSpan>,
