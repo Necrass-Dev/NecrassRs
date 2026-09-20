@@ -3,6 +3,7 @@ use apollo_compiler::{
     ast::{Type, Value},
     collections::IndexMap,
     executable::{Field, Selection},
+    parser::SourceSpan,
     response::{GraphQLError, JsonMap, JsonValue},
     schema::ExtendedType,
     validation::Valid,
@@ -50,20 +51,19 @@ fn coerce_argument_values(
         .arguments
         .iter()
         .try_fold(JsonMap::new(), |mut coerced_values, definition| {
-            let specified = field.specified_argument_by_name(definition.name.as_str());
-            let argument_value = match specified {
-                Some(value) => value,
-                None if definition.default_value.is_some() => {
-                    definition.default_value.as_ref().unwrap()
-                }
-                None if definition.ty.is_non_null() => {
+            let argument_value = field
+                .specified_argument_by_name(definition.name.as_str())
+                .or(definition.default_value.as_ref());
+            let Some(argument_value) = argument_value else {
+                if definition.ty.is_non_null() {
                     return Err(new_coercion_error(
                         prepared,
                         format!("missing value for required argument '{}'", definition.name),
                         definition.location(),
                     ));
                 }
-                None => return Ok(coerced_values),
+
+                return Ok(coerced_values);
             };
 
             let value = if let Some(variable_name) = argument_value.as_variable() {
@@ -78,23 +78,25 @@ fn coerce_argument_values(
                         ));
                     }
                     Some(variable_value) => variable_value.clone(),
-                    None if definition.default_value.is_some() => coerce_literal_value(
-                        schema,
-                        prepared,
-                        &definition.ty,
-                        definition.default_value.as_ref().unwrap(),
-                    )?,
-                    None if definition.ty.is_non_null() => {
-                        return Err(new_coercion_error(
-                            prepared,
-                            format!("missing value for required argument '{}'", definition.name),
-                            argument_value.location(),
-                        ));
-                    }
-                    None => return Ok(coerced_values),
+                    None => match definition.default_value.as_ref() {
+                        Some(default_value) => {
+                            coerce_input_value(schema, prepared, &definition.ty, default_value)?
+                        }
+                        None if definition.ty.is_non_null() => {
+                            return Err(new_coercion_error(
+                                prepared,
+                                format!(
+                                    "missing value for required argument '{}'",
+                                    definition.name
+                                ),
+                                argument_value.location(),
+                            ));
+                        }
+                        None => return Ok(coerced_values),
+                    },
                 }
             } else {
-                coerce_literal_value(schema, prepared, &definition.ty, argument_value)?
+                coerce_input_value(schema, prepared, &definition.ty, argument_value)?
             };
 
             coerced_values.insert(definition.name.as_str(), value);
@@ -102,7 +104,7 @@ fn coerce_argument_values(
         })
 }
 
-fn coerce_literal_value(
+fn coerce_input_value(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
     ty: &Type,
@@ -145,7 +147,7 @@ fn coerce_literal_value(
                 .as_list()
                 .unwrap_or(std::slice::from_ref(value))
                 .iter()
-                .map(|value| coerce_literal_value(schema, prepared, inner, value))
+                .map(|value| coerce_input_value(schema, prepared, inner, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Into::into);
         }
@@ -185,7 +187,7 @@ fn coerce_literal_value(
                     Some(value) => {
                         coerced.insert(
                             name.as_str(),
-                            coerce_literal_value(schema, prepared, &definition.ty, value)?,
+                            coerce_input_value(schema, prepared, &definition.ty, value)?,
                         );
                     }
                     None if definition.ty.is_non_null() => {
@@ -203,10 +205,10 @@ fn coerce_literal_value(
             .map(Into::into);
     }
 
-    graphql_value_to_json(prepared, value)
+    literal_to_json(prepared, value)
 }
 
-fn graphql_value_to_json(
+fn literal_to_json(
     prepared: &PreparedRequest,
     value: &Node<Value>,
 ) -> Result<JsonValue, Box<GraphQLError>> {
@@ -231,17 +233,12 @@ fn graphql_value_to_json(
         }),
         Value::List(values) => values
             .iter()
-            .map(|value| graphql_value_to_json(prepared, value))
+            .map(|value| literal_to_json(prepared, value))
             .collect::<Result<Vec<_>, _>>()
             .map(Into::into),
         Value::Object(values) => values
             .iter()
-            .map(|(name, value)| {
-                Ok((
-                    name.as_str().into(),
-                    graphql_value_to_json(prepared, value)?,
-                ))
-            })
+            .map(|(name, value)| Ok((name.as_str().into(), literal_to_json(prepared, value)?)))
             .collect::<Result<JsonMap, _>>()
             .map(Into::into),
         Value::Variable(name) => Err(new_coercion_error(
@@ -255,7 +252,7 @@ fn graphql_value_to_json(
 fn new_coercion_error(
     prepared: &PreparedRequest,
     message: impl Into<String>,
-    location: Option<apollo_compiler::parser::SourceSpan>,
+    location: Option<SourceSpan>,
 ) -> Box<GraphQLError> {
     Box::new(GraphQLError::new(
         message,
@@ -269,7 +266,7 @@ mod tests {
     use crate::{Request, request::prepare_request};
     use apollo_compiler::{Schema, response::JsonMap, response::serde_json_bytes::json};
 
-    fn coerce(schema_source: &str, request: Request) -> JsonMap {
+    fn coerce_arguments(schema_source: &str, request: Request) -> JsonMap {
         let schema = Schema::parse_and_validate(schema_source, "schema.graphql").unwrap();
         let prepared = prepare_request(&schema, &request).unwrap();
         let field = super::collect_fields(&prepared)
@@ -343,14 +340,14 @@ mod tests {
         )
         .with_variables(variables);
 
-        let arguments = coerce("type Query { hello(name: String!): String! }", request);
+        let arguments = coerce_arguments("type Query { hello(name: String!): String! }", request);
 
         assert_eq!(arguments.get("name"), Some(&json!("Sheri")));
     }
 
     #[test]
     fn omitted_nullable_argument_is_absent_and_explicit_null_is_preserved() {
-        let arguments = coerce(
+        let arguments = coerce_arguments(
             "type Query { hello(omitted: String, explicit: String): String! }",
             Request::new("query { hello(explicit: null) }"),
         );
@@ -361,7 +358,7 @@ mod tests {
 
     #[test]
     fn argument_default_is_used_when_the_argument_is_omitted() {
-        let arguments = coerce(
+        let arguments = coerce_arguments(
             r#"type Query { hello(name: String! = "Sheri"): String! }"#,
             Request::new("query { hello }"),
         );
@@ -371,7 +368,7 @@ mod tests {
 
     #[test]
     fn input_object_defaults_and_single_value_list_coercion_are_applied() {
-        let arguments = coerce(
+        let arguments = coerce_arguments(
             r#"
                 input GreetingInput {
                     name: String!
@@ -406,7 +403,7 @@ mod tests {
         )
         .with_variables(variables);
 
-        let arguments = coerce(
+        let arguments = coerce_arguments(
             r#"
                 input GreetingInput { name: String! }
                 type Query { hello(input: GreetingInput!): String! }
