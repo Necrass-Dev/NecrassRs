@@ -37,7 +37,6 @@ pub(crate) struct PreparedRequest {
     #[expect(dead_code, reason = "used by execution once it is added")]
     document: Valid<ExecutableDocument>,
     operation: Node<Operation>,
-    #[expect(dead_code, reason = "used by execution once it is added")]
     variables: Valid<JsonMap>,
 }
 
@@ -86,6 +85,7 @@ pub(crate) fn prepare_request(
 mod tests {
     use super::*;
     use apollo_compiler::Schema;
+    use apollo_compiler::response::serde_json_bytes::json;
 
     const MULTIPLE_OPERATIONS: &str = r#"
         query First {
@@ -173,5 +173,34 @@ mod tests {
         assert!(!errors[0].message.is_empty());
         assert!(!errors[0].locations.is_empty());
         assert!(errors[0].path.is_empty());
+    }
+
+    #[test]
+    fn variable_values_are_coerced_during_request_preparation() {
+        let schema = Schema::parse_and_validate(
+            "type Query { greet(names: [String!]!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+
+        let variables = json!({
+            "names": "셰리"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let request = Request::new(
+            r#"
+                query Greeting($names: [String!]!) {
+                    greet(names: $names)
+                }
+            "#,
+        )
+        .with_variables(variables);
+
+        let prepared = prepare_request(&schema, &request).unwrap();
+
+        assert_eq!(prepared.variables.get("names"), Some(&json!(["셰리"])));
     }
 }
