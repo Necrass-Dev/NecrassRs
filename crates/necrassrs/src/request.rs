@@ -1,15 +1,31 @@
-use apollo_compiler::{ExecutableDocument, response::GraphQLError, validation::Valid};
+use apollo_compiler::{
+    ExecutableDocument, Node, executable::Operation, response::GraphQLError, validation::Valid,
+};
 
 pub struct Request {
-    query: String,
+    document: String,
+    operation_name: Option<String>,
 }
 
 impl Request {
-    pub fn new(query: impl Into<String>) -> Self {
+    pub fn new(document: impl Into<String>) -> Self {
         Self {
-            query: query.into(),
+            document: document.into(),
+            operation_name: None,
         }
     }
+
+    pub fn with_operation_name(mut self, operation_name: impl Into<String>) -> Self {
+        self.operation_name = Some(operation_name.into());
+        self
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedRequest {
+    #[expect(dead_code, reason = "used by execution once it is added")]
+    document: Valid<ExecutableDocument>,
+    operation: Node<Operation>,
 }
 
 #[cfg_attr(
@@ -22,15 +38,30 @@ impl Request {
 pub(crate) fn prepare_request(
     schema: &Valid<apollo_compiler::Schema>,
     request: &Request,
-) -> Result<Valid<ExecutableDocument>, Vec<GraphQLError>> {
-    ExecutableDocument::parse_and_validate(schema, request.query.as_str(), "request.graphql")
-        .map_err(|error| {
-            error
-                .errors
-                .iter()
-                .map(|diagnostic| diagnostic.to_json())
-                .collect()
-        })
+) -> Result<PreparedRequest, Vec<GraphQLError>> {
+    let document = ExecutableDocument::parse_and_validate(
+        schema,
+        request.document.as_str(),
+        "request.graphql",
+    )
+    .map_err(|error| {
+        error
+            .errors
+            .iter()
+            .map(|diagnostic| diagnostic.to_json())
+            .collect::<Vec<_>>()
+    })?;
+
+    let operation = document
+        .operations
+        .get(request.operation_name.as_deref())
+        .map_err(|error| vec![error.to_graphql_error(&document.sources)])?
+        .clone();
+
+    Ok(PreparedRequest {
+        document,
+        operation,
+    })
 }
 
 #[cfg(test)]
@@ -85,7 +116,7 @@ mod tests {
     #[test]
     fn requested_operation_is_selected() {
         let schema = operation_schema();
-        let request = Request::new(MULTIPLE_OPERATIONS).operation_name("Second");
+        let request = Request::new(MULTIPLE_OPERATIONS).with_operation_name("Second");
 
         let prepared = prepare_request(&schema, &request).unwrap();
 
@@ -95,7 +126,7 @@ mod tests {
     #[test]
     fn unknown_operation_name_is_rejected() {
         let schema = operation_schema();
-        let request = Request::new(MULTIPLE_OPERATIONS).operation_name("Missing");
+        let request = Request::new(MULTIPLE_OPERATIONS).with_operation_name("Missing");
 
         let errors = prepare_request(&schema, &request).unwrap_err();
 
