@@ -34,10 +34,9 @@ impl Request {
 
 #[derive(Debug)]
 pub(crate) struct PreparedRequest {
-    #[expect(dead_code, reason = "used by execution once it is added")]
-    document: Valid<ExecutableDocument>,
+    pub(crate) document: Valid<ExecutableDocument>,
     pub(crate) operation: Node<Operation>,
-    variables: Valid<JsonMap>,
+    pub(crate) variables: Valid<JsonMap>,
 }
 
 #[cfg_attr(
