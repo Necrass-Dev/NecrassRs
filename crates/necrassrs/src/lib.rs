@@ -1,6 +1,8 @@
 use apollo_compiler::response::{ExecutionResponse, GraphQLError, JsonMap, JsonValue};
 use serde::Serialize;
 
+mod execution;
+
 pub struct ResolverError {
     message: String,
     extensions: Option<JsonMap>,
