@@ -132,4 +132,26 @@ mod tests {
 
         assert_eq!(errors.len(), 1);
     }
+
+    #[test]
+    fn missing_required_variable_is_rejected() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+
+        let request = Request::new(
+            r#"
+                query Greeting($name: String!) {
+                    hello(name: $name)
+                }
+            "#,
+        );
+
+        let errors = prepare_request(&schema, &request).unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("$name"));
+    }
 }
