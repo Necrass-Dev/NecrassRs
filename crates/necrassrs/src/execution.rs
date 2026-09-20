@@ -1,3 +1,30 @@
+use apollo_compiler::{
+    Name,
+    collections::IndexMap,
+    executable::{Field, Selection},
+};
+
+use crate::request::PreparedRequest;
+
+fn collect_fields(prepared: &PreparedRequest) -> IndexMap<Name, Vec<&Field>> {
+    prepared
+        .operation
+        .selection_set
+        .selections
+        .iter()
+        .filter_map(|selection| match selection {
+            Selection::Field(field) => Some(field.as_ref()),
+            _ => None,
+        })
+        .fold(IndexMap::default(), |mut fields, field| {
+            fields
+                .entry(field.response_key().clone())
+                .or_default()
+                .push(field);
+            fields
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Request, request::prepare_request};
