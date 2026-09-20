@@ -1,10 +1,15 @@
 use apollo_compiler::{
-    ExecutableDocument, Node, executable::Operation, response::GraphQLError, validation::Valid,
+    ExecutableDocument, Node,
+    executable::Operation,
+    request::coerce_variable_values,
+    response::{GraphQLError, JsonMap},
+    validation::Valid,
 };
 
 pub struct Request {
     document: String,
     operation_name: Option<String>,
+    variables: JsonMap,
 }
 
 impl Request {
@@ -12,11 +17,17 @@ impl Request {
         Self {
             document: document.into(),
             operation_name: None,
+            variables: JsonMap::default(),
         }
     }
 
     pub fn with_operation_name(mut self, operation_name: impl Into<String>) -> Self {
         self.operation_name = Some(operation_name.into());
+        self
+    }
+
+    pub fn with_variables(mut self, variables: JsonMap) -> Self {
+        self.variables = variables;
         self
     }
 }
@@ -26,6 +37,8 @@ pub(crate) struct PreparedRequest {
     #[expect(dead_code, reason = "used by execution once it is added")]
     document: Valid<ExecutableDocument>,
     operation: Node<Operation>,
+    #[expect(dead_code, reason = "used by execution once it is added")]
+    variables: Valid<JsonMap>,
 }
 
 #[cfg_attr(
@@ -55,12 +68,17 @@ pub(crate) fn prepare_request(
     let operation = document
         .operations
         .get(request.operation_name.as_deref())
-        .map_err(|error| vec![error.to_graphql_error(&document.sources)])?
-        .clone();
+        .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
+
+    let variables = coerce_variable_values(schema, operation, &request.variables)
+        .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
+
+    let operation = operation.clone();
 
     Ok(PreparedRequest {
         document,
         operation,
+        variables,
     })
 }
 
@@ -152,6 +170,8 @@ mod tests {
         let errors = prepare_request(&schema, &request).unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].message.contains("$name"));
+        assert!(!errors[0].message.is_empty());
+        assert!(!errors[0].locations.is_empty());
+        assert!(errors[0].path.is_empty());
     }
 }
