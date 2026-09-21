@@ -982,4 +982,23 @@ mod tests {
         );
         assert_eq!(response["errors"][0]["path"], json!(["values"]));
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn string_field_returning_incompatible_value_becomes_execution_error() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String }", "schema.graphql").unwrap();
+        let request = Request::new("query { hello }");
+        let dispatcher = ValueDispatcher(json!({ "unexpected": true }));
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+        let response = to_value(response).unwrap();
+
+        assert_eq!(response["data"]["hello"], JsonValue::Null);
+        assert!(
+            response["errors"][0]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert_eq!(response["errors"][0]["path"], json!(["hello"]));
+    }
 }
