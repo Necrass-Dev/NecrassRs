@@ -9,7 +9,29 @@ use apollo_compiler::{
     validation::Valid,
 };
 
-use crate::request::PreparedRequest;
+use crate::{ResolverError, request::PreparedRequest};
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by field execution once it is added")
+)]
+fn resolver_error_to_graphql_error(
+    prepared: &PreparedRequest,
+    field: &Field,
+    path: &[ResponseDataPathSegment],
+    resolver_error: ResolverError,
+) -> Box<GraphQLError> {
+    let ResolverError {
+        message,
+        extensions,
+    } = resolver_error;
+
+    let mut error = new_execution_error(prepared, path, message, field.name.location());
+
+    error.extensions = extensions.unwrap_or_default();
+
+    error
+}
 
 #[cfg_attr(
     not(test),
