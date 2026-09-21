@@ -287,7 +287,7 @@ fn new_execution_error(
 
 #[cfg(test)]
 mod tests {
-    use crate::{Request, request::prepare_request};
+    use crate::{Request, ResolverError, request::prepare_request};
     use apollo_compiler::{
         Schema,
         response::{JsonMap, ResponseDataPathSegment, serde_json_bytes::json},
@@ -469,6 +469,35 @@ mod tests {
 
         let error = super::coerce_argument_values(&schema, &prepared, &path, field).unwrap_err();
 
+        assert_eq!(error.path, path);
+    }
+
+    #[test]
+    fn resolver_error_is_enriched_with_location_and_alias_aware_path() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String }", "schema.graphql").unwrap();
+        let request = Request::new(
+            r#"
+                query {
+                    greeting: hello
+                }
+            "#,
+        );
+
+        let prepared = prepare_request(&schema, &request).unwrap();
+        let field = super::collect_fields(&prepared).get("greeting").unwrap()[0];
+        let path = vec![ResponseDataPathSegment::Field(field.response_key().clone())];
+        let resolver_error =
+            ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED");
+
+        let error = super::resolver_error_to_graphql_error(&prepared, field, &path, resolver_error);
+
+        assert_eq!(error.message, "Greeting failed.");
+        assert_eq!(
+            error.extensions.get("code"),
+            Some(&json!("GREETING_FAILED"))
+        );
+        assert!(!error.locations.is_empty());
         assert_eq!(error.path, path);
     }
 }
