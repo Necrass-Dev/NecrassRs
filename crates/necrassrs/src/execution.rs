@@ -779,6 +779,39 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn variable_input_reaches_dispatcher_and_produces_greeting() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let variables = json!({ "name": "Sheri" }).as_object().unwrap().clone();
+        let request = Request::new(
+            r#"
+                query Greeting($name: String!) {
+                    hello(name: $name)
+                }
+            "#,
+        )
+        .with_variables(variables);
+        let greeting = String::from("Hello");
+        let context = TestContext {
+            greeting: &greeting,
+        };
+
+        let response = super::execute(&schema, &request, &TestDispatcher, &context).await;
+
+        assert_eq!(
+            to_value(response).unwrap(),
+            json!({
+                "data": {
+                    "hello": "Hello, Sheri"
+                }
+            })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn resolver_error_on_non_null_root_field_propagates_null_to_data() {
         let schema =
             Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
