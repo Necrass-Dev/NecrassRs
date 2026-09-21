@@ -454,16 +454,20 @@ mod tests {
         super::coerce_argument_values(&schema, &prepared, &[], field).unwrap()
     }
 
-    async fn execute_list_with_null_item(field_type: &str) -> JsonValue {
+    async fn execute_value(field_type: &str, value: JsonValue) -> JsonValue {
         let schema = Schema::parse_and_validate(
             format!("type Query {{ values: {field_type} }}"),
             "schema.graphql",
         )
         .unwrap();
         let request = Request::new("query { values }");
-        let dispatcher = ValueDispatcher(json!(["A", null, "B"]));
+        let dispatcher = ValueDispatcher(value);
 
         to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap()
+    }
+
+    async fn execute_list_with_null_item(field_type: &str) -> JsonValue {
+        execute_value(field_type, json!(["A", null, "B"])).await
     }
 
     #[test]
@@ -778,5 +782,31 @@ mod tests {
 
         assert_eq!(response["data"], JsonValue::Null);
         assert_eq!(response["errors"][0]["path"], json!(["values", 1]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn nullable_list_returning_non_list_becomes_null_with_execution_error() {
+        let response = execute_value("[String]", json!("not a list")).await;
+
+        assert_eq!(response["data"]["values"], JsonValue::Null);
+        assert!(
+            response["errors"][0]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert_eq!(response["errors"][0]["path"], json!(["values"]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_null_list_returning_non_list_propagates_null_to_root() {
+        let response = execute_value("[String]!", json!("not a list")).await;
+
+        assert_eq!(response["data"], JsonValue::Null);
+        assert!(
+            response["errors"][0]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert_eq!(response["errors"][0]["path"], json!(["values"]));
     }
 }
