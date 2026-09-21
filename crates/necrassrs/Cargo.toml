@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 apollo-compiler.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt"] }
