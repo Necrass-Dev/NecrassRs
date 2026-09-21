@@ -372,6 +372,8 @@ mod tests {
 
     struct TestDispatcher;
 
+    struct FailingDispatcher;
+
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
         async fn resolve<'a>(
             &'a self,
@@ -379,11 +381,24 @@ mod tests {
             field_name: &'a str,
             arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
+            tokio::task::yield_now().await;
+
             assert_eq!(field_name, "hello");
 
             let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
             Ok(json!(format!("{}, {name}", context.greeting)))
+        }
+    }
+
+    impl super::Dispatcher<()> for FailingDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _field_name: &'a str,
+            _arguments: &'a JsonMap,
+        ) -> Result<JsonValue, ResolverError> {
+            Err(ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED"))
         }
     }
 
@@ -624,6 +639,24 @@ mod tests {
                     "hello": "Hello, Sheri"
                 }
             })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolver_error_on_non_null_root_field_propagates_null_to_data() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let request = Request::new("query { hello }");
+
+        let response = super::execute(&schema, &request, &FailingDispatcher, &()).await;
+        let response = to_value(response).unwrap();
+
+        assert_eq!(response.get("data"), Some(&JsonValue::Null));
+        assert_eq!(response["errors"][0]["message"], "Greeting failed.");
+        assert_eq!(response["errors"][0]["path"], json!(["hello"]));
+        assert_eq!(
+            response["errors"][0]["extensions"]["code"],
+            "GREETING_FAILED"
         );
     }
 }
