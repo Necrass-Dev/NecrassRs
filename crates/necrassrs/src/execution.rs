@@ -42,31 +42,42 @@ where
     let mut errors = Vec::new();
 
     for (response_key, fields) in collect_fields(&prepared) {
-        // TODO: Expand next line
+        // TODO: Expand next line, 필드 병합 테스트가 변경을 요구할 때 구현.
         let field = fields[0];
         let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
-        let value = match coerce_argument_values(schema, &prepared, &path, field) {
+        let (value, has_error) = match coerce_argument_values(schema, &prepared, &path, field) {
             Ok(arguments) => match dispatcher
                 .resolve(context, field.name.as_str(), &arguments)
                 .await
             {
-                Ok(value) => value,
+                Ok(value) => (value, false),
                 Err(error) => {
                     errors.push(*resolver_error_to_graphql_error(
                         &prepared, field, &path, error,
                     ));
 
-                    JsonValue::Null
+                    (JsonValue::Null, true)
                 }
             },
             Err(error) => {
                 errors.push(*error);
-                JsonValue::Null
+                (JsonValue::Null, true)
             }
         };
 
         if value.is_null() && field.definition.ty.is_non_null() {
+            if !has_error {
+                errors.push(*new_execution_error(
+                    &prepared,
+                    &path,
+                    format!(
+                        "Cannot return null for non-nullable field '{}'.",
+                        field.name
+                    ),
+                    field.name.location(),
+                ));
+            }
             return Response::execution(None, errors);
         }
 
