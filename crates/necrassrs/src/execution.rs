@@ -445,7 +445,24 @@ fn complete_value(
                 Err(PropagateNull) => Ok(JsonValue::Null),
             }
         }
-        Type::Named(_) | Type::NonNullNamed(_) => Ok(value),
+        Type::Named(name) | Type::NonNullNamed(name) => {
+            if name.as_str() == "String" && !value.is_string() {
+                errors.push(*new_execution_error(
+                    prepared,
+                    path,
+                    format!("Expected field '{}' to return a String.", field.name),
+                    field.name.location(),
+                ));
+
+                return if ty.is_non_null() {
+                    Err(PropagateNull)
+                } else {
+                    Ok(JsonValue::Null)
+                };
+            }
+
+            Ok(value)
+        }
     }
 }
 
