@@ -44,7 +44,7 @@ where
     for (response_key, fields) in collect_fields(&prepared) {
         // TODO: Expand next line, 필드 병합 테스트가 변경을 요구할 때 구현.
         let field = fields[0];
-        let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
+        let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
         let (value, has_error) = match coerce_argument_values(schema, &prepared, &path, field) {
             Ok(arguments) => match dispatcher
@@ -80,6 +80,18 @@ where
             }
             return Response::execution(None, errors);
         }
+
+        let value = match complete_value(
+            &prepared,
+            field,
+            &field.definition.ty,
+            value,
+            &mut path,
+            &mut errors,
+        ) {
+            Ok(value) => value,
+            Err(PropagateNull) => return Response::execution(None, errors),
+        };
 
         data.insert(response_key.as_str(), value);
     }
@@ -366,6 +378,75 @@ fn new_execution_error(
     error.path = path.to_vec();
 
     Box::new(error)
+}
+
+struct PropagateNull;
+
+fn complete_value(
+    prepared: &PreparedRequest,
+    field: &Field,
+    ty: &Type,
+    value: JsonValue,
+    path: &mut Vec<ResponseDataPathSegment>,
+    errors: &mut Vec<GraphQLError>,
+) -> Result<JsonValue, PropagateNull> {
+    if value.is_null() {
+        return if ty.is_non_null() {
+            errors.push(*new_execution_error(
+                prepared,
+                path,
+                format!(
+                    "Cannot return null for non-nullable field '{}'.",
+                    field.name
+                ),
+                field.name.location(),
+            ));
+
+            Err(PropagateNull)
+        } else {
+            Ok(JsonValue::Null)
+        };
+    }
+
+    match ty {
+        Type::List(item_type) | Type::NonNullList(item_type) => {
+            let JsonValue::Array(values) = value else {
+                errors.push(*new_execution_error(
+                    prepared,
+                    path,
+                    format!("Expected field '{}' to return a list.", field.name),
+                    field.name.location(),
+                ));
+
+                return if ty.is_non_null() {
+                    Err(PropagateNull)
+                } else {
+                    Ok(JsonValue::Null)
+                };
+            };
+
+            let completed = values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    path.push(ResponseDataPathSegment::ListIndex(index));
+
+                    let completed = complete_value(prepared, field, item_type, value, path, errors);
+
+                    path.pop();
+
+                    completed
+                })
+                .collect::<Result<Vec<_>, _>>();
+
+            match completed {
+                Ok(values) => Ok(values.into()),
+                Err(PropagateNull) if ty.is_non_null() => Err(PropagateNull),
+                Err(PropagateNull) => Ok(JsonValue::Null),
+            }
+        }
+        Type::Named(_) | Type::NonNullNamed(_) => Ok(value),
+    }
 }
 
 #[cfg(test)]
