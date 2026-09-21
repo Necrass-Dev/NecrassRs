@@ -4,7 +4,7 @@ use apollo_compiler::{
     collections::IndexMap,
     executable::{Field, Selection},
     parser::SourceSpan,
-    response::{GraphQLError, JsonMap, JsonValue},
+    response::{GraphQLError, JsonMap, JsonValue, ResponseDataPathSegment},
     schema::ExtendedType,
     validation::Valid,
 };
@@ -44,6 +44,7 @@ fn collect_fields(prepared: &PreparedRequest) -> IndexMap<Name, Vec<&Field>> {
 fn coerce_argument_values(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
+    path: &[ResponseDataPathSegment],
     field: &Field,
 ) -> Result<JsonMap, Box<GraphQLError>> {
     field
@@ -56,8 +57,9 @@ fn coerce_argument_values(
                 .or(definition.default_value.as_ref());
             let Some(argument_value) = argument_value else {
                 if definition.ty.is_non_null() {
-                    return Err(new_coercion_error(
+                    return Err(new_execution_error(
                         prepared,
+                        path,
                         format!("missing value for required argument '{}'", definition.name),
                         definition.location(),
                     ));
@@ -71,20 +73,26 @@ fn coerce_argument_values(
                     Some(variable_value)
                         if variable_value.is_null() && definition.ty.is_non_null() =>
                     {
-                        return Err(new_coercion_error(
+                        return Err(new_execution_error(
                             prepared,
+                            path,
                             format!("null value for non-null argument '{}'", definition.name),
                             argument_value.location(),
                         ));
                     }
                     Some(variable_value) => variable_value.clone(),
                     None => match definition.default_value.as_ref() {
-                        Some(default_value) => {
-                            coerce_input_value(schema, prepared, &definition.ty, default_value)?
-                        }
+                        Some(default_value) => coerce_input_value(
+                            schema,
+                            prepared,
+                            path,
+                            &definition.ty,
+                            default_value,
+                        )?,
                         None if definition.ty.is_non_null() => {
-                            return Err(new_coercion_error(
+                            return Err(new_execution_error(
                                 prepared,
+                                path,
                                 format!(
                                     "missing value for required argument '{}'",
                                     definition.name
@@ -96,7 +104,7 @@ fn coerce_argument_values(
                     },
                 }
             } else {
-                coerce_input_value(schema, prepared, &definition.ty, argument_value)?
+                coerce_input_value(schema, prepared, path, &definition.ty, argument_value)?
             };
 
             coerced_values.insert(definition.name.as_str(), value);
@@ -107,21 +115,24 @@ fn coerce_argument_values(
 fn coerce_input_value(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
+    path: &[ResponseDataPathSegment],
     ty: &Type,
     value: &Node<Value>,
 ) -> Result<JsonValue, Box<GraphQLError>> {
     if let Some(variable_name) = value.as_variable() {
         return match prepared.variables.get(variable_name.as_str()) {
             Some(variable_value) if variable_value.is_null() && ty.is_non_null() => {
-                Err(new_coercion_error(
+                Err(new_execution_error(
                     prepared,
+                    path,
                     format!("null variable '${variable_name}' for non-null type '{ty}'"),
                     value.location(),
                 ))
             }
             Some(variable_value) => Ok(variable_value.clone()),
-            None if ty.is_non_null() => Err(new_coercion_error(
+            None if ty.is_non_null() => Err(new_execution_error(
                 prepared,
+                path,
                 format!("missing variable '${variable_name}' for non-null type '{ty}'"),
                 value.location(),
             )),
@@ -131,8 +142,9 @@ fn coerce_input_value(
 
     if value.is_null() {
         return if ty.is_non_null() {
-            Err(new_coercion_error(
+            Err(new_execution_error(
                 prepared,
+                path,
                 format!("null value for non-null type '{ty}'"),
                 value.location(),
             ))
@@ -147,7 +159,7 @@ fn coerce_input_value(
                 .as_list()
                 .unwrap_or(std::slice::from_ref(value))
                 .iter()
-                .map(|value| coerce_input_value(schema, prepared, inner, value))
+                .map(|value| coerce_input_value(schema, prepared, path, inner, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Into::into);
         }
@@ -156,8 +168,9 @@ fn coerce_input_value(
 
     if let Some(ExtendedType::InputObject(input)) = schema.types.get(type_name) {
         let object = value.as_object().ok_or_else(|| {
-            new_coercion_error(
+            new_execution_error(
                 prepared,
+                path,
                 format!("could not coerce value to input object '{type_name}'"),
                 value.location(),
             )
@@ -187,12 +200,13 @@ fn coerce_input_value(
                     Some(value) => {
                         coerced.insert(
                             name.as_str(),
-                            coerce_input_value(schema, prepared, &definition.ty, value)?,
+                            coerce_input_value(schema, prepared, path, &definition.ty, value)?,
                         );
                     }
                     None if definition.ty.is_non_null() => {
-                        return Err(new_coercion_error(
+                        return Err(new_execution_error(
                             prepared,
+                            path,
                             format!("missing value for required input field '{type_name}.{name}'"),
                             definition.location(),
                         ));
@@ -205,11 +219,12 @@ fn coerce_input_value(
             .map(Into::into);
     }
 
-    literal_to_json(prepared, value)
+    literal_to_json(prepared, path, value)
 }
 
 fn literal_to_json(
     prepared: &PreparedRequest,
+    path: &[ResponseDataPathSegment],
     value: &Node<Value>,
 ) -> Result<JsonValue, Box<GraphQLError>> {
     match value.as_ref() {
@@ -218,47 +233,56 @@ fn literal_to_json(
         Value::String(value) => Ok(value.as_str().into()),
         Value::Boolean(value) => Ok((*value).into()),
         Value::Int(number) => number.as_str().parse().map(JsonValue::Number).map_err(|_| {
-            new_coercion_error(
+            new_execution_error(
                 prepared,
+                path,
                 "integer argument is outside the supported JSON range",
                 value.location(),
             )
         }),
         Value::Float(number) => number.as_str().parse().map(JsonValue::Number).map_err(|_| {
-            new_coercion_error(
+            new_execution_error(
                 prepared,
+                path,
                 "float argument is outside the supported JSON range",
                 value.location(),
             )
         }),
         Value::List(values) => values
             .iter()
-            .map(|value| literal_to_json(prepared, value))
+            .map(|value| literal_to_json(prepared, path, value))
             .collect::<Result<Vec<_>, _>>()
             .map(Into::into),
         Value::Object(values) => values
             .iter()
-            .map(|(name, value)| Ok((name.as_str().into(), literal_to_json(prepared, value)?)))
+            .map(|(name, value)| {
+                Ok((
+                    name.as_str().into(),
+                    literal_to_json(prepared, path, value)?,
+                ))
+            })
             .collect::<Result<JsonMap, _>>()
             .map(Into::into),
-        Value::Variable(name) => Err(new_coercion_error(
+        Value::Variable(name) => Err(new_execution_error(
             prepared,
+            path,
             format!("unresolved variable '${name}'"),
             value.location(),
         )),
     }
 }
 
-fn new_coercion_error(
+fn new_execution_error(
     prepared: &PreparedRequest,
+    path: &[ResponseDataPathSegment],
     message: impl Into<String>,
     location: Option<SourceSpan>,
 ) -> Box<GraphQLError> {
-    Box::new(GraphQLError::new(
-        message,
-        location,
-        &prepared.document.sources,
-    ))
+    let mut error = GraphQLError::new(message, location, &prepared.document.sources);
+
+    error.path = path.to_vec();
+
+    Box::new(error)
 }
 
 #[cfg(test)]
@@ -277,7 +301,7 @@ mod tests {
             .next()
             .unwrap()[0];
 
-        super::coerce_argument_values(&schema, &prepared, field).unwrap()
+        super::coerce_argument_values(&schema, &prepared, &[], field).unwrap()
     }
 
     #[test]
@@ -326,7 +350,7 @@ mod tests {
         let fields = super::collect_fields(&prepared);
         let field = fields.get("hello").unwrap()[0];
 
-        let arguments = super::coerce_argument_values(&schema, &prepared, field).unwrap();
+        let arguments = super::coerce_argument_values(&schema, &prepared, &[], field).unwrap();
 
         assert_eq!(arguments.get("name"), Some(&json!("Sheri")));
     }
@@ -443,7 +467,7 @@ mod tests {
         let field = super::collect_fields(&prepared).get("greeting").unwrap()[0];
         let path = vec![ResponseDataPathSegment::Field(field.response_key().clone())];
 
-        let error = super::coerce_argument_values(&schema, &prepared, field, &path).unwrap_err();
+        let error = super::coerce_argument_values(&schema, &prepared, &path, field).unwrap_err();
 
         assert_eq!(error.path, path);
     }
