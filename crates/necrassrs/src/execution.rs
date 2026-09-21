@@ -451,6 +451,8 @@ fn complete_value(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use crate::{Request, ResolverError, request::prepare_request};
     use apollo_compiler::{
         Schema,
@@ -471,6 +473,8 @@ mod tests {
     struct NullDispatcher;
 
     struct ValueDispatcher(JsonValue);
+
+    struct CountingDispatcher(AtomicUsize);
 
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
         async fn resolve<'a>(
@@ -519,6 +523,19 @@ mod tests {
             _arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
             Ok(self.0.clone())
+        }
+    }
+
+    impl super::Dispatcher<()> for CountingDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _field_name: &'a str,
+            _arguments: &'a JsonMap,
+        ) -> Result<JsonValue, ResolverError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+
+            Ok(json!("unexpected resolver call"))
         }
     }
 
@@ -809,6 +826,48 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_variable_inputs_do_not_invoke_dispatcher() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let cases = [
+            ("missing", JsonMap::new()),
+            ("null", json!({ "name": null }).as_object().unwrap().clone()),
+            (
+                "incompatible",
+                json!({ "name": 42 }).as_object().unwrap().clone(),
+            ),
+        ];
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+
+        for (case, variables) in cases {
+            let request = Request::new(
+                r#"
+                    query Greeting($name: String!) {
+                        hello(name: $name)
+                    }
+                "#,
+            )
+            .with_variables(variables);
+
+            let response = super::execute(&schema, &request, &dispatcher, &()).await;
+            let response = to_value(response).unwrap();
+
+            assert!(response.get("data").is_none(), "{case}");
+            assert!(
+                response
+                    .get("errors")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|errors| !errors.is_empty()),
+                "{case}"
+            );
+            assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0, "{case}");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
