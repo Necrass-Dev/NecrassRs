@@ -376,6 +376,8 @@ mod tests {
 
     struct FailingDispatcher;
 
+    struct NullDispatcher;
+
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
         async fn resolve<'a>(
             &'a self,
@@ -401,6 +403,17 @@ mod tests {
             _arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
             Err(ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED"))
+        }
+    }
+
+    impl super::Dispatcher<()> for NullDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _field_name: &'a str,
+            _arguments: &'a JsonMap,
+        ) -> Result<JsonValue, ResolverError> {
+            Ok(JsonValue::Null)
         }
     }
 
@@ -660,5 +673,30 @@ mod tests {
             response["errors"][0]["extensions"]["code"],
             "GREETING_FAILED"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_null_field_returning_null_adds_field_error() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let request = Request::new("query { hello }");
+
+        let response = super::execute(&schema, &request, &NullDispatcher, &()).await;
+        let response = to_value(response).unwrap();
+
+        assert_eq!(response.get("data"), Some(&JsonValue::Null));
+
+        let errors = response
+            .get("errors")
+            .and_then(JsonValue::as_array)
+            .expect("a non-null field returning null must produce an error");
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert_eq!(errors[0]["path"], json!(["hello"]));
     }
 }
