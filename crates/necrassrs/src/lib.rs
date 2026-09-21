@@ -3,6 +3,8 @@ use serde::Serialize;
 
 mod execution;
 
+pub use execution::{Dispatcher, execute};
+
 pub struct ResolverError {
     message: String,
     extensions: Option<JsonMap>,
@@ -46,9 +48,11 @@ enum ResponseKind {
 
 impl Response {
     pub fn request_error(error: GraphQLError) -> Self {
-        Self(ResponseKind::RequestError {
-            errors: vec![error],
-        })
+        Self::request_errors(vec![error])
+    }
+
+    pub fn request_errors(errors: Vec<GraphQLError>) -> Self {
+        Self(ResponseKind::RequestError { errors })
     }
 
     pub fn execution(data: Option<JsonMap>, errors: Vec<GraphQLError>) -> Self {

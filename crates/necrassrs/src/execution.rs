@@ -9,12 +9,71 @@ use apollo_compiler::{
     validation::Valid,
 };
 
-use crate::{ResolverError, request::PreparedRequest};
+use crate::{
+    Request, ResolverError, Response,
+    request::{PreparedRequest, prepare_request},
+};
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by field execution once it is added")
-)]
+pub trait Dispatcher<C> {
+    fn resolve<'a>(
+        &'a self,
+        context: &'a C,
+        field_name: &'a str,
+        arguments: &'a JsonMap,
+    ) -> impl Future<Output = Result<JsonValue, ResolverError>> + Send + 'a;
+}
+
+pub async fn execute<C, D>(
+    schema: &Valid<Schema>,
+    request: &Request,
+    dispatcher: &D,
+    context: &C,
+) -> Response
+where
+    C: Sync,
+    D: Dispatcher<C> + Sync,
+{
+    let prepared = match prepare_request(schema, request) {
+        Ok(prepared) => prepared,
+        Err(errors) => return Response::request_errors(errors),
+    };
+
+    let mut data = JsonMap::new();
+    let mut errors = Vec::new();
+
+    for (response_key, fields) in collect_fields(&prepared) {
+        // TODO: Expand next line
+        let field = fields[0];
+        let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
+
+        let arguments = match coerce_argument_values(schema, &prepared, &path, field) {
+            Ok(arguments) => arguments,
+            Err(error) => {
+                data.insert(response_key.as_str(), JsonValue::Null);
+                errors.push(*error);
+                continue;
+            }
+        };
+
+        match dispatcher
+            .resolve(context, field.name.as_str(), &arguments)
+            .await
+        {
+            Ok(value) => {
+                data.insert(response_key.as_str(), value);
+            }
+            Err(error) => {
+                data.insert(response_key.as_str(), JsonValue::Null);
+                errors.push(*resolver_error_to_graphql_error(
+                    &prepared, field, &path, error,
+                ));
+            }
+        }
+    }
+
+    Response::execution(Some(data), errors)
+}
+
 fn resolver_error_to_graphql_error(
     prepared: &PreparedRequest,
     field: &Field,
@@ -33,13 +92,6 @@ fn resolver_error_to_graphql_error(
     error
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by the execution entry point once it is added"
-    )
-)]
 fn collect_fields(prepared: &PreparedRequest) -> IndexMap<Name, Vec<&Field>> {
     prepared
         .operation
@@ -59,10 +111,6 @@ fn collect_fields(prepared: &PreparedRequest) -> IndexMap<Name, Vec<&Field>> {
         })
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by field execution once it is added")
-)]
 fn coerce_argument_values(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
@@ -325,19 +373,17 @@ mod tests {
     struct TestDispatcher;
 
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
-        fn resolve<'a>(
+        async fn resolve<'a>(
             &'a self,
             context: &'a TestContext<'context>,
             field_name: &'a str,
             arguments: &'a JsonMap,
-        ) -> impl Future<Output = Result<JsonValue, ResolverError>> + Send + 'a {
-            async move {
-                assert_eq!(field_name, "hello");
+        ) -> Result<JsonValue, ResolverError> {
+            assert_eq!(field_name, "hello");
 
-                let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
+            let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
-                Ok(json!(format!("{}, {name}", context.greeting)))
-            }
+            Ok(json!(format!("{}, {name}", context.greeting)))
         }
     }
 

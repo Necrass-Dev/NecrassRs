@@ -39,13 +39,6 @@ pub(crate) struct PreparedRequest {
     pub(crate) variables: Valid<JsonMap>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by the execution entry point once it is added"
-    )
-)]
 pub(crate) fn prepare_request(
     schema: &Valid<apollo_compiler::Schema>,
     request: &Request,
