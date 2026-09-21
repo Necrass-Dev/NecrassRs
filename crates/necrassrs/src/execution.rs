@@ -389,6 +389,8 @@ mod tests {
 
     struct NullDispatcher;
 
+    struct ValueDispatcher(JsonValue);
+
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
         async fn resolve<'a>(
             &'a self,
@@ -428,6 +430,17 @@ mod tests {
         }
     }
 
+    impl super::Dispatcher<()> for ValueDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _field_name: &'a str,
+            _arguments: &'a JsonMap,
+        ) -> Result<JsonValue, ResolverError> {
+            Ok(self.0.clone())
+        }
+    }
+
     fn assert_send<T: Send>(_: &T) {}
 
     fn coerce_arguments(schema_source: &str, request: Request) -> JsonMap {
@@ -439,6 +452,18 @@ mod tests {
             .unwrap()[0];
 
         super::coerce_argument_values(&schema, &prepared, &[], field).unwrap()
+    }
+
+    async fn execute_list_with_null_item(field_type: &str) -> JsonValue {
+        let schema = Schema::parse_and_validate(
+            format!("type Query {{ values: {field_type} }}"),
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("query { values }");
+        let dispatcher = ValueDispatcher(json!(["A", null, "B"]));
+
+        to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap()
     }
 
     #[test]
@@ -709,5 +734,49 @@ mod tests {
                 .is_some_and(|message| !message.is_empty())
         );
         assert_eq!(errors[0]["path"], json!(["hello"]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn nullable_list_preserves_null_items() {
+        let response = execute_list_with_null_item("[String]").await;
+
+        assert_eq!(
+            response,
+            json!({
+                "data": {
+                    "values": ["A", null, "B"]
+                }
+            })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_null_list_preserves_nullable_items() {
+        let response = execute_list_with_null_item("[String]!").await;
+
+        assert_eq!(
+            response,
+            json!({
+                "data": {
+                    "values": ["A", null, "B"]
+                }
+            })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn null_non_null_item_nullifies_nullable_list() {
+        let response = execute_list_with_null_item("[String!]").await;
+
+        assert_eq!(response["data"]["values"], JsonValue::Null);
+        assert_eq!(response["errors"][0]["path"], json!(["values", 1]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn null_non_null_item_propagates_through_non_null_list() {
+        let response = execute_list_with_null_item("[String!]!").await;
+
+        assert_eq!(response["data"], JsonValue::Null);
+        assert_eq!(response["errors"][0]["path"], json!(["values", 1]));
     }
 }
