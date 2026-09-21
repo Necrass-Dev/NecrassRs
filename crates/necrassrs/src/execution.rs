@@ -46,29 +46,31 @@ where
         let field = fields[0];
         let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
-        let arguments = match coerce_argument_values(schema, &prepared, &path, field) {
-            Ok(arguments) => arguments,
+        let value = match coerce_argument_values(schema, &prepared, &path, field) {
+            Ok(arguments) => match dispatcher
+                .resolve(context, field.name.as_str(), &arguments)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.push(*resolver_error_to_graphql_error(
+                        &prepared, field, &path, error,
+                    ));
+
+                    JsonValue::Null
+                }
+            },
             Err(error) => {
-                data.insert(response_key.as_str(), JsonValue::Null);
                 errors.push(*error);
-                continue;
+                JsonValue::Null
             }
         };
 
-        match dispatcher
-            .resolve(context, field.name.as_str(), &arguments)
-            .await
-        {
-            Ok(value) => {
-                data.insert(response_key.as_str(), value);
-            }
-            Err(error) => {
-                data.insert(response_key.as_str(), JsonValue::Null);
-                errors.push(*resolver_error_to_graphql_error(
-                    &prepared, field, &path, error,
-                ));
-            }
+        if value.is_null() && field.definition.ty.is_non_null() {
+            return Response::execution(None, errors);
         }
+
+        data.insert(response_key.as_str(), value);
     }
 
     Response::execution(Some(data), errors)
