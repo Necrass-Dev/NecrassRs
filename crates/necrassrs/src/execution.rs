@@ -312,8 +312,36 @@ mod tests {
     use crate::{Request, ResolverError, request::prepare_request};
     use apollo_compiler::{
         Schema,
-        response::{JsonMap, ResponseDataPathSegment, serde_json_bytes::json},
+        response::{
+            JsonMap, JsonValue, ResponseDataPathSegment,
+            serde_json_bytes::{json, to_value},
+        },
     };
+
+    struct TestContext<'a> {
+        greeting: &'a str,
+    }
+
+    struct TestDispatcher;
+
+    impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
+        fn resolve<'a>(
+            &'a self,
+            context: &'a TestContext<'context>,
+            field_name: &'a str,
+            arguments: &'a JsonMap,
+        ) -> impl Future<Output = Result<JsonValue, ResolverError>> + Send + 'a {
+            async move {
+                assert_eq!(field_name, "hello");
+
+                let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
+
+                Ok(json!(format!("{}, {name}", context.greeting)))
+            }
+        }
+    }
+
+    fn assert_send<T: Send>(_: &T) {}
 
     fn coerce_arguments(schema_source: &str, request: Request) -> JsonMap {
         let schema = Schema::parse_and_validate(schema_source, "schema.graphql").unwrap();
@@ -521,5 +549,35 @@ mod tests {
         );
         assert!(!error.locations.is_empty());
         assert_eq!(error.path, path);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handwritten_dispatch_receives_coerced_arguments_and_borrowed_context() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(r#"query { hello(name: "Sheri") }"#);
+        let greeting = String::from("Hello");
+        let context = TestContext {
+            greeting: &greeting,
+        };
+        let dispatcher = TestDispatcher;
+
+        let future = super::execute(&schema, &request, &dispatcher, &context);
+
+        assert_send(&future);
+
+        let response = future.await;
+
+        assert_eq!(
+            to_value(response).unwrap(),
+            json!({
+                "data": {
+                    "hello": "Hello, Sheri"
+                }
+            })
+        );
     }
 }
