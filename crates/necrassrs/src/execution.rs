@@ -611,6 +611,38 @@ mod tests {
         assert_eq!(collected[0].name.as_str(), "hello");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn field_inside_named_fragment_is_executed() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            r#"
+                query {
+                    ...Greeting
+                }
+
+                fragment Greeting on Query {
+                    hello(name: "Sheri")
+                }
+            "#,
+        );
+        let context = TestContext { greeting: "Hello" };
+
+        let response = super::execute(&schema, &request, &TestDispatcher, &context).await;
+
+        assert_eq!(
+            to_value(response).unwrap(),
+            json!({
+                "data": {
+                    "hello": "Hello, Sheri"
+                }
+            })
+        );
+    }
+
     #[test]
     fn literal_argument_is_coerced_for_resolver_dispatch() {
         let schema = Schema::parse_and_validate(
