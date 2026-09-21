@@ -2,7 +2,7 @@ use apollo_compiler::{
     Name, Node, Schema,
     ast::{Type, Value},
     collections::IndexMap,
-    executable::{Field, Selection},
+    executable::Field,
     parser::SourceSpan,
     response::{GraphQLError, JsonMap, JsonValue, ResponseDataPathSegment},
     schema::ExtendedType,
@@ -121,12 +121,8 @@ fn collect_fields(prepared: &PreparedRequest) -> IndexMap<Name, Vec<&Field>> {
     prepared
         .operation
         .selection_set
-        .selections
-        .iter()
-        .filter_map(|selection| match selection {
-            Selection::Field(field) => Some(field.as_ref()),
-            _ => None,
-        })
+        .root_fields(&prepared.document)
+        .map(|field| field.as_ref())
         .fold(IndexMap::default(), |mut fields, field| {
             fields
                 .entry(field.response_key().clone())
