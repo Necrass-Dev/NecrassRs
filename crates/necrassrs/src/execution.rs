@@ -708,6 +708,36 @@ mod tests {
         assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_applicable_inline_fragment_is_not_executed() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                interface Node { id: ID! }
+                type Query implements Node { id: ID! }
+                type Other implements Node { id: ID!, secret: String! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            r#"
+                query {
+                    ... on Node {
+                        ... on Other {
+                            secret
+                        }
+                    }
+                }
+            "#,
+        );
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+
+        assert_eq!(to_value(response).unwrap(), json!({ "data": {} }));
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+    }
+
     #[test]
     fn literal_argument_is_coerced_for_resolver_dispatch() {
         let schema = Schema::parse_and_validate(
