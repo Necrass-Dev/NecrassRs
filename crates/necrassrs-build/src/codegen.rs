@@ -248,6 +248,67 @@ impl std::error::Error for CodegenError {}
 #[cfg(test)]
 mod test {
     use apollo_compiler::Schema;
+    use miette::Diagnostic;
+
+    #[test]
+    fn codegen_error_preserves_argument_type_source_and_span() {
+        let source = "# Source: café\nextend type Query { lookup(at: Timestamp!): String! }";
+        let schema = Schema::builder()
+            .parse(
+                "scalar Timestamp type Query { hello: String! }",
+                "schema.graphql",
+            )
+            .parse(source, "lookup.graphql")
+            .build()
+            .expect("the test schema must build")
+            .validate()
+            .expect("the test schema must be valid");
+
+        let error = super::generate(&schema).expect_err("the fixture requires a codegen rejection");
+        assert!(error.to_string().contains("Query.lookup(at)"));
+        let labels: Vec<_> = error
+            .labels()
+            .expect("the error must have labels")
+            .collect();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].offset(), source.find("Timestamp!").unwrap());
+        assert_eq!(labels[0].len(), "Timestamp!".len());
+        let contents = error
+            .source_code()
+            .expect("the error must retain its source")
+            .read_span(&(0, source.len()).into(), 0, 0)
+            .expect("the original source must be readable");
+        assert_eq!(contents.name(), Some("lookup.graphql"));
+        assert_eq!(contents.data(), source.as_bytes());
+    }
+
+    #[test]
+    fn codegen_error_without_type_location_has_no_fabricated_source_or_span() {
+        let mut schema = Schema::parse(
+            "scalar Timestamp type Query { lookup(at: Timestamp!): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must parse");
+        let apollo_compiler::schema::ExtendedType::Object(query) =
+            schema.types.get_mut("Query").unwrap()
+        else {
+            panic!("the query root must be an object");
+        };
+        let field = query
+            .make_mut()
+            .fields
+            .get_mut("lookup")
+            .unwrap()
+            .make_mut();
+        field.arguments[0].make_mut().ty =
+            apollo_compiler::Node::new(apollo_compiler::ty!(Timestamp!));
+        let schema = schema.validate().expect("the test schema must be valid");
+
+        let error = super::generate(&schema).expect_err("the fixture requires a codegen rejection");
+        assert!(error.to_string().contains("Query.lookup(at)"));
+        assert!(error.source_code().is_none());
+        assert_eq!(error.labels().into_iter().flatten().count(), 0);
+    }
 
     #[test]
     fn generates_required_string_argument_struct() {
