@@ -1548,6 +1548,29 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsupported_introspection_fields_return_errors_without_dispatch() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String }", "schema.graphql").unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+
+        for document in [
+            "{ __schema { queryType { name } } }",
+            r#"{ __type(name: "Query") { name } }"#,
+        ] {
+            let response =
+                to_value(super::execute(&schema, &Request::new(document), &dispatcher, &()).await)
+                    .unwrap();
+
+            assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+            assert!(
+                response["errors"]
+                    .as_array()
+                    .is_some_and(|errors| !errors.is_empty())
+            );
+        }
+    }
+
     // TODO: Temporary unsupported-feature contract: remove this rejection test when
     // subscription execution is implemented and replace it with response-stream tests.
     #[tokio::test(flavor = "current_thread")]
