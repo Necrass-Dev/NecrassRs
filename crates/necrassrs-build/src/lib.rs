@@ -40,19 +40,18 @@ pub fn build(schema_dir: impl AsRef<Path>) -> Result<(), BuildError> {
     std::fs::write(&output, generated).map_err(|source| BuildError::Io {
         path: output,
         source,
-    })?
+    })?;
 
     let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").map_err(|source|
-        {
-            BuildError::Environment {
-                variable: "CARGO_MANIFEST_DIR",
-                source,
-            }
+        std::env::var("CARGO_MANIFEST_DIR").map_err(|source| BuildError::Environment {
+            variable: "CARGO_MANIFEST_DIR",
+            source,
         })?;
 
-    let resolver_path = Path::new(&manifest_dir).join("src/
-    resolvers.rs");
+    let resolver_path = Path::new(&manifest_dir).join(
+        "src/
+    resolvers.rs",
+    );
 
     sync::synchronize(&schema, &resolver_path)
 }
