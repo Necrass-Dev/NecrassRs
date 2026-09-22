@@ -915,6 +915,50 @@ mod tests {
     }
 
     #[test]
+    fn cyclic_literal_input_default_is_rejected_without_aborting() {
+        const CHILD_ENV: &str = "NECRASSRS_CYCLIC_LITERAL_DEFAULT_TEST_CHILD";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let Ok(schema) = Schema::parse_and_validate(
+                "input Recursive { next: Recursive = {} } \
+                 type Query { hello(input: Recursive): String }",
+                "schema.graphql",
+            ) else {
+                return;
+            };
+            let request = Request::new("{ hello(input: {}) }");
+            let prepared = prepare_request(&schema, &request).unwrap();
+            let field = super::collect_fields(&schema, &prepared)
+                .get("hello")
+                .unwrap()[0];
+
+            let error =
+                super::coerce_argument_values(&schema, &prepared, &[], field, &field.definition)
+                    .expect_err("cyclic defaults must be rejected before execution");
+            assert!(error.message.contains("cyclic default value"));
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "execution::tests::cyclic_literal_input_default_is_rejected_without_aborting",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "cyclic literal default validation failed ({})\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
     fn coerced_variable_is_used_as_an_argument() {
         let variables = json!({ "name": "Sheri" }).as_object().unwrap().clone();
         let request = Request::new(
