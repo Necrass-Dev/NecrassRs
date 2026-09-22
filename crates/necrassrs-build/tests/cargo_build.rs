@@ -112,6 +112,30 @@ fn sdl_deletion_removes_generated_contract_without_changing_user_source() {
     assert_eq!(source, source_after);
 }
 
+#[test]
+fn codegen_failure_reports_source_and_span_without_color() {
+    let directory = create_consumer();
+    fs::write(
+        directory.join("schema/query/fields/hello.graphql"),
+        include_str!("fixtures/consumer/hello.graphql").replace("name: String!", "name: Int!"),
+    )
+    .unwrap();
+    let build = build_consumer(&directory);
+    fs::remove_dir_all(&directory).unwrap();
+
+    assert!(!build.status.success());
+    let stderr = String::from_utf8(build.stderr).unwrap();
+    for expected in [
+        "Unsupported argument type",
+        "schema/query/fields/hello.graphql",
+        "hello(name: Int!): String!",
+        "line 2",
+        "columns 15 to 18",
+    ] {
+        assert!(stderr.contains(expected), "missing {expected:?}:\n{stderr}");
+    }
+}
+
 fn generated_path(build: &Output) -> PathBuf {
     assert!(
         build.status.success(),
@@ -201,6 +225,8 @@ fn build_consumer(directory: &Path) -> Output {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     Command::new(env!("CARGO"))
         .current_dir(directory)
+        .env("NO_COLOR", "1")
+        .env("CARGO_TERM_COLOR", "never")
         .args([
             "build",
             "--offline",
