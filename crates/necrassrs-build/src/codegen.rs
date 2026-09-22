@@ -2,6 +2,17 @@ use apollo_compiler::{Schema, ast::Type, schema::ExtendedType, validation::Valid
 use quote::{format_ident, quote};
 
 pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
+    let types = generate_types(schema)?;
+    let resolvers = generate_resolvers(schema);
+
+    Ok(quote! {
+        #types
+        #resolvers
+    }
+    .to_string())
+}
+
+fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
     let mut object_modules = Vec::new();
 
     for (type_name, definition) in &schema.types {
@@ -70,8 +81,29 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
         pub mod types {
             #(#object_modules)*
         }
+    })
+}
+
+fn generate_resolvers(schema: &Valid<Schema>) -> impl quote::ToTokens {
+    let mut resolvers = Vec::new();
+
+    for (type_name, definition) in &schema.types {
+        if type_name.as_str().starts_with("__") || !matches!(definition, ExtendedType::Object(_)) {
+            continue;
+        }
+
+        let resolver_name = format_ident!("{}Resolver", rust_name(type_name.as_str()));
+        resolvers.push(quote! {
+            #[allow(non_camel_case_types)]
+            pub trait #resolver_name<C> {}
+        });
     }
-    .to_string())
+
+    quote! {
+        pub mod resolvers {
+            #(#resolvers)*
+        }
+    }
 }
 
 fn rust_name(name: &str) -> String {
@@ -174,12 +206,25 @@ mod test {
                 type A { B_c(name: String!): String! }
                 type self { super(crate: String!, Self: String!): String! }
                 type _self { super(crate: String!, Self: String!): String! }
+                type User { hello(name: String!): String! }
+                type user { hello(name: String!): String! }
+                type UserResolver { hello(name: String!): String! }
             "#,
             "schema.graphql",
         )
         .expect("the test schema must be valid");
         let generated = super::generate(&schema).expect("generation must succeed");
         let consumer = r#"
+            pub struct Query;
+            pub struct Context;
+
+            impl resolvers::QueryResolver<Context> for Query {}
+            impl resolvers::UserResolver<Context> for Query {}
+            impl resolvers::userResolver<Context> for Query {}
+            impl resolvers::UserResolverResolver<Context> for Query {}
+            impl resolvers::_selfResolver<Context> for Query {}
+            impl resolvers::__selfResolver<Context> for Query {}
+
             pub fn check() {
                 let _: String = types::Query::hello::Args { name: String::new() }.name;
                 let _: String = types::Query::Hello::Args { name: String::new() }.name;
