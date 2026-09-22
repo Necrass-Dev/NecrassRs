@@ -4,10 +4,12 @@ use quote::{format_ident, quote};
 pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     let types = generate_types(schema)?;
     let resolvers = generate_resolvers(schema)?;
+    let dispatch = generate_dispatch(schema)?;
 
     Ok(quote! {
         #types
         #resolvers
+        #dispatch
     }
     .to_string())
 }
@@ -133,6 +135,88 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
     Ok(quote! {
         pub mod resolvers {
             #(#resolvers)*
+        }
+    })
+}
+
+fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
+    if schema.schema_definition.mutation.is_some()
+        || schema.schema_definition.subscription.is_some()
+    {
+        return Err(CodegenError {
+            message: "Generated dispatch currently supports query-only schemas".to_owned(),
+        });
+    }
+    let query = schema
+        .schema_definition
+        .query
+        .as_ref()
+        .and_then(|name| schema.get_object(name.as_str()))
+        .ok_or_else(|| CodegenError {
+            message: "A query root object is required".to_owned(),
+        })?;
+    let type_name = query.name.as_str();
+    let object_name = format_ident!("r#{}", rust_name(type_name));
+    let resolver_name = format_ident!("{}Resolver", rust_name(type_name));
+    let mut branches = Vec::new();
+
+    for (field_name, field) in &query.fields {
+        let field_name = field_name.as_str();
+        let method_name = format_ident!("r#{}", rust_name(field_name));
+        let arguments = field.arguments.iter().map(|argument| {
+            let name = argument.name.as_str();
+            let member = format_ident!("r#{}", rust_name(name));
+            let message = format!("Expected a String argument at {type_name}.{field_name}({name})");
+            quote! {
+                #member: _arguments.get(#name)
+                    .and_then(::necrassrs::JsonValue::as_str)
+                    .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                    .to_owned(),
+            }
+        });
+        branches.push(quote! {
+            (#type_name, #field_name) => {
+                let args = super::types::#object_name::#method_name::Args {
+                    #(#arguments)*
+                };
+                super::resolvers::#resolver_name::#method_name(&self.query, context, args)
+                    .await
+                    .map(::necrassrs::JsonValue::from)
+            }
+        });
+    }
+
+    Ok(quote! {
+        pub mod dispatch {
+            pub struct SchemaDispatcher<Q> {
+                query: Q,
+            }
+
+            impl<Q> SchemaDispatcher<Q> {
+                pub fn new(query: Q) -> Self {
+                    Self { query }
+                }
+            }
+
+            impl<C, Q> ::necrassrs::Dispatcher<C> for SchemaDispatcher<Q>
+            where
+                C: ::core::marker::Sync,
+                Q: super::resolvers::#resolver_name<C> + ::core::marker::Sync,
+            {
+                async fn resolve<'a>(
+                    &'a self,
+                    context: &'a C,
+                    coordinate: ::necrassrs::FieldCoordinate<'a>,
+                    _arguments: &'a ::necrassrs::JsonMap,
+                ) -> ::core::result::Result<::necrassrs::JsonValue, ::necrassrs::ResolverError> {
+                    match (coordinate.parent_type, coordinate.field) {
+                        #(#branches,)*
+                        _ => Err(::necrassrs::ResolverError::new(::std::format!(
+                            "Unknown field {}.{}", coordinate.parent_type, coordinate.field,
+                        ))),
+                    }
+                }
+            }
         }
     })
 }
@@ -314,6 +398,67 @@ mod test {
         "#;
 
         assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_dispatch_uses_schema_coordinates_and_preserves_errors() {
+        let sdl = "schema { query: ReadRoot } type ReadRoot { greet(who: String!): String! fail: String! pending: String! }";
+        let schema = Schema::parse_and_validate(sdl, "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use generated::{resolvers::ReadRootResolver, types};
+            use necrassrs::Dispatcher;
+
+            struct Query;
+            impl ReadRootResolver<()> for Query {
+                async fn greet<'a>(
+                    &'a self, _: &'a (), args: types::ReadRoot::greet::Args,
+                ) -> Result<String, necrassrs::ResolverError> {
+                    Ok(format!("Hello, {}", args.who))
+                }
+
+                async fn fail<'a>(
+                    &'a self, _: &'a (), _: types::ReadRoot::fail::Args,
+                ) -> Result<String, necrassrs::ResolverError> {
+                    Err(necrassrs::ResolverError::new("Greeting failed.")
+                        .with_extension("code", "GREETING_FAILED"))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(SDL, "schema.graphql").unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let run = |document| {
+                    let request = necrassrs::Request::new(document);
+                    serde_json::to_value(futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &())
+                    )).unwrap()
+                };
+                let failed = run("{ problem: fail }");
+                assert_eq!(failed["data"], serde_json::Value::Null);
+                assert_eq!(failed["errors"][0]["message"], "Greeting failed.");
+                assert_eq!(failed["errors"][0]["extensions"]["code"], "GREETING_FAILED");
+                assert_eq!(failed["errors"][0]["path"], serde_json::json!(["problem"]));
+                assert_eq!(failed["errors"][0]["locations"], serde_json::json!([{ "line": 1, "column": 12 }]));
+                assert_eq!(run("{ greeting: greet(who: \"Sheri\") }"),
+                    serde_json::json!({ "data": { "greeting": "Hello, Sheri" } }));
+
+                for (parent_type, field, arguments) in [
+                    ("Query", "greet", necrassrs::JsonMap::new()),
+                    ("ReadRoot", "missing", necrassrs::JsonMap::new()),
+                    ("ReadRoot", "greet", necrassrs::JsonMap::new()),
+                    ("ReadRoot", "greet", [("who".into(), necrassrs::JsonValue::Null)].into_iter().collect()),
+                    ("ReadRoot", "greet", [("who".into(), necrassrs::JsonValue::from(42))].into_iter().collect()),
+                ] {
+                    assert!(futures::executor::block_on(dispatcher.resolve(
+                        &(), necrassrs::FieldCoordinate { parent_type, field }, &arguments,
+                    )).is_err());
+                }
+            }
+        "#;
+        let source = format!("const SDL: &str = {sdl:?}; mod generated {{ {generated} }}");
+        assert_consumer(&source, consumer, true);
     }
 
     #[test]
