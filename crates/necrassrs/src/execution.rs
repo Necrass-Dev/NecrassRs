@@ -577,6 +577,8 @@ mod tests {
 
     struct CountingDispatcher(AtomicUsize);
 
+    struct RecoveringDispatcher(AtomicUsize);
+
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
         async fn resolve<'a>(
             &'a self,
@@ -637,6 +639,21 @@ mod tests {
             self.0.fetch_add(1, Ordering::Relaxed);
 
             Ok(json!("unexpected resolver call"))
+        }
+    }
+
+    impl super::Dispatcher<()> for RecoveringDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _field_name: &'a str,
+            _arguments: &'a JsonMap,
+        ) -> Result<JsonValue, ResolverError> {
+            if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+                Err(ResolverError::new("Greeting failed."))
+            } else {
+                Ok(json!("Hello"))
+            }
         }
     }
 
@@ -1025,6 +1042,56 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlapping_requests_keep_their_context_values() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(r#"query { hello(name: "Sheri") }"#);
+        let first_context = TestContext { greeting: "Hello" };
+        let second_context = TestContext {
+            greeting: "Bonjour",
+        };
+        let dispatcher = TestDispatcher;
+
+        let (first, second) = tokio::join!(
+            super::execute(&schema, &request, &dispatcher, &first_context),
+            super::execute(&schema, &request, &dispatcher, &second_context),
+        );
+
+        assert_eq!(
+            to_value(first).unwrap(),
+            json!({ "data": { "hello": "Hello, Sheri" } })
+        );
+        assert_eq!(
+            to_value(second).unwrap(),
+            json!({ "data": { "hello": "Bonjour, Sheri" } })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execution_succeeds_after_a_domain_error() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let request = Request::new("query { hello }");
+        let dispatcher = RecoveringDispatcher(AtomicUsize::new(0));
+
+        let failed = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+        let succeeded =
+            to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(failed.get("data"), Some(&JsonValue::Null));
+        assert!(
+            failed
+                .get("errors")
+                .and_then(JsonValue::as_array)
+                .is_some_and(|errors| !errors.is_empty())
+        );
+        assert_eq!(succeeded, json!({ "data": { "hello": "Hello" } }));
     }
 
     #[tokio::test(flavor = "current_thread")]
