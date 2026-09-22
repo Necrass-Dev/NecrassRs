@@ -2,6 +2,7 @@ use apollo_compiler::Schema;
 use std::path::{Path, PathBuf};
 
 pub mod codegen;
+mod sync;
 
 /// Generates `OUT_DIR/necrassrs.rs` from `.graphql` files recursively discovered
 /// under `schema_dir`, sorted by path. Symbolic-link entries are skipped.
@@ -39,7 +40,21 @@ pub fn build(schema_dir: impl AsRef<Path>) -> Result<(), BuildError> {
     std::fs::write(&output, generated).map_err(|source| BuildError::Io {
         path: output,
         source,
-    })
+    })?
+
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").map_err(|source|
+        {
+            BuildError::Environment {
+                variable: "CARGO_MANIFEST_DIR",
+                source,
+            }
+        })?;
+
+    let resolver_path = Path::new(&manifest_dir).join("src/
+    resolvers.rs");
+
+    sync::synchronize(&schema, &resolver_path)
 }
 
 fn schema_paths(directory: &Path) -> Result<Vec<PathBuf>, BuildError> {
