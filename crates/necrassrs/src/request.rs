@@ -201,6 +201,47 @@ mod tests {
     }
 
     #[test]
+    fn cyclic_input_default_is_rejected_without_aborting() {
+        const CHILD_ENV: &str = "NECRASSRS_CYCLIC_DEFAULT_TEST_CHILD";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let Ok(schema) = Schema::parse_and_validate(
+                "input Recursive { next: Recursive = {} } \
+                 type Query { hello(input: Recursive): String }",
+                "schema.graphql",
+            ) else {
+                // Rejecting the cycle during schema validation is also safe.
+                return;
+            };
+            let request = Request::new("query($input: Recursive = {}) { hello(input: $input) }");
+
+            let errors = prepare_request(&schema, &request)
+                .expect_err("cyclic defaults must be rejected before execution");
+            assert!(!errors.is_empty());
+            return;
+        }
+
+        // Stack overflow aborts cannot be caught inside the test runner.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "request::tests::cyclic_input_default_is_rejected_without_aborting",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "cyclic default validation failed ({})\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
     fn syntax_error_is_rejected_during_request_preparation() {
         let schema = Schema::parse_and_validate(
             "type Query { hello(name: String!): String! }",
