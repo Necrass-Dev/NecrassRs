@@ -5,7 +5,7 @@ use apollo_compiler::{
     executable::{Field, Selection},
     parser::SourceSpan,
     response::{GraphQLError, JsonMap, JsonValue, ResponseDataPathSegment},
-    schema::{ExtendedType, ObjectType},
+    schema::{ExtendedType, FieldDefinition, ObjectType},
     validation::Valid,
 };
 
@@ -47,6 +47,10 @@ where
         ));
     }
 
+    let object_type = schema
+        .get_object(prepared.operation.selection_set.ty.as_str())
+        .expect("validated operation root must be an object");
+
     let mut data = JsonMap::new();
     let mut errors = Vec::new();
 
@@ -54,13 +58,22 @@ where
         let field = fields[0];
         let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
+        let definition: &FieldDefinition = if field.name.as_str() == "__typename" {
+            &field.definition
+        } else {
+            object_type
+                .fields
+                .get(field.name.as_str())
+                .expect("validated field must exist on the runtime object type")
+        };
+
         let (value, has_error) = if field.name.as_str() == "__typename" {
             (
                 JsonValue::from(prepared.operation.selection_set.ty.as_str()),
                 false,
             )
         } else {
-            match coerce_argument_values(schema, &prepared, &path, field) {
+            match coerce_argument_values(schema, &prepared, &path, field, definition) {
                 Ok(arguments) => match dispatcher
                     .resolve(context, field.name.as_str(), &arguments)
                     .await
@@ -81,7 +94,7 @@ where
             }
         };
 
-        if value.is_null() && field.definition.ty.is_non_null() {
+        if value.is_null() && definition.ty.is_non_null() {
             if !has_error {
                 errors.push(*new_execution_error(
                     &prepared,
@@ -100,7 +113,7 @@ where
             schema,
             &prepared,
             field,
-            &field.definition.ty,
+            &definition.ty,
             value,
             &mut path,
             &mut errors,
@@ -223,9 +236,9 @@ fn coerce_argument_values(
     prepared: &PreparedRequest,
     path: &[ResponseDataPathSegment],
     field: &Field,
+    field_definition: &FieldDefinition,
 ) -> Result<JsonMap, Box<GraphQLError>> {
-    field
-        .definition
+    field_definition
         .arguments
         .iter()
         .try_fold(JsonMap::new(), |mut coerced_values, definition| {
@@ -714,7 +727,7 @@ mod tests {
             .next()
             .unwrap()[0];
 
-        super::coerce_argument_values(&schema, &prepared, &[], field).unwrap()
+        super::coerce_argument_values(&schema, &prepared, &[], field, &field.definition).unwrap()
     }
 
     async fn execute_value(field_type: &str, value: JsonValue) -> JsonValue {
@@ -906,7 +919,9 @@ mod tests {
         let fields = super::collect_fields(&schema, &prepared);
         let field = fields.get("hello").unwrap()[0];
 
-        let arguments = super::coerce_argument_values(&schema, &prepared, &[], field).unwrap();
+        let arguments =
+            super::coerce_argument_values(&schema, &prepared, &[], field, &field.definition)
+                .unwrap();
 
         assert_eq!(arguments.get("name"), Some(&json!("Sheri")));
     }
@@ -1025,7 +1040,9 @@ mod tests {
             .unwrap()[0];
         let path = vec![ResponseDataPathSegment::Field(field.response_key().clone())];
 
-        let error = super::coerce_argument_values(&schema, &prepared, &path, field).unwrap_err();
+        let error =
+            super::coerce_argument_values(&schema, &prepared, &path, field, &field.definition)
+                .unwrap_err();
 
         assert_eq!(error.path, path);
     }
