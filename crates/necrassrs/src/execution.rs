@@ -1485,6 +1485,19 @@ mod tests {
         assert_eq!(arguments.get("input"), Some(&json!({ "name": "Sheri" })));
     }
 
+    #[test]
+    fn nested_list_default_is_coerced_to_a_list() {
+        let arguments = coerce_arguments(
+            r#"
+                input GreetingInput { names: [String!] = "Sheri" }
+                type Query { hello(input: GreetingInput): String }
+            "#,
+            Request::new("query($input: GreetingInput = {}) { hello(input: $input) }"),
+        );
+
+        assert_eq!(arguments.get("input"), Some(&json!({ "names": ["Sheri"] })));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn dispatch_identifies_root_fields_by_schema_coordinate() {
         struct RecordingDispatcher(Mutex<Vec<String>>);
