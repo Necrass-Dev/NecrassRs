@@ -42,7 +42,6 @@ where
     let mut errors = Vec::new();
 
     for (response_key, fields) in collect_fields(schema, &prepared) {
-        // TODO: Expand next line, 필드 병합 테스트가 변경을 요구할 때 구현.
         let field = fields[0];
         let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
@@ -566,7 +565,10 @@ fn should_include(selection: &Selection, variables: &JsonMap) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use crate::{Request, ResolverError, request::prepare_request};
     use apollo_compiler::{
@@ -592,6 +594,8 @@ mod tests {
     struct CountingDispatcher(AtomicUsize);
 
     struct RecoveringDispatcher(AtomicUsize);
+
+    struct OrderingDispatcher(Mutex<Vec<String>>);
 
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
         async fn resolve<'a>(
@@ -668,6 +672,19 @@ mod tests {
             } else {
                 Ok(json!("Hello"))
             }
+        }
+    }
+
+    impl super::Dispatcher<()> for OrderingDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            field_name: &'a str,
+            _arguments: &'a JsonMap,
+        ) -> Result<JsonValue, ResolverError> {
+            self.0.lock().unwrap().push(field_name.to_owned());
+
+            Ok(json!(field_name))
         }
     }
 
@@ -1106,6 +1123,31 @@ mod tests {
                 .is_some_and(|errors| !errors.is_empty())
         );
         assert_eq!(succeeded, json!({ "data": { "hello": "Hello" } }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mutation_root_fields_execute_in_document_order() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query { noop: String }
+                type Mutation { first: String!, second: String! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("mutation { first second }");
+        let dispatcher = OrderingDispatcher(Mutex::new(Vec::new()));
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+
+        assert_eq!(
+            to_value(response).unwrap(),
+            json!({ "data": { "first": "first", "second": "second" } })
+        );
+        assert_eq!(
+            *dispatcher.0.lock().unwrap(),
+            ["first".to_owned(), "second".to_owned()]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
