@@ -61,7 +61,11 @@ pub(crate) fn prepare_request(
         .get(request.operation_name.as_deref())
         .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
 
+    // Apollo converts variable defaults to JSON without applying their declared
+    // input type, so run the resolved values through variable coercion once more.
     let variables = coerce_variable_values(schema, operation, &request.variables)
+        .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
+    let variables = coerce_variable_values(schema, operation, &variables)
         .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
 
     let operation = operation.clone();
