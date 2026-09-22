@@ -7,5 +7,6 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-apollo-compiler = "=1.33.0"
+apollo-compiler = "1.33.0"
 serde = { version = "1.0.229", features = ["derive"] }
+quote = "1.0"

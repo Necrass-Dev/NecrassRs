@@ -3,5 +3,6 @@ name = "necrassrs-build"
 version.workspace = true
 edition.workspace = true
 
-[dev-dependencies]
+[dependencies]
 apollo-compiler.workspace = true
+quote = "1.0"
