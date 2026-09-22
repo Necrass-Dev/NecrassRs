@@ -728,6 +728,33 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn merged_fields_are_executed_once() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let request = Request::new(
+            r#"
+                query {
+                    hello
+                    ...Greeting
+                }
+
+                fragment Greeting on Query {
+                    hello
+                }
+            "#,
+        );
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+
+        assert_eq!(
+            to_value(response).unwrap(),
+            json!({ "data": { "hello": "unexpected resolver call" } })
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn skipped_field_is_not_executed() {
         let schema =
             Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
