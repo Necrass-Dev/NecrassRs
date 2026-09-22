@@ -54,23 +54,30 @@ where
         let field = fields[0];
         let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
-        let (value, has_error) = match coerce_argument_values(schema, &prepared, &path, field) {
-            Ok(arguments) => match dispatcher
-                .resolve(context, field.name.as_str(), &arguments)
-                .await
-            {
-                Ok(value) => (value, false),
-                Err(error) => {
-                    errors.push(*resolver_error_to_graphql_error(
-                        &prepared, field, &path, error,
-                    ));
+        let (value, has_error) = if field.name.as_str() == "__typename" {
+            (
+                JsonValue::from(prepared.operation.selection_set.ty.as_str()),
+                false,
+            )
+        } else {
+            match coerce_argument_values(schema, &prepared, &path, field) {
+                Ok(arguments) => match dispatcher
+                    .resolve(context, field.name.as_str(), &arguments)
+                    .await
+                {
+                    Ok(value) => (value, false),
+                    Err(error) => {
+                        errors.push(*resolver_error_to_graphql_error(
+                            &prepared, field, &path, error,
+                        ));
 
+                        (JsonValue::Null, true)
+                    }
+                },
+                Err(error) => {
+                    errors.push(*error);
                     (JsonValue::Null, true)
                 }
-            },
-            Err(error) => {
-                errors.push(*error);
-                (JsonValue::Null, true)
             }
         };
 
