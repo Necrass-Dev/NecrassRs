@@ -1,325 +1,435 @@
+use quote::ToTokens;
 use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
     sync::atomic::{AtomicUsize, Ordering},
 };
+use syn::{ImplItem, ImplItemFn, Item, ItemImpl, ext::IdentExt};
 
 #[test]
-fn cargo_build_compiles_generated_code_and_user_resolver() {
-    let directory = create_consumer();
-    let build = build_consumer(&directory);
-    fs::remove_dir_all(&directory).unwrap();
-    assert!(
-        build.status.success(),
-        "consumer cargo build failed:\n{}\n{}",
-        String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr),
-    );
+fn first_build_creates_query_and_explicit_unimplemented_methods_from_sdl() {
+    let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
+    assert!(!consumer.resolvers().exists());
+    consumer.bootstrap();
+    let ast = consumer.ast();
+    assert!(ast.items.iter().any(|item| matches!(
+        item, Item::Struct(item) if item.ident == "Query"
+    )));
+    assert_eq!(method_names(&ast), ["hello", "ping"]);
+    assert_stub(method(&ast, "hello"));
+    assert_stub(method(&ast, "ping"));
 }
 
 #[test]
-fn sdl_edit_regenerates_contract_without_changing_user_source() {
-    let directory = create_consumer();
-    let initial = build_consumer(&directory);
-    assert!(
-        initial.status.success(),
-        "initial consumer build failed:\n{}\n{}",
-        String::from_utf8_lossy(&initial.stdout),
-        String::from_utf8_lossy(&initial.stderr),
-    );
+fn filling_generated_body_survives_regeneration_and_executes_without_sdl() {
+    let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
+    consumer.bootstrap();
+    consumer.implement("hello", "Hello, Sheri");
+    let source = fs::read(consumer.resolvers()).unwrap();
 
-    let user_source = fs::read(directory.join("src/main.rs")).unwrap();
-    fs::write(
-        directory.join("schema/query/fields/hello.graphql"),
-        include_str!("fixtures/consumer/hello.graphql").replace("name:", "greeting:"),
-    )
-    .unwrap();
-    let rebuilt = build_consumer(&directory);
-    let source_after = fs::read(directory.join("src/main.rs")).unwrap();
-    fs::remove_dir_all(&directory).unwrap();
+    // Force the build script to run; a cached build cannot prove preservation.
+    let script = consumer.directory.join("build.rs");
+    let mut contents = fs::read_to_string(&script).unwrap();
+    contents.push('\n');
+    fs::write(script, contents).unwrap();
+    let build = consumer.build();
+    assert_success(&build);
+    assert_eq!(fs::read(consumer.resolvers()).unwrap(), source);
 
-    assert_eq!(user_source, source_after);
-    assert!(
-        !rebuilt.status.success(),
-        "the old argument must no longer compile"
-    );
-    let stdout = String::from_utf8(rebuilt.stdout).unwrap();
-    assert!(
-        stdout.lines().any(|line| {
-            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
-                return false;
-            };
-            message["reason"] == "compiler-message" && message["message"]["code"]["code"] == "E0609"
-        }),
-        "expected E0609 for removed Args.name:\n{stdout}\n{}",
-        String::from_utf8_lossy(&rebuilt.stderr),
-    );
-}
-
-#[test]
-fn sdl_addition_regenerates_contract_without_changing_user_source() {
-    let directory = create_consumer();
-    let initial = build_consumer(&directory);
-    let output = generated_path(&initial);
-    assert!(!fs::read_to_string(&output).unwrap().contains("addedField"));
-    let source = fs::read(directory.join("src/main.rs")).unwrap();
-
-    fs::create_dir_all(directory.join("schema/new/nested")).unwrap();
-    fs::write(
-        directory.join("schema/new/nested/addition.graphql"),
-        "extend type Query { addedField: String! }",
-    )
-    .unwrap();
-    let rebuilt = build_consumer(&directory);
-    let regenerated = fs::read_to_string(generated_path(&rebuilt)).unwrap();
-    let source_after = fs::read(directory.join("src/main.rs")).unwrap();
-    fs::remove_dir_all(&directory).unwrap();
-
-    assert!(regenerated.contains("addedField"));
-    assert_eq!(source, source_after);
-}
-
-#[test]
-fn sdl_deletion_removes_generated_contract_without_changing_user_source() {
-    let directory = create_consumer();
-    let removed = directory.join("schema/query/fields/removable.graphql");
-    fs::write(&removed, "extend type Query { removableField: String! }").unwrap();
-    let initial = build_consumer(&directory);
-    assert!(
-        fs::read_to_string(generated_path(&initial))
-            .unwrap()
-            .contains("removableField")
-    );
-    let source = fs::read(directory.join("src/main.rs")).unwrap();
-
-    fs::remove_file(removed).unwrap();
-    let rebuilt = build_consumer(&directory);
-    let regenerated = fs::read_to_string(generated_path(&rebuilt)).unwrap();
-    let source_after = fs::read(directory.join("src/main.rs")).unwrap();
-    fs::remove_dir_all(&directory).unwrap();
-
-    assert!(!regenerated.contains("removableField"));
-    assert_eq!(source, source_after);
-}
-
-#[test]
-fn codegen_failure_reports_source_and_span_without_color() {
-    let directory = create_consumer();
-    fs::write(
-        directory.join("schema/query/fields/hello.graphql"),
-        include_str!("fixtures/consumer/hello.graphql").replace("name: String!", "name: Int!"),
-    )
-    .unwrap();
-    let build = build_consumer(&directory);
-    fs::remove_dir_all(&directory).unwrap();
-
-    assert!(!build.status.success());
-    let stderr = String::from_utf8(build.stderr).unwrap();
-    for expected in [
-        "Unsupported argument type",
-        "schema/query/fields/hello.graphql",
-        "hello(name: Int!): String!",
-        "line 2",
-        "columns 15 to 18",
-    ] {
-        assert!(stderr.contains(expected), "missing {expected:?}:\n{stderr}");
-    }
-}
-
-#[test]
-fn apollo_parse_failure_reports_source_location_without_color() {
-    let directory = create_consumer();
-    fs::write(
-        directory.join("schema/query/fields/hello.graphql"),
-        "extend type Query {\n  hello(name:): String!\n}\n",
-    )
-    .unwrap();
-    let build = build_consumer(&directory);
-    fs::remove_dir_all(&directory).unwrap();
-
-    assert!(!build.status.success());
-    let stderr = String::from_utf8(build.stderr).unwrap();
-    for expected in ["hello.graphql:2:", "hello(name:): String!"] {
-        assert!(stderr.contains(expected), "missing {expected:?}:\n{stderr}");
-    }
-}
-
-#[test]
-fn apollo_validation_failure_preserves_multiple_source_diagnostics() {
-    let directory = create_consumer();
-    fs::write(
-        directory.join("schema/first.graphql"),
-        "extend type Query {\n  first: MissingFirst\n}\n",
-    )
-    .unwrap();
-    fs::write(
-        directory.join("schema/query/fields/second.graphql"),
-        "extend type Query {\n  second: MissingSecond\n}\n",
-    )
-    .unwrap();
-    let build = build_consumer(&directory);
-    fs::remove_dir_all(&directory).unwrap();
-
-    assert!(!build.status.success());
-    let stderr = String::from_utf8(build.stderr).unwrap();
-    for expected in [
-        "first.graphql:2:",
-        "first: MissingFirst",
-        "second.graphql:2:",
-        "second: MissingSecond",
-    ] {
-        assert!(stderr.contains(expected), "missing {expected:?}:\n{stderr}");
-    }
-}
-
-#[test]
-fn consumer_reuses_embedded_schema_without_source_sdl_or_cli() {
-    let directory = create_consumer();
-    let manifest = directory.join("Cargo.toml");
-    let mut contents = fs::read_to_string(&manifest).unwrap();
-    contents.push_str(
-        "\n[dependencies.futures]\nversion = \"0.3\"\n\
-         [dependencies.serde_json]\nversion = \"1.0\"\n",
-    );
-    fs::write(manifest, contents).unwrap();
-    fs::write(
-        directory.join("src/main.rs"),
-        include_str!("fixtures/consumer/runtime.rs"),
-    )
-    .unwrap();
-    let build = build_consumer(&directory);
-    let generated = generated_path(&build);
-    assert!(!generated.starts_with(&directory));
-    let executable = String::from_utf8_lossy(&build.stdout)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    let executable = messages(&build)
         .find_map(|message| message["executable"].as_str().map(PathBuf::from))
         .expect("Cargo must report the consumer executable");
-
-    fs::remove_dir_all(directory.join("schema")).unwrap();
+    fs::remove_dir_all(consumer.directory.join("schema")).unwrap();
     let run = Command::new(executable)
-        .current_dir(&directory)
+        .current_dir(&consumer.directory)
         .env_clear()
         .env("PATH", "")
+        .args([r#"{ hello(name: "Sheri") }"#, r#"{ hello(name: "Sheri") }"#])
         .output()
-        .expect("the built consumer must run without Cargo or a CLI");
-    fs::remove_dir_all(&directory).unwrap();
-
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    let responses: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+        .unwrap();
+    assert_success(&run);
+    let responses: Vec<serde_json::Value> = String::from_utf8(run.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     assert_eq!(
         responses,
-        serde_json::json!([
-            { "data": { "hello": "Hello, Sheri" } },
-            { "data": { "hello": "Hello, Tachibana Sheri" } },
-        ]),
+        vec![serde_json::json!({ "data": { "hello": "Hello, Sheri" } }); 2],
     );
 }
 
-fn generated_path(build: &Output) -> PathBuf {
+#[test]
+fn adding_sdl_field_in_nested_file_adds_stub_and_preserves_existing_body() {
+    let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
+    consumer.bootstrap();
+    consumer.implement("hello", "retained hello");
+    let before = body(method(&consumer.ast(), "hello"));
+    let nested = consumer.directory.join("schema/query/fields");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(
+        nested.join("extra.graphql"),
+        "extend type Query { extra: String! }",
+    )
+    .unwrap();
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    assert_eq!(method_names(&ast), ["extra", "hello", "ping"]);
+    assert_stub(method(&ast, "extra"));
+    assert_eq!(body(method(&ast, "hello")), before);
+}
+
+#[test]
+fn deleting_sdl_field_removes_its_implemented_method_and_preserves_others() {
+    let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
+    consumer.bootstrap();
+    consumer.implement("hello", "retained hello");
+    consumer.implement("ping", "deleted ping body");
+    let before = body(method(&consumer.ast(), "hello"));
+    consumer.schema("type Query { hello(name: String!): String! }");
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    assert_eq!(method_names(&ast), ["hello"]);
+    assert_eq!(body(method(&ast, "hello")), before);
     assert!(
-        build.status.success(),
-        "consumer build failed:\n{}\n{}",
-        String::from_utf8_lossy(&build.stdout),
-        String::from_utf8_lossy(&build.stderr),
-    );
-    String::from_utf8_lossy(&build.stdout)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find_map(|message| {
-            (message["reason"] == "build-script-executed")
-                .then(|| message["out_dir"].as_str().map(PathBuf::from))
-                .flatten()
-                .map(|directory| directory.join("necrassrs.rs"))
-                .filter(|path| path.is_file())
-        })
-        .expect("Cargo must report the generated file under the consumer OUT_DIR")
-}
-
-fn create_consumer() -> PathBuf {
-    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let directory = std::env::temp_dir().join(format!(
-        "necrassrs-build-consumer-{}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        !fs::read_to_string(consumer.resolvers())
             .unwrap()
-            .as_nanos(),
-        NEXT_ID.fetch_add(1, Ordering::Relaxed),
-    ));
-    fs::create_dir(&directory).unwrap();
-    fs::create_dir(directory.join("src")).unwrap();
-    fs::create_dir_all(directory.join("schema/query/fields")).unwrap();
-
-    let runtime = workspace.join("crates/necrassrs").canonicalize().unwrap();
-    let build_library = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .canonicalize()
-        .unwrap();
-    let package_name = directory.file_name().unwrap().to_str().unwrap();
-    fs::write(
-        directory.join("Cargo.toml"),
-        format!(
-            r#"
-                [package]
-                name = "{package_name}"
-                version = "0.0.0"
-                edition = "2024"
-                [workspace]
-                [dependencies]
-                necrassrs = {{ path = {runtime:?} }}
-                [build-dependencies]
-                necrassrs-build = {{ path = {build_library:?} }}
-                miette = "7.6.0"
-                [lints.rust]
-                warnings = "deny"
-            "#,
-        ),
-    )
-    .unwrap();
-    fs::copy(workspace.join("Cargo.lock"), directory.join("Cargo.lock")).unwrap();
-    fs::write(
-        directory.join("build.rs"),
-        include_str!("fixtures/consumer/build.rs"),
-    )
-    .unwrap();
-    fs::write(
-        directory.join("schema/schema.graphql"),
-        include_str!("fixtures/consumer/schema.graphql"),
-    )
-    .unwrap();
-    fs::write(
-        directory.join("schema/query/fields/hello.graphql"),
-        include_str!("fixtures/consumer/hello.graphql"),
-    )
-    .unwrap();
-    fs::write(
-        directory.join("src/main.rs"),
-        include_str!("fixtures/consumer/main.rs"),
-    )
-    .unwrap();
-
-    directory
+            .contains("deleted ping body")
+    );
 }
 
-fn build_consumer(directory: &Path) -> Output {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    Command::new(env!("CARGO"))
-        .current_dir(directory)
-        .env("NO_COLOR", "1")
-        .env("CARGO_TERM_COLOR", "never")
-        .args([
-            "build",
-            "--offline",
-            "--message-format=json",
-            "--target-dir",
-        ])
-        .arg(workspace.join("target/cargo-consumer"))
-        .output()
-        .expect("Cargo must be available")
+#[test]
+fn renaming_sdl_field_deletes_old_body_and_creates_a_new_stub() {
+    let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
+    consumer.bootstrap();
+    consumer.implement("hello", "do not migrate this body");
+    consumer.implement("ping", "retained ping");
+    let before = body(method(&consumer.ast(), "ping"));
+    consumer.schema("type Query { greet(name: String!): String! ping: String! }");
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    assert_eq!(method_names(&ast), ["greet", "ping"]);
+    assert_stub(method(&ast, "greet"));
+    assert_eq!(body(method(&ast, "ping")), before);
+    assert!(
+        !fs::read_to_string(consumer.resolvers())
+            .unwrap()
+            .contains("do not migrate this body")
+    );
+}
+
+#[test]
+fn modifying_arguments_updates_generated_contract_and_preserves_method_body() {
+    let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
+    consumer.bootstrap();
+    consumer.implement("hello", "body independent of argument names");
+    let before = body(method(&consumer.ast(), "hello"));
+    consumer
+        .schema("type Query { hello(greeting: String!, suffix: String!): String! ping: String! }");
+
+    let build = consumer.build();
+    assert_success(&build);
+    let ast = consumer.ast();
+    assert_eq!(method_names(&ast), ["hello", "ping"]);
+    assert_eq!(body(method(&ast, "hello")), before);
+
+    let output = messages(&build)
+        .filter(|message| message["reason"] == "build-script-executed")
+        .filter_map(|message| message["out_dir"].as_str().map(PathBuf::from))
+        .map(|path| path.join("necrassrs.rs"))
+        .find(|path| path.is_file())
+        .expect("Cargo must report the generated contract in OUT_DIR");
+    let generated = syn::parse_file(&fs::read_to_string(output).unwrap()).unwrap();
+    let mut items = &generated.items;
+    for name in ["types", "Query", "hello"] {
+        items = items
+            .iter()
+            .find_map(|item| match item {
+                Item::Mod(module) if module.ident.unraw() == name => {
+                    module.content.as_ref().map(|(_, items)| items)
+                }
+                _ => None,
+            })
+            .expect("generated argument module must exist");
+    }
+    let args = items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item) if item.ident == "Args" => Some(item),
+            _ => None,
+        })
+        .expect("generated Args must exist");
+    let mut fields: Vec<_> = args
+        .fields
+        .iter()
+        .map(|field| field.ident.as_ref().unwrap().unraw().to_string())
+        .collect();
+    fields.sort();
+    assert_eq!(fields, ["greeting", "suffix"]);
+}
+
+#[test]
+fn synchronization_uses_injective_names_without_matching_similar_methods() {
+    let consumer = Consumer::new(
+        "type Query { hello: String! Hello: String! type: String! self: String! _self: String! _: String! }",
+    );
+    consumer.bootstrap();
+    let ast = consumer.ast();
+    assert_eq!(
+        method_names(&ast),
+        ["Hello", "__", "__self", "_self", "hello", "type"]
+    );
+    method_names(&ast)
+        .iter()
+        .for_each(|name| assert_stub(method(&ast, name)));
+    consumer.implement("__self", "keep underscore-prefixed field");
+    consumer.implement("Hello", "keep case-sensitive field");
+    let before = consumer.ast();
+    consumer.schema("type Query { Hello: String! type: String! _self: String! _: String! }");
+
+    assert_success(&consumer.build());
+    let after = consumer.ast();
+    assert_eq!(method_names(&after), ["Hello", "__", "__self", "type"]);
+    for name in ["__self", "Hello"] {
+        assert_eq!(body(method(&after, name)), body(method(&before, name)));
+    }
+}
+
+#[test]
+fn invalid_sdl_does_not_destroy_existing_implementation() {
+    let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
+    consumer.bootstrap();
+    consumer.implement("hello", "preserve through failed synchronization");
+    let before = fs::read(consumer.resolvers()).unwrap();
+    consumer.schema("type Query { hello(name:): String! }");
+
+    assert!(!consumer.build().status.success());
+    assert_eq!(fs::read(consumer.resolvers()).unwrap(), before);
+}
+
+fn resolver_impl(ast: &syn::File) -> &ItemImpl {
+    ast.items
+        .iter()
+        .find_map(|item| match item {
+            Item::Impl(item)
+                if item.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                }) =>
+            {
+                Some(item)
+            }
+            _ => None,
+        })
+        .expect("the source file must contain an explicit QueryResolver implementation")
+}
+
+fn method_names(ast: &syn::File) -> Vec<String> {
+    let mut names: Vec<_> = resolver_impl(ast)
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ImplItem::Fn(method) => Some(method.sig.ident.unraw().to_string()),
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+fn method<'a>(ast: &'a syn::File, name: &str) -> &'a ImplItemFn {
+    resolver_impl(ast)
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident.unraw() == name => Some(method),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing explicit resolver method {name}"))
+}
+
+fn body(method: &ImplItemFn) -> String {
+    method.block.to_token_stream().to_string()
+}
+
+fn assert_stub(method: &ImplItemFn) {
+    assert!(
+        method.sig.asyncness.is_some(),
+        "editable resolver methods must be async"
+    );
+    assert!(
+        method.block.stmts.iter().any(|statement| {
+            let path = match statement {
+                syn::Stmt::Macro(statement) => &statement.mac.path,
+                syn::Stmt::Expr(syn::Expr::Macro(expression), _) => &expression.mac.path,
+                _ => return false,
+            };
+            path.segments
+                .last()
+                .is_some_and(|segment| segment.ident == "unimplemented")
+        }),
+        "new methods must have an explicit unimplemented!() body"
+    );
+}
+
+fn messages(output: &Output) -> impl Iterator<Item = serde_json::Value> + '_ {
+    std::str::from_utf8(&output.stdout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+}
+
+fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+struct Consumer {
+    directory: PathBuf,
+}
+
+impl Consumer {
+    fn new(sdl: &str) -> Self {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = std::env::temp_dir().join(format!(
+            "necrassrs-sync-consumer-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir(&directory).unwrap();
+        let consumer = Self { directory };
+        fs::create_dir(consumer.directory.join("src")).unwrap();
+        fs::create_dir(consumer.directory.join("schema")).unwrap();
+        let runtime = workspace.join("crates/necrassrs").canonicalize().unwrap();
+        let build_library = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .unwrap();
+        let package_name = consumer.directory.file_name().unwrap().to_str().unwrap();
+        fs::write(
+            consumer.directory.join("Cargo.toml"),
+            format!(
+                r#"
+            [package]
+            name = "{package_name}"
+            version = "0.0.0"
+            edition = "2024"
+            [workspace]
+            [dependencies]
+            necrassrs = {{ path = {runtime:?} }}
+            futures = "0.3"
+            serde_json = "1.0"
+            [build-dependencies]
+            necrassrs-build = {{ path = {build_library:?} }}
+            miette = "7.6.0"
+        "#
+            ),
+        )
+        .unwrap();
+        fs::copy(
+            workspace.join("Cargo.lock"),
+            consumer.directory.join("Cargo.lock"),
+        )
+        .unwrap();
+        fs::write(
+            consumer.directory.join("build.rs"),
+            include_str!("fixtures/consumer/build.rs"),
+        )
+        .unwrap();
+        fs::write(
+            consumer.directory.join("src/main.rs"),
+            include_str!("fixtures/consumer/main.rs"),
+        )
+        .unwrap();
+        consumer.schema(sdl);
+        consumer
+    }
+
+    fn schema(&self, sdl: &str) {
+        fs::write(self.directory.join("schema/schema.graphql"), sdl).unwrap();
+    }
+
+    fn resolvers(&self) -> PathBuf {
+        self.directory.join("src/resolvers.rs")
+    }
+
+    fn ast(&self) -> syn::File {
+        syn::parse_file(&fs::read_to_string(self.resolvers()).unwrap()).unwrap()
+    }
+
+    fn bootstrap(&self) {
+        let build = self.build();
+        assert!(
+            self.resolvers().is_file(),
+            "build.rs must create src/resolvers.rs from SDL; the test supplies no Query implementation\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        assert_success(&build);
+    }
+
+    fn implement(&self, name: &str, value: &str) {
+        let mut ast = self.ast();
+        let implementation = ast
+            .items
+            .iter_mut()
+            .find_map(|item| match item {
+                Item::Impl(item)
+                    if item.trait_.as_ref().is_some_and(|(_, path, _)| {
+                        path.segments
+                            .last()
+                            .is_some_and(|segment| segment.ident == "QueryResolver")
+                    }) =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let method = implementation
+            .items
+            .iter_mut()
+            .find_map(|item| match item {
+                ImplItem::Fn(method) if method.sig.ident.unraw() == name => Some(method),
+                _ => None,
+            })
+            .unwrap();
+        method.block = syn::parse_quote!({ Ok(::std::string::String::from(#value)) });
+        fs::write(self.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    }
+
+    fn build(&self) -> Output {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        Command::new(env!("CARGO"))
+            .current_dir(&self.directory)
+            .env("NO_COLOR", "1")
+            .env("CARGO_TERM_COLOR", "never")
+            .args([
+                "build",
+                "--offline",
+                "--message-format=json",
+                "--target-dir",
+            ])
+            .arg(workspace.join("target/cargo-consumer"))
+            .output()
+            .expect("Cargo must be available")
+    }
+}
+
+impl Drop for Consumer {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
 }
