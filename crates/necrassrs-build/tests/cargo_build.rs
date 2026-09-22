@@ -127,6 +127,24 @@ fn codegen_failure_reports_source_and_span_without_color() {
     }
 }
 
+#[test]
+fn apollo_parse_failure_reports_source_location_without_color() {
+    let directory = create_consumer();
+    fs::write(
+        directory.join("schema/query/fields/hello.graphql"),
+        "extend type Query {\n  hello(name:): String!\n}\n",
+    )
+    .unwrap();
+    let build = build_consumer(&directory);
+    fs::remove_dir_all(&directory).unwrap();
+
+    assert!(!build.status.success());
+    let stderr = String::from_utf8(build.stderr).unwrap();
+    for expected in ["hello.graphql:2:", "hello(name:): String!"] {
+        assert!(stderr.contains(expected), "missing {expected:?}:\n{stderr}");
+    }
+}
+
 fn generated_path(build: &Output) -> PathBuf {
     assert!(
         build.status.success(),
