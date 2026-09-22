@@ -1,0 +1,4 @@
+[package]
+name = "necrassrs-build"
+version.workspace = true
+edition.workspace = true
