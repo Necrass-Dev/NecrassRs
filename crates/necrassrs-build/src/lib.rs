@@ -6,7 +6,9 @@ pub mod codegen;
 /// Generates `OUT_DIR/necrassrs.rs` from `.graphql` files recursively discovered
 /// under `schema_dir`, sorted by path. Symbolic-link entries are skipped.
 pub fn build(schema_dir: impl AsRef<Path>) -> Result<(), BuildError> {
-    let mut paths = schema_paths(schema_dir.as_ref())?;
+    let schema_dir = schema_dir.as_ref();
+    println!("cargo::rerun-if-changed={}", schema_dir.display());
+    let mut paths = schema_paths(schema_dir)?;
 
     // Keep generated output deterministic for the same inputs.
     paths.sort();
@@ -14,6 +16,7 @@ pub fn build(schema_dir: impl AsRef<Path>) -> Result<(), BuildError> {
     let builder = paths
         .into_iter()
         .try_fold(Schema::builder(), |builder, path| {
+            println!("cargo::rerun-if-changed={}", path.display());
             let source = std::fs::read_to_string(&path).map_err(|source| BuildError::Io {
                 path: path.clone(),
                 source,

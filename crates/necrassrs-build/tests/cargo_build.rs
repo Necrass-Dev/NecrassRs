@@ -152,12 +152,13 @@ fn create_consumer() -> PathBuf {
     let build_library = Path::new(env!("CARGO_MANIFEST_DIR"))
         .canonicalize()
         .unwrap();
+    let package_name = directory.file_name().unwrap().to_str().unwrap();
     fs::write(
         directory.join("Cargo.toml"),
         format!(
             r#"
                 [package]
-                name = "necrassrs-build-consumer"
+                name = "{package_name}"
                 version = "0.0.0"
                 edition = "2024"
                 [workspace]
