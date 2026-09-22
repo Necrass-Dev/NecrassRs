@@ -7,14 +7,14 @@ This document defines the target product structure, crate responsibilities, deve
 
 ## 1. Product purpose
 
-NecrassRs is a server framework that treats GraphQL SDL as the public API contract and generates Rust types, resolver contracts, object wrappers, and execution wiring. Applications implement state and business logic in separate Rust code.
+NecrassRs is a server framework that treats GraphQL SDL as the public API contract. Cargo builds generate Rust contracts and execution wiring and create editable resolver implementations from SDL. Applications fill the generated method bodies with business logic. Later builds synchronize those implementation declarations with SDL instead of requiring users to maintain the scaffolding by hand.
 
 The product has three entry points:
 
 | Entry point | When used | Responsibility |
 | --- | --- | --- |
-| `necrass init` | Project initialization | Prepare SDL, Cargo configuration, user implementations, and a server entry point |
-| `necrassrs-build` | Consumer builds | Validate SDL and generate Rust code from `build.rs` |
+| `necrass init` | Project initialization | Create `build.rs`; full project scaffolding is a later convenience |
+| `necrassrs-build` | Consumer builds | Validate SDL, generate contracts in `OUT_DIR`, and create/synchronize editable resolver implementations in `src` |
 | `necrassrs` and an HTTP adapter | Server execution | Validate requests, invoke user resolvers, and construct responses |
 
 After initialization, building and running the application does not require an installed CLI. The build script calls a Rust library, not a CLI subprocess. Separate `necrass compile` and watch commands are out of scope.
@@ -28,7 +28,7 @@ After initialization, building and running the application does not require an i
 - Use four packages in one Cargo workspace: the runtime, build library, Axum adapter, and CLI. Keep code generation and Cargo integration as separate modules within the build library.
 - Axum is the first officially supported HTTP adapter. The execution core does not depend on Axum.
 - Applications own one Context type per schema and construct its values per request. Generate a struct for each field's arguments.
-- Generated code belongs in `OUT_DIR`; user implementations belong in `src`. Regeneration must not edit user files.
+- Disposable contracts and dispatch code belong in `OUT_DIR`. Editable resolver structs and explicit method implementations belong in `src/resolvers.rs`. Build-time synchronization updates SDL-owned declarations there, preserves bodies of retained methods, adds `unimplemented!()` stubs, and removes methods whose SDL fields were deleted. Unrelated user code must not be overwritten.
 - Treat every output field as a resolver. Argument presence does not determine whether a field is an automatic getter.
 - Allow partially implemented applications to build and run. Calling an unimplemented field panics, with process termination enforced by the executable's policy.
 - Do not spawn independent tasks for individual fields by default. Target a `Send` execution future with request-scoped borrowing.
@@ -43,7 +43,7 @@ At build time, use SDL parsing, schema validation, and the `Schema` model. At ru
 | Area | Apollo Compiler contribution | NecrassRs responsibility |
 | --- | --- | --- |
 | SDL | Parsing, semantic validation, type and field lookup | Supported-feature restrictions and Rust generation checks |
-| Code generation | Validated schema model | Rust naming and type mapping, traits, wrappers, and dispatch |
+| Code generation and synchronization | Validated schema model | Rust naming and type mapping, traits, wrappers, dispatch, and AST-based reconciliation of editable resolver declarations |
 | Request documents | Parsing, schema-aware document validation, and operation selection | Execution entry points and error-response integration |
 | Input processing | Public variable-value coercion API | Field-argument processing, generated argument conversion, and custom scalar integration when supported |
 | Execution | Validated schema and executable-document models | Field collection, resolver dispatch, Context propagation, result coercion, errors, and null propagation |
@@ -72,9 +72,13 @@ For example, `Query.type(self: String!, _self: String!)` produces `types::Query:
 
 Each field module reserves its own `Args` type; SDL field names occupy the parent object module instead. Keep future generated helpers separate from SDL-derived namespaces. This mapping does not rename SDL fields or change runtime field coordinates. Verify the mapping by compiling generated consumer code, including case differences, underscore boundaries, keywords, and raw-identifier exceptions.
 
+The injective mapping is also the identity rule for source synchronization. Compare the desired SDL-derived declarations with the existing Rust AST using mapped object and field names; do not match by position, similar spelling, or method body. Raw-identifier spelling does not change identity. A field rename is deletion of the old method and addition of a new stub, never migration of its old body.
+
 Resolver traits live in `generated::resolvers`. Append the fixed suffix `Resolver` to the mapped object name without changing case: `User`, `user`, and `UserResolver` become `UserResolver`, `userResolver`, and `UserResolverResolver`. Allow `non_camel_case_types` and `non_snake_case` on these generated traits. Each trait has a generic Context parameter, and each field produces a method using the same identifier mapping.
 
 Methods borrow `self` and Context for the call lifetime, take the field's generated `Args` by value, and return `impl Future<Output = Result<T, necrassrs::ResolverError>> + Send` with that lifetime. Fields without arguments use an empty `Args` struct. Default methods return a future that calls `unimplemented!()` when polled, allowing partial trait implementations to compile. The current generator supports `String!` argument and return types; other argument and return types produce generation errors.
+
+Trait defaults are a low-level fallback, not the user-facing scaffolding workflow. The build integration must also create the concrete resolver struct and an explicit editable async method for every supported SDL field. Users replace the `unimplemented!()` body in that implementation; they do not have to copy trait signatures or write an empty trait implementation first. The generated implementation must satisfy the existing borrowing, Context, and `Send` contracts.
 
 Generate one `generated::dispatch::SchemaDispatcher` for the schema, rather than separate dispatcher types for each root. The current query-only implementation stores the application-owned Query value via `SchemaDispatcher::new(query)` and implements `necrassrs::Dispatcher<C>` with `C: Sync` and `Q: QueryRootResolver<C> + Sync`, using the actual query root's generated trait. It matches original SDL type/field coordinates, converts prepared arguments to the generated `Args`, invokes the resolver, converts successful results to `JsonValue`, and preserves `ResolverError` values. Unknown coordinates and invalid prepared arguments return errors without panicking. Schemas with mutation or subscription roots currently produce a generation error; their routing remains unimplemented.
 
@@ -95,8 +99,9 @@ Current implementation status:
 - Generated query dispatch executes through the runtime with borrowed Context and a `Send` execution future. Executable consumer checks cover the greeting, custom root/field names, argument conversion failures, domain-error preservation, and successful execution without selecting an unimplemented field.
 - The generator exposes `generated::SDL` as a public string constant using Apollo's schema serialization. Executable consumer checks reconstruct the runtime schema from it, including definitions and extensions from multiple sources.
 - A Linux/macOS subprocess test builds a partial consumer with `panic = "abort"` in both Cargo dev and release profiles. It checks successful execution of an implemented field and `SIGABRT` termination without a response when an unimplemented field is selected.
-- `CodegenError` implements `miette::Diagnostic`, retaining the original named source and available Apollo byte spans without reading files. Argument-type labels cover the complete type reference; return-type labels identify the named type. Missing locations or source entries leave the message available without fabricated sources or labels. Tests cover argument diagnostics across multiple sources, UTF-8 byte offsets, and type nodes without locations. Rendering and Cargo failure reporting remain work for issue #4.
-- Consumer compilation checks keep user code unchanged across SDL edits: field renames or removals reject existing resolver methods (`E0407`), argument renames or removals reject existing argument access (`E0609`), and added fields preserve compatible partial implementations. Each check establishes successful compilation before the change; failure checks inspect rustc JSON diagnostic codes rather than complete message text.
+- `CodegenError` implements `miette::Diagnostic`, retaining the original named source and available Apollo byte spans without reading files. Argument-type labels cover the complete type reference; return-type labels identify the named type. Missing locations or source entries leave the message available without fabricated sources or labels. Tests cover argument diagnostics across multiple sources, UTF-8 byte offsets, and type nodes without locations. The consumer build-script fixture renders codegen diagnostics with miette and preserves Apollo's own diagnostic rendering; the library does not enable `fancy`.
+- The pure codegen tests verify what happens when explicitly supplied Rust implementations are compiled against changed contracts, including `E0407` and `E0609`. They do not exercise implementation-file synchronization and must not be interpreted as its intended workflow. In the target Cargo workflow, deleted or renamed fields are removed from the existing implementation AST. A retained user body may still fail to compile if it uses an argument that the new contract removed; synchronization does not rewrite business logic.
+- The current `build()` implementation recursively reads SDL, validates a combined Apollo schema, writes disposable code to `OUT_DIR/necrassrs.rs`, and emits Cargo rebuild instructions. This is the first stage of build integration, not complete resolver scaffolding. Creating and synchronizing `src/resolvers.rs` is not yet implemented. The replacement Cargo acceptance tests start without that file and describe the required flow; their presence is not evidence that synchronization works.
 
 The support contract requires explicit diagnostics for unsupported schema features, with source locations when available. Do not silently map unsupported types to String or treat Apollo validation as proof that generation will succeed. Keep validation diagnostics separate from generation errors, and do not make temporary limitations such as lack of Int support permanent rejection contracts.
 
@@ -136,11 +141,11 @@ Request errors omit the `data` entry. Execution results contain `data`, which ma
 | Package | Responsibility | Direct consumers |
 | --- | --- | --- |
 | `necrassrs` | Public runtime API and integration of request validation, input processing, resolver execution, and response completion | Applications and HTTP adapters |
-| `necrassrs-build` | Discover and validate SDL, generate Rust types, traits, wrappers, and dispatch, emit Cargo rebuild instructions, and manage output | Consumer `build.rs` |
+| `necrassrs-build` | Discover and validate SDL, generate contracts and dispatch, synchronize editable resolver implementations through Rust ASTs, and manage Cargo rebuilds and output | Consumer `build.rs` |
 | `necrassrs-axum` | GraphQL HTTP extraction, response conversion, and development UI integration | Axum applications |
 | `necrassrs-cli` | The `necrass` binary, initialization templates, and file creation | Developers |
 
-Within `necrassrs-build`, keep code generation independent of Cargo environment variables and filesystem operations so it can be tested directly. Cargo integration manages inputs, rebuild instructions, and output. The runtime does not depend on the build library.
+Within `necrassrs-build`, keep contract generation independent of Cargo environment variables and filesystem operations so it can be tested directly. Cargo integration manages inputs, rebuild instructions, disposable output, and reading/writing the designated implementation source. Source synchronization compares Rust ASTs; it does not duplicate Apollo's schema model. The runtime does not depend on the build library.
 
 There is no separate codegen package: it currently has no independent consumer or release lifecycle. A module boundary preserves testability without adding another published dependency. Extract a crate only when another tool needs independent reuse or a concrete dependency or release boundary emerges.
 
@@ -152,7 +157,7 @@ necrassrs-build/src/
 └── codegen.rs   # Validated schema to Rust code
 ```
 
-The CLI prepares projects from templates. If initialization needs schema processing or generation, reuse the corresponding library instead of duplicating its logic.
+The CLI creates the build-script entry point. Resolver scaffolding and subsequent synchronization are responsibilities of the build library, triggered by Cargo, not a one-time CLI template operation. If later initialization needs schema processing, reuse the library instead of duplicating its logic.
 
 Do not create `necrassrs-http` yet. Consider extracting common HTTP behavior when multiple official adapters need it. Do not add a facade that only re-exports the runtime or a generic executor-backend trait without a concrete requirement.
 
@@ -176,15 +181,16 @@ necrassrs-cli
   └─ Project initialization templates
 ```
 
-A build-time `Schema` instance does not survive into the running server. The generator embeds the validated schema as `generated::SDL` using Apollo's SDL serialization, preserving schema definitions and extensions rather than the original source formatting or comments. Parse and validate it once during server initialization, then reuse that runtime schema across requests. Executable consumer tests verify this path; Cargo integration and initialization wiring remain work for issue #4. Do not introduce a separate schema serialization format.
+A build-time `Schema` instance does not survive into the running server. The generator embeds the validated schema as `generated::SDL` using Apollo's SDL serialization, preserving schema definitions and extensions rather than the original source formatting or comments. Parse and validate it once during application initialization, then reuse that runtime schema across requests. The synchronization acceptance flow edits a generated resolver body and runs that consumer without source SDL files. Do not introduce a separate schema serialization format.
 
 The complete workflow is:
 
 ```text
 cargo install necrassrs-cli --locked
   → Install the necrass executable
-  → necrass init in an empty project directory
-  → Create Cargo.toml, build.rs, SDL, and user source files
+  → necrass init in a consumer project
+  → Create build.rs without overwriting an existing file
+  → Manually prepare dependencies, SDL, and the application entry point
 
 Edit SDL
   → cargo build
@@ -192,7 +198,14 @@ Edit SDL
   → Apollo schema parsing and validation
   → NecrassRs support and Rust naming checks
   → Generate Rust contracts and wiring in OUT_DIR
-  → Compile generated code with user implementations
+  → Read the existing resolver implementation AST, or create its initial structs and methods
+  → Add new stubs, update retained declarations, and delete removed methods
+  → Preserve bodies of retained methods and unrelated user code
+  → Compile contracts and synchronized implementations together
+
+Fill generated unimplemented!() bodies with business logic
+  → cargo build
+  → Preserve those bodies while synchronizing later SDL changes
 
 cargo run
   → User-owned Axum server
@@ -229,13 +242,13 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 ### 7.1 Initial CLI scope
 
-The initial `necrass init` creates a small, runnable Axum application in an empty project directory, including `Cargo.toml`, `build.rs`, SDL, and user source files. This is a later consumer convenience, not a prerequisite for the greeting MVP in issue #1. Users do not need to add dependencies before initialization. Do not add framework selection options or empty templates for other adapters.
+The first `necrass init` scope, tracked in issue #9 under #1, creates only `build.rs` in an existing consumer project. It does not edit Cargo.toml or generate SDL, resolvers, or an Axum server. The consumer supplies dependencies, SDL, and an application entry point; Cargo then invokes the build library to generate and synchronize resolver implementations. Full runnable-project initialization is deferred. Do not add framework selection options or empty templates for other adapters.
 
 The intended installation and initialization flow is shown below. These commands describe the planned product, not an available release:
 
 ```sh
 cargo install necrassrs-cli --locked
-mkdir my-api
+cargo new my-api
 cd my-api
 necrass init
 ```
@@ -261,15 +274,15 @@ my-api/
 
 | File | Ownership and purpose |
 | --- | --- |
-| `schema/*.graphql` | User-written public GraphQL contract |
+| `schema/**/*.graphql` | User-written public GraphQL contract, discovered recursively |
 | `build.rs` | Build-library invocation and input configuration |
 | `main.rs` | User routing, handlers, and server configuration |
 | `context.rs` | User Context definition |
-| `resolvers.rs` | User state and business logic |
+| `resolvers.rs` | Build-created resolver structs and explicit methods; SDL owns mapped declarations, users own retained method bodies and unrelated state/helpers |
 | `generated.rs` | Module that includes generated code from `OUT_DIR` |
 | Rust files in `OUT_DIR` | Automatically generated; not edited manually |
 
-Initialization writes the appropriate dependency sections using a tested release combination:
+Manual setup uses the following dependency locations. A later full-project initializer may write them using a tested release combination; the first CLI command does not:
 
 | Installation or manifest location | Contents |
 | --- | --- |
@@ -282,22 +295,38 @@ Ordinary consumers should not need a direct Apollo Compiler dependency. Once ini
 
 ### 7.2 Everyday development
 
-1. Install the CLI and initialize an empty project directory, or manually add the libraries and build script to an existing application.
+1. Create or choose a consumer Cargo project and prepare its dependencies and entry point. Use `necrass init` to create `build.rs`, or write the build script manually.
 2. Define objects, fields, arguments, and nullability in SDL.
-3. Generate Rust contracts and wiring through Cargo.
-4. Implement generated resolver traits on user structs.
+3. Run Cargo to generate contracts and wiring and create the editable resolver structs and explicit `unimplemented!()` methods from SDL.
+4. Replace generated method bodies with business logic; no handwritten Query or resolver signatures are required to bootstrap.
 5. Return user objects through generated wrappers from parent resolvers.
 6. Construct Context in the handler and pass it to execution.
 7. Run the server and test completed fields.
-8. Repeat as SDL and business logic evolve.
+8. Edit SDL and rebuild to synchronize additions, declaration changes, and deletions with the existing implementation AST.
 
-Constructing a wrapper does not execute child fields. Execution invokes only selected fields. Cargo regeneration must track SDL changes, additions, and deletions while preserving user source files.
+Constructing a wrapper does not execute child fields. Execution invokes only selected fields. Cargo regeneration must track SDL file and declaration changes. Preserving user code means keeping the bodies of retained methods and unrelated source, not freezing every implementation file byte-for-byte across an SDL change.
 
 ### 7.3 Partial implementations and contract changes
 
-The recommended approach is to generate trait default methods using `unimplemented!()`. Users override the methods they need, and adding fields does not automatically edit their source. Final adoption and how initial example implementations are presented remain open.
+The build library generates an editable concrete resolver struct and explicit async trait methods in `src/resolvers.rs`. Every new field starts with an `unimplemented!()` body. Existing trait defaults remain a fallback but do not satisfy this scaffolding requirement. A test that supplies a handwritten Query implementation before its first build does not verify this workflow.
 
-Default methods prevent the compiler from detecting omitted implementations. Existing trait implementations that no longer match deleted, renamed, or changed SDL fields still produce Rust compilation errors.
+For the first query-only consumer, `build("schema")` creates `src/resolvers.rs`, which the application imports with `mod resolvers`. Contracts and dispatch remain included from `OUT_DIR/necrassrs.rs`. The implementation file must expose the SDL-derived root struct and implement its generated resolver trait, compatible with the application's Context.
+
+Use the injective naming rules in section 3.2 to compare the desired SDL-derived declarations with the existing Rust AST:
+
+| SDL change | Required source synchronization |
+| --- | --- |
+| No contract change | Preserve existing implementation content; repeated builds must be idempotent |
+| Add a field | Add its explicit method with an `unimplemented!()` body |
+| Change a retained field's contract | Refresh its Rust declaration and generated Args/type mapping, preserving its method body |
+| Delete a field | Remove its method, including any body previously written for that deleted field |
+| Rename a field | Delete the old method and add a fresh stub under the new mapped name; never migrate the old body |
+
+Do not infer renames or use fuzzy matching. Preserve application state and unrelated items outside SDL-owned declarations. Parse and validate inputs before destructive synchronization; invalid SDL or an unreadable/unparseable implementation must fail without replacing existing user code. Symlink destinations must not be followed or overwritten.
+
+Retained business logic is not automatically rewritten to accommodate incompatible contract changes. It may require user edits when rustc reports use of removed arguments or an incompatible result. Supported `String!` argument changes can be tested now without expanding scalar support; broader result-type and nullability synchronization must be checked as those types become supported.
+
+This is an explicit source-writing responsibility of the build library. The earlier policy forbidding all build-time edits under `src` is superseded for the designated resolver implementation file only. Other application files remain user-owned. The current implementation still only generates the disposable output; the source synchronization described here remains to be implemented.
 
 Requests that do not select unimplemented fields must remain executable. Calling an unimplemented field must panic and terminate the process rather than recover as a GraphQL field error. Ordinary domain errors follow a separate GraphQL error path.
 
@@ -350,7 +379,7 @@ Apollo Compiler documents testing on the latest stable Rust. Check the NecrassRs
 | Area | Main criteria |
 | --- | --- |
 | Schema and generation | Reject invalid SDL, diagnose unsupported features, detect Rust naming collisions |
-| Cargo integration | Track SDL changes/additions/deletions and preserve user files |
+| Cargo integration and synchronization | Bootstrap from SDL without a supplied resolver implementation; synchronize added/modified/deleted methods; treat renames as delete+add; preserve retained bodies and unrelated user code |
 | Public contracts | Compile consumer implementations, diagnose contract changes, allow request borrowing, ensure the entire execution future is `Send` |
 | Partial implementation | Do not call unselected fields; execute implemented fields; terminate separate dev and release executables on unimplemented calls |
 | GraphQL execution | Preserve input states, variables, defaults, coercion, selection rules, error paths, null propagation, and mutation order |
@@ -360,7 +389,7 @@ Apollo Compiler documents testing on the latest stable Rust. Check the NecrassRs
 
 Test process termination with separate executable processes, not by catching a panic inside the test runner. When providing GraphiQL, define development introspection settings and UI asset delivery as well.
 
-This table describes target-product validation, not exhaustive GraphQL conformance or an expansion of issue #1. Document implemented coverage and explicit feature restrictions as execution work proceeds against the September 2025 specification.
+This table describes target-product validation, not exhaustive GraphQL conformance. The source-synchronization workflow is a maintainer-directed clarification of the build task and supersedes its earlier immutable-user-file interpretation. Document implemented coverage separately from pending acceptance tests and explicit feature restrictions.
 
 ### 10.1 MVP implementation work breakdown
 
@@ -370,11 +399,12 @@ The executor direction is recorded in this document; it does not need a separate
 | --- | --- | --- |
 | Implement the MVP runtime and execution core | `necrassrs` request, resolver, Context, error, and response contracts plus execution over Apollo models. Verify the greeting behavior with a handwritten test adapter, full-future `Send`, request borrowing, invalid inputs, error paths, and specification-based completion regressions. No production greeting-specific dispatch or hardcoded root-null handling. Establish the workspace as needed. | None |
 | Generate resolver contracts and dispatch from SDL | `necrassrs-build` codegen module producing argument structs, resolver contracts, wrappers/dispatch as needed, and embedded SDL. Compile generated code with user implementations; diagnose invalid/unsupported schemas and Rust naming collisions. Verify partial-implementation behavior with the runtime, including subprocess termination checks. | Runtime contracts |
-| Integrate generation with Cargo builds | Build-library entry point, SDL discovery, rebuild tracking, `OUT_DIR` output, and runtime schema initialization wiring. Verify additions/changes/deletions and preservation of user files with a consumer build. | Code generation |
+| Integrate generation with Cargo builds | Build-library entry point, SDL discovery, rebuild tracking, `OUT_DIR` contracts, editable resolver scaffolding and AST synchronization, and runtime schema initialization wiring. Test the complete generate/edit/rebuild flow without supplying initial resolver implementations. | Code generation |
+| Create the CLI build-script initializer | `necrass init` creates build.rs without overwriting existing entries. Resolver generation and synchronization remain in the build library. | Build API |
 | Implement the Axum adapter | `necrassrs-axum` extraction and response conversion with documented methods, media types, status codes, and body limits. Verify user-owned handlers and per-request Context construction through HTTP checks. | Runtime request/response API |
 | Deliver the greeting example and integration checks | Real consumer example with hardcoded names, Cargo generation, user resolvers, Axum handler, and runnable instructions. Verify all acceptance criteria of #1 together. | All preceding tasks |
 
-Each task includes its own relevant checks. The final example verifies integration rather than postponing component testing. Code generation and Axum work can proceed independently once their runtime contracts are stable. CLI initialization, development UI, and release automation remain follow-up work outside #1.
+Each task includes its own relevant checks. The final example verifies integration rather than postponing component testing. Code generation and Axum work can proceed independently once their runtime contracts are stable. Minimal CLI build-script creation is tracked under #1; full-project initialization, development UI, and release automation remain deferred.
 
 ### 10.2 Type expansion after issue #1
 
@@ -391,7 +421,7 @@ Existing runtime coverage beyond the generated MVP remains in place. Each expans
 
 1. **Public resolver and dispatch API:** Concrete Rust signatures, wrapper ownership and lifetimes, internal type erasure if needed, and `Send`/`Sync` bounds. One Context type per schema, argument structs, and the resolver/executor error responsibilities are established.
 2. **Execution details:** Field scheduling, recursive completion representation, and generated-dispatch handoff. Ownership of execution and reuse of Apollo validation are established.
-3. **Partial implementation:** Adoption of trait default methods and initial user implementation scaffolding.
+3. **Source synchronization implementation:** AST editing and diagnostics that realize section 7.3. Explicit stubs, identity-based updates, retained-body preservation, deletion, and rename-as-delete-plus-add are established requirements, not open product decisions.
 4. **Coverage beyond the greeting MVP:** Additional supported types/features, explicit rejection diagnostics, and custom scalar conversion. Do not reopen #1's agreed behavior as an executor-selection task.
 5. **HTTP and development UI:** Methods, media types, status codes, introspection settings, and asset distribution.
 6. **Release contract:** MSRV, default features, generator/runtime compatibility, and CLI initialization details.
