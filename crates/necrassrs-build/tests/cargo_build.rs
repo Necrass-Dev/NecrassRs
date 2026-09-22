@@ -41,45 +41,17 @@ fn cargo_build_compiles_generated_code_and_user_resolver() {
     fs::copy(workspace.join("Cargo.lock"), directory.join("Cargo.lock")).unwrap();
     fs::write(
         directory.join("build.rs"),
-        r#"
-            fn main() -> Result<(), Box<dyn std::error::Error>> {
-                necrassrs_build::build("schema")?;
-                Ok(())
-            }
-        "#,
+        include_str!("fixtures/consumer/build.rs"),
     )
     .unwrap();
     fs::write(
         directory.join("schema/schema.graphql"),
-        "type Query { hello(name: String!): String! }",
+        include_str!("fixtures/consumer/schema.graphql"),
     )
     .unwrap();
     fs::write(
         directory.join("src/main.rs"),
-        r#"
-            mod generated {
-                include!(concat!(env!("OUT_DIR"), "/necrassrs.rs"));
-            }
-
-            struct Query;
-
-            impl generated::resolvers::QueryResolver<()> for Query {
-                async fn hello<'a>(
-                    &'a self,
-                    _: &'a (),
-                    args: generated::types::Query::hello::Args,
-                ) -> Result<String, necrassrs::ResolverError> {
-                    Ok(format!("Hello, {}", args.name))
-                }
-            }
-
-            fn main() {
-                let _schema = necrassrs::Schema::parse_and_validate(
-                    generated::SDL, "embedded.graphql",
-                ).unwrap();
-                let _dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
-            }
-        "#,
+        include_str!("fixtures/consumer/main.rs"),
     )
     .unwrap();
 
