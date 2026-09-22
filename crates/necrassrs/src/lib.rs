@@ -7,6 +7,7 @@ pub use apollo_compiler::{
 use serde::Serialize;
 
 mod execution;
+mod input;
 
 pub use execution::{Dispatcher, FieldCoordinate, execute};
 

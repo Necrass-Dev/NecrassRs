@@ -11,6 +11,7 @@ use apollo_compiler::{
 
 use crate::{
     Request, ResolverError, Response,
+    input::literal_to_json as input_literal_to_json,
     request::{PreparedRequest, prepare_request},
 };
 
@@ -445,49 +446,8 @@ fn literal_to_json(
     path: &[ResponseDataPathSegment],
     value: &Node<Value>,
 ) -> Result<JsonValue, Box<GraphQLError>> {
-    match value.as_ref() {
-        Value::Null => Ok(JsonValue::Null),
-        Value::Enum(value) => Ok(value.as_str().into()),
-        Value::String(value) => Ok(value.as_str().into()),
-        Value::Boolean(value) => Ok((*value).into()),
-        Value::Int(number) => number.as_str().parse().map(JsonValue::Number).map_err(|_| {
-            new_execution_error(
-                prepared,
-                path,
-                "integer argument is outside the supported JSON range",
-                value.location(),
-            )
-        }),
-        Value::Float(number) => number.as_str().parse().map(JsonValue::Number).map_err(|_| {
-            new_execution_error(
-                prepared,
-                path,
-                "float argument is outside the supported JSON range",
-                value.location(),
-            )
-        }),
-        Value::List(values) => values
-            .iter()
-            .map(|value| literal_to_json(prepared, path, value))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Into::into),
-        Value::Object(values) => values
-            .iter()
-            .map(|(name, value)| {
-                Ok((
-                    name.as_str().into(),
-                    literal_to_json(prepared, path, value)?,
-                ))
-            })
-            .collect::<Result<JsonMap, _>>()
-            .map(Into::into),
-        Value::Variable(name) => Err(new_execution_error(
-            prepared,
-            path,
-            format!("unresolved variable '${name}'"),
-            value.location(),
-        )),
-    }
+    input_literal_to_json(value)
+        .map_err(|error| new_execution_error(prepared, path, error.message, error.location))
 }
 
 fn new_execution_error(

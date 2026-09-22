@@ -1,10 +1,14 @@
 use apollo_compiler::{
-    ExecutableDocument, Node,
+    ExecutableDocument, Name, Node, Schema,
+    ast::Type,
     executable::Operation,
     request::coerce_variable_values,
-    response::{GraphQLError, JsonMap},
+    response::{GraphQLError, JsonMap, JsonValue},
+    schema::ExtendedType,
     validation::Valid,
 };
+
+use crate::input::{InputCoercionError, literal_to_json as default_value_to_json};
 
 pub struct Request {
     document: String,
@@ -61,12 +65,30 @@ pub(crate) fn prepare_request(
         .get(request.operation_name.as_deref())
         .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
 
-    // Apollo converts variable defaults to JSON without applying their declared
-    // input type, so run the resolved values through variable coercion once more.
     let variables = coerce_variable_values(schema, operation, &request.variables)
         .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
-    let variables = coerce_variable_values(schema, operation, &variables)
-        .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
+    let mut variables = variables.into_inner();
+
+    for definition in &operation.variables {
+        let name = definition.name.as_str();
+
+        let Some(value) = variables.remove(name) else {
+            continue;
+        };
+
+        let value = coerce_json_input_value(schema, &definition.ty, value).map_err(|error| {
+            vec![GraphQLError::new(
+                error.message,
+                error.location.or_else(|| definition.location()),
+                &document.sources,
+            )]
+        })?;
+
+        variables.insert(name, value);
+    }
+
+    // Apollo already validated these values before normalization.
+    let variables = Valid::assume_valid(variables);
 
     let operation = operation.clone();
 
@@ -75,6 +97,83 @@ pub(crate) fn prepare_request(
         operation,
         variables,
     })
+}
+
+fn coerce_json_input_value(
+    schema: &Valid<Schema>,
+    ty: &Type,
+    value: JsonValue,
+) -> Result<JsonValue, InputCoercionError> {
+    if value.is_null() {
+        return if ty.is_non_null() {
+            Err(InputCoercionError::new(format!(
+                "null value for non-null type '{ty}'"
+            )))
+        } else {
+            Ok(JsonValue::Null)
+        };
+    }
+
+    match ty {
+        Type::List(inner) | Type::NonNullList(inner) => coerce_json_list(schema, inner, value),
+        Type::Named(name) | Type::NonNullNamed(name) => {
+            coerce_json_named_value(schema, name, value)
+        }
+    }
+}
+
+fn coerce_json_list(
+    schema: &Valid<Schema>,
+    item_type: &Type,
+    value: JsonValue,
+) -> Result<JsonValue, InputCoercionError> {
+    let values = match value {
+        JsonValue::Array(values) => values,
+        value => vec![value],
+    };
+
+    values
+        .into_iter()
+        .map(|value| coerce_json_input_value(schema, item_type, value))
+        .collect::<Result<Vec<_>, _>>()
+        .map(JsonValue::Array)
+}
+
+fn coerce_json_named_value(
+    schema: &Valid<Schema>,
+    type_name: &Name,
+    value: JsonValue,
+) -> Result<JsonValue, InputCoercionError> {
+    let Some(ExtendedType::InputObject(input)) = schema.types.get(type_name) else {
+        // Scalar와 Enum은 Apollo가 이미 검증하고 coercion했습니다.
+        return Ok(value);
+    };
+
+    let JsonValue::Object(mut object) = value else {
+        return Err(InputCoercionError::new(format!(
+            "could not coerce value to input object '{type_name}'"
+        )));
+    };
+
+    for (field_name, field_definition) in &input.fields {
+        let value = match object.remove(field_name.as_str()) {
+            Some(value) => value,
+            None => {
+                let Some(default) = &field_definition.default_value else {
+                    continue;
+                };
+
+                default_value_to_json(default)?
+            }
+        };
+
+        object.insert(
+            field_name.as_str(),
+            coerce_json_input_value(schema, &field_definition.ty, value)?,
+        );
+    }
+
+    Ok(JsonValue::Object(object))
 }
 
 #[cfg(test)]
