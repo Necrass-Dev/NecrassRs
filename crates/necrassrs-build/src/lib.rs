@@ -6,6 +6,7 @@ mod sync;
 
 /// Generates `OUT_DIR/necrassrs.rs` from `.graphql` files recursively discovered
 /// under `schema_dir`, sorted by path. Symbolic-link entries are skipped.
+/// Creates and synchronizes editable query resolvers in `src/resolvers.rs`.
 pub fn build(schema_dir: impl AsRef<Path>) -> Result<(), BuildError> {
     let schema_dir = schema_dir.as_ref();
     println!("cargo::rerun-if-changed={}", schema_dir.display());
@@ -48,10 +49,7 @@ pub fn build(schema_dir: impl AsRef<Path>) -> Result<(), BuildError> {
             source,
         })?;
 
-    let resolver_path = Path::new(&manifest_dir).join(
-        "src/
-    resolvers.rs",
-    );
+    let resolver_path = Path::new(&manifest_dir).join("src/resolvers.rs");
 
     sync::synchronize(&schema, &resolver_path)
 }
@@ -100,6 +98,10 @@ pub enum BuildError {
     },
     Schema(apollo_compiler::validation::DiagnosticList),
     Codegen(codegen::CodegenError),
+    ResolverSource {
+        path: PathBuf,
+        source: syn::Error,
+    },
 }
 
 impl std::fmt::Display for BuildError {
@@ -114,6 +116,9 @@ impl std::fmt::Display for BuildError {
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Schema(diagnostics) => std::fmt::Display::fmt(diagnostics, formatter),
             Self::Codegen(error) => std::fmt::Display::fmt(error, formatter),
+            Self::ResolverSource { path, source } => {
+                write!(formatter, "{}: {source}", path.display())
+            }
         }
     }
 }
@@ -125,6 +130,7 @@ impl std::error::Error for BuildError {
             Self::Io { source, .. } => Some(source),
             Self::Schema(_) => None,
             Self::Codegen(error) => Some(error),
+            Self::ResolverSource { source, .. } => Some(source),
         }
     }
 }
