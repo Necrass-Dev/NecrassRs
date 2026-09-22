@@ -768,6 +768,31 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn fragment_include_directive_uses_coerced_variable() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let variables = json!({ "include": false }).as_object().unwrap().clone();
+        let request = Request::new(
+            r#"
+                query Greeting($include: Boolean!) {
+                    ...GreetingFields @include(if: $include)
+                }
+
+                fragment GreetingFields on Query {
+                    hello
+                }
+            "#,
+        )
+        .with_variables(variables);
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+
+        assert_eq!(to_value(response).unwrap(), json!({ "data": {} }));
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn non_applicable_inline_fragment_is_not_executed() {
         let schema = Schema::parse_and_validate(
             r#"
