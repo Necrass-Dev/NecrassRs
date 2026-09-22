@@ -186,12 +186,58 @@ mod test {
     }
 
     #[test]
-    fn generated_paths_preserve_case_boundaries_and_escape_rust_names() {
-        use std::{
-            io::Write,
-            process::{Command, Stdio},
-        };
+    fn generated_resolver_accepts_borrowed_context_and_returns_send_future() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use resolvers::QueryResolver;
 
+            pub struct Query {
+                greeting: String,
+            }
+
+            pub struct Context<'a> {
+                suffix: &'a str,
+            }
+
+            impl<'ctx> QueryResolver<Context<'ctx>> for Query {
+                async fn hello<'a>(
+                    &'a self,
+                    context: &'a Context<'ctx>,
+                    args: types::Query::hello::Args,
+                ) -> Result<String, necrassrs::ResolverError> {
+                    std::future::ready(()).await;
+                    Ok(format!("{} {}{}", self.greeting, args.name, context.suffix))
+                }
+            }
+
+            pub fn check_contract<'a, C: 'a, R: QueryResolver<C> + 'a>(
+                resolver: &'a R,
+                context: &'a C,
+                args: types::Query::hello::Args,
+            ) -> impl Future<Output = Result<String, necrassrs::ResolverError>> + Send + 'a {
+                resolver.hello(context, args)
+            }
+
+            pub fn check() {
+                let query = Query { greeting: String::from("Hello") };
+                let suffix = String::from("!");
+                let context = Context { suffix: &suffix };
+                let args = types::Query::hello::Args { name: String::from("Sheri") };
+                let future = check_contract(&query, &context, args);
+                drop(future);
+            }
+        "#;
+
+        assert_consumer_compiles(&generated, consumer);
+    }
+
+    #[test]
+    fn generated_paths_preserve_case_boundaries_and_escape_rust_names() {
         let schema = Schema::parse_and_validate(
             r#"
                 type Query {
@@ -242,7 +288,57 @@ mod test {
             }
         "#;
 
+        assert_consumer_compiles(&generated, consumer);
+    }
+
+    fn assert_consumer_compiles(generated: &str, consumer: &str) {
+        use apollo_compiler::response::serde_json_bytes::serde_json;
+        use std::{
+            io::Write,
+            path::Path,
+            process::{Command, Stdio},
+        };
+
+        let build = Command::new(env!("CARGO"))
+            .args([
+                "build",
+                "--locked",
+                "--offline",
+                "--message-format=json",
+                "--manifest-path",
+            ])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../necrassrs/Cargo.toml"))
+            .output()
+            .expect("Cargo must be available");
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let runtime = String::from_utf8(build.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|message| {
+                message["reason"] == "compiler-artifact" && message["target"]["name"] == "necrassrs"
+            })
+            .find_map(|message| {
+                message["filenames"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|name| name.as_str())
+                    .find(|name| name.ends_with(".rlib"))
+                    .map(str::to_owned)
+            })
+            .expect("Cargo must report the necrassrs library artifact");
+        let directory = Path::new(&runtime).parent().unwrap();
         let mut rustc = Command::new("rustc")
+            .arg("--extern")
+            .arg(format!("necrassrs={runtime}"))
+            .arg("-L")
+            .arg(format!("dependency={}", directory.display()))
+            .arg("-L")
+            .arg(format!("dependency={}", directory.join("deps").display()))
             .args([
                 "--edition=2024",
                 "--crate-type=lib",
