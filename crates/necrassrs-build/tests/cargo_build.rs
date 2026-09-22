@@ -173,6 +173,54 @@ fn apollo_validation_failure_preserves_multiple_source_diagnostics() {
     }
 }
 
+#[test]
+fn consumer_reuses_embedded_schema_without_source_sdl_or_cli() {
+    let directory = create_consumer();
+    let manifest = directory.join("Cargo.toml");
+    let mut contents = fs::read_to_string(&manifest).unwrap();
+    contents.push_str(
+        "\n[dependencies.futures]\nversion = \"0.3\"\n\
+         [dependencies.serde_json]\nversion = \"1.0\"\n",
+    );
+    fs::write(manifest, contents).unwrap();
+    fs::write(
+        directory.join("src/main.rs"),
+        include_str!("fixtures/consumer/runtime.rs"),
+    )
+    .unwrap();
+    let build = build_consumer(&directory);
+    let generated = generated_path(&build);
+    assert!(!generated.starts_with(&directory));
+    let executable = String::from_utf8_lossy(&build.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|message| message["executable"].as_str().map(PathBuf::from))
+        .expect("Cargo must report the consumer executable");
+
+    fs::remove_dir_all(directory.join("schema")).unwrap();
+    let run = Command::new(executable)
+        .current_dir(&directory)
+        .env_clear()
+        .env("PATH", "")
+        .output()
+        .expect("the built consumer must run without Cargo or a CLI");
+    fs::remove_dir_all(&directory).unwrap();
+
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let responses: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(
+        responses,
+        serde_json::json!([
+            { "data": { "hello": "Hello, Sheri" } },
+            { "data": { "hello": "Hello, Tachibana Sheri" } },
+        ]),
+    );
+}
+
 fn generated_path(build: &Output) -> PathBuf {
     assert!(
         build.status.success(),
