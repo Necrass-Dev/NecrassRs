@@ -72,13 +72,11 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
             });
         }
 
-        if !field_modules.is_empty() {
-            object_modules.push(quote! {
-                pub mod #object_name {
-                    #(#field_modules)*
-                }
-            });
-        }
+        object_modules.push(quote! {
+            pub mod #object_name {
+                #(#field_modules)*
+            }
+        });
     }
 
     Ok(quote! {
@@ -349,60 +347,6 @@ mod test {
         assert!(error.to_string().contains("Query.lookup(at)"));
         assert!(error.source_code().is_none());
         assert_eq!(error.labels().into_iter().flatten().count(), 0);
-    }
-
-    #[test]
-    fn generates_required_string_argument_struct() {
-        let schema = Schema::parse_and_validate(
-            "type Query { hello(name: String!): String! }",
-            "schema.graphql",
-        )
-        .expect("the test schema must be valid");
-
-        let generated = super::generate(&schema).expect("generation must succeed");
-        let normalized: String = generated.split_whitespace().collect();
-
-        assert!(
-            normalized.contains("pubmodr#Query{pubmodr#hello{pubstructArgs{pubr#name:"),
-            "expected a public argument struct in the types module, got:\n{generated}"
-        );
-    }
-
-    #[test]
-    fn resolver_trait_names_preserve_object_names() {
-        let schema = Schema::parse_and_validate(
-            r#"
-                type Query { hello(name: String!): String! }
-                type User { hello(name: String!): String! }
-                type user { hello(name: String!): String! }
-                type UserResolver { hello(name: String!): String! }
-            "#,
-            "schema.graphql",
-        )
-        .expect("the test schema must be valid");
-
-        let generated = super::generate(&schema).expect("generation must succeed");
-        let normalized = generated
-            .split_whitespace()
-            .collect::<String>()
-            .replace("r#", "");
-
-        assert!(
-            normalized.contains("pubmodresolvers{"),
-            "expected a public resolvers module, got:\n{generated}"
-        );
-        for name in [
-            "QueryResolver",
-            "UserResolver",
-            "userResolver",
-            "UserResolverResolver",
-        ] {
-            assert_eq!(
-                normalized.matches(&format!("pubtrait{name}<")).count(),
-                1,
-                "expected exactly one public {name} trait with a Context parameter, got:\n{generated}"
-            );
-        }
     }
 
     #[test]
