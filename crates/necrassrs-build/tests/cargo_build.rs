@@ -5,7 +5,7 @@ use std::{
     process::{Command, Output},
     sync::atomic::{AtomicUsize, Ordering},
 };
-use syn::{ImplItem, ImplItemFn, Item, ItemImpl, ext::IdentExt};
+use syn::{ImplItem, ImplItemFn, Item, ItemImpl, ext::IdentExt, spanned::Spanned};
 
 #[test]
 fn first_build_creates_query_and_explicit_unimplemented_methods_from_sdl() {
@@ -209,6 +209,105 @@ fn invalid_sdl_does_not_destroy_existing_implementation() {
 
     assert!(!consumer.build().status.success());
     assert_eq!(fs::read(consumer.resolvers()).unwrap(), before);
+}
+
+#[test]
+fn unchanged_sdl_preserves_equivalent_return_type_spelling_and_comments() {
+    let consumer = Consumer::new("type Query { hello(name: String!): String! }");
+    consumer.bootstrap();
+    consumer.implement("hello", "retained hello");
+    let ast = consumer.ast();
+    let mut source = fs::read_to_string(consumer.resolvers()).unwrap();
+    source.replace_range(
+        method(&ast, "hello").sig.output.span().byte_range(),
+        "-> Result</* Keep this return contract comment. */ String, necrassrs::ResolverError>",
+    );
+    fs::write(consumer.resolvers(), &source).unwrap();
+
+    assert_success(&consumer.build());
+    assert_eq!(
+        fs::read_to_string(consumer.resolvers()).unwrap(),
+        source,
+        "an unchanged SDL contract must preserve equivalent type spelling and comments",
+    );
+}
+
+#[test]
+fn added_method_does_not_shadow_existing_impl_lifetime() {
+    let consumer = Consumer::new("type Query { hello(name: String!): String! }");
+    consumer.bootstrap();
+    consumer.implement("hello", "retained hello");
+    let mut ast = consumer.ast();
+    let before = body(method(&ast, "hello"));
+    for item in &mut ast.items {
+        let Item::Impl(implementation) = item else {
+            continue;
+        };
+        implementation.generics = syn::parse_quote!(<'a>);
+        implementation.trait_.as_mut().unwrap().1 =
+            syn::parse_quote!(crate::generated::resolvers::QueryResolver<Context<'a>>);
+        for item in &mut implementation.items {
+            if let ImplItem::Fn(method) = item {
+                method.sig = syn::parse_quote! {
+                    async fn hello<'call>(
+                        &'call self,
+                        _context: &'call Context<'a>,
+                        _args: crate::generated::types::Query::hello::Args,
+                    ) -> ::core::result::Result<::std::string::String, ::necrassrs::ResolverError>
+                };
+            }
+        }
+    }
+    ast.items.push(syn::parse_quote!(
+        pub struct Context<'a>(pub &'a str);
+    ));
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_resolver<C, Q: generated::resolvers::QueryResolver<C>>(_: &C, _: &Q) {}
+    let name = String::from("Sheri");
+    let context = resolvers::Context(&name);
+    require_resolver(&context, &resolvers::Query);
+}
+"#,
+    )
+    .unwrap();
+    // Establish that the customized implementation compiles before adding a field.
+    assert_success(&consumer.build());
+    consumer.schema("type Query { hello(name: String!): String! extra: String! }");
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    assert_eq!(method_names(&ast), ["extra", "hello"]);
+    assert_stub(method(&ast, "extra"));
+    assert_eq!(body(method(&ast, "hello")), before);
+}
+
+#[test]
+fn adding_field_to_bom_prefixed_source_preserves_existing_code() {
+    let consumer = Consumer::new("type Query { hello(name: String!): String! }");
+    consumer.bootstrap();
+    consumer.implement("hello", "retained hello");
+    let source = fs::read_to_string(consumer.resolvers()).unwrap();
+    let ast = syn::parse_file(&source).unwrap();
+    let existing_method = &source[method(&ast, "hello").span().byte_range()];
+    fs::write(consumer.resolvers(), format!("\u{feff}{source}")).unwrap();
+    // A BOM is valid Rust input and must not prevent an unchanged build.
+    assert_success(&consumer.build());
+    consumer.schema("type Query { hello(name: String!): String! extra: String! }");
+
+    assert_success(&consumer.build());
+    let updated = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(updated.starts_with('\u{feff}'));
+    assert!(updated.contains(existing_method));
+    let ast = syn::parse_file(&updated).unwrap();
+    assert_eq!(method_names(&ast), ["extra", "hello"]);
+    assert_stub(method(&ast, "extra"));
 }
 
 fn resolver_impl(ast: &syn::File) -> &ItemImpl {
