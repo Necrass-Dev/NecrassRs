@@ -1,8 +1,8 @@
 use apollo_compiler::{
     Name, Node, Schema,
     ast::{Type, Value},
-    collections::IndexMap,
-    executable::Field,
+    collections::{HashSet, IndexMap},
+    executable::{Field, Selection},
     parser::SourceSpan,
     response::{GraphQLError, JsonMap, JsonValue, ResponseDataPathSegment},
     schema::ExtendedType,
@@ -118,18 +118,17 @@ fn resolver_error_to_graphql_error(
 }
 
 fn collect_fields(prepared: &PreparedRequest) -> IndexMap<Name, Vec<&Field>> {
-    prepared
-        .operation
-        .selection_set
-        .root_fields(&prepared.document)
-        .map(|field| field.as_ref())
-        .fold(IndexMap::default(), |mut fields, field| {
-            fields
-                .entry(field.response_key().clone())
-                .or_default()
-                .push(field);
-            fields
-        })
+    let mut fields = IndexMap::default();
+    let mut visited_fragments = HashSet::default();
+
+    collect_selections(
+        prepared,
+        &prepared.operation.selection_set.selections,
+        &mut visited_fragments,
+        &mut fields,
+    );
+
+    fields
 }
 
 fn coerce_argument_values(
@@ -460,6 +459,63 @@ fn complete_value(
             Ok(value)
         }
     }
+}
+
+fn directive_condition(selection: &Selection, name: &str, variables: &JsonMap) -> Option<bool> {
+    let value = selection
+        .directives()
+        .get(name)?
+        .specified_argument_by_name("if")?;
+
+    match value.as_ref() {
+        Value::Boolean(value) => Some(*value),
+        Value::Variable(name) => variables.get(name.as_str())?.as_bool(),
+        _ => None,
+    }
+}
+
+fn should_include(selection: &Selection, variables: &JsonMap) -> bool {
+    !directive_condition(selection, "skip", variables).unwrap_or(false)
+        && directive_condition(selection, "include", variables).unwrap_or(true)
+}
+
+fn collect_selections<'a>(
+    prepared: &'a PreparedRequest,
+    selections: &'a [Selection],
+    visited_fragments: &mut HashSet<&'a Name>,
+    fields: &mut IndexMap<Name, Vec<&'a Field>>,
+) {
+    selections
+        .iter()
+        .filter(|selection| should_include(selection, &prepared.variables))
+        .for_each(|selection| match selection {
+            Selection::Field(field) => {
+                fields
+                    .entry(field.response_key().clone())
+                    .or_default()
+                    .push(field);
+            }
+            Selection::FragmentSpread(spread) => {
+                if visited_fragments.insert(&spread.fragment_name)
+                    && let Some(fragment) = prepared.document.fragments.get(&spread.fragment_name)
+                {
+                    collect_selections(
+                        prepared,
+                        &fragment.selection_set.selections,
+                        visited_fragments,
+                        fields,
+                    );
+                }
+            }
+            Selection::InlineFragment(fragment) => {
+                collect_selections(
+                    prepared,
+                    &fragment.selection_set.selections,
+                    visited_fragments,
+                    fields,
+                );
+            }
+        });
 }
 
 #[cfg(test)]
