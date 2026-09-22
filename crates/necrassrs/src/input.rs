@@ -18,7 +18,7 @@ impl InputCoercionError {
         }
     }
 
-    fn at(message: impl Into<String>, location: Option<SourceSpan>) -> Self {
+    pub(crate) fn at(message: impl Into<String>, location: Option<SourceSpan>) -> Self {
         Self {
             message: message.into(),
             location,
