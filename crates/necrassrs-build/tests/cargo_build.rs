@@ -1,15 +1,73 @@
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 #[test]
 fn cargo_build_compiles_generated_code_and_user_resolver() {
+    let directory = create_consumer();
+    let build = build_consumer(&directory);
+    fs::remove_dir_all(&directory).unwrap();
+    assert!(
+        build.status.success(),
+        "consumer cargo build failed:\n{}\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr),
+    );
+}
+
+#[test]
+fn sdl_edit_regenerates_contract_without_changing_user_source() {
+    let directory = create_consumer();
+    let initial = build_consumer(&directory);
+    assert!(
+        initial.status.success(),
+        "initial consumer build failed:\n{}\n{}",
+        String::from_utf8_lossy(&initial.stdout),
+        String::from_utf8_lossy(&initial.stderr),
+    );
+
+    let user_source = fs::read(directory.join("src/main.rs")).unwrap();
+    fs::write(
+        directory.join("schema/query/fields/hello.graphql"),
+        include_str!("fixtures/consumer/hello.graphql").replace("name:", "greeting:"),
+    )
+    .unwrap();
+    let rebuilt = build_consumer(&directory);
+    let source_after = fs::read(directory.join("src/main.rs")).unwrap();
+    fs::remove_dir_all(&directory).unwrap();
+
+    assert_eq!(user_source, source_after);
+    assert!(
+        !rebuilt.status.success(),
+        "the old argument must no longer compile"
+    );
+    let stdout = String::from_utf8(rebuilt.stdout).unwrap();
+    assert!(
+        stdout.lines().any(|line| {
+            let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            message["reason"] == "compiler-message" && message["message"]["code"]["code"] == "E0609"
+        }),
+        "expected E0609 for removed Args.name:\n{stdout}\n{}",
+        String::from_utf8_lossy(&rebuilt.stderr),
+    );
+}
+
+fn create_consumer() -> PathBuf {
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = std::env::temp_dir().join(format!(
-        "necrassrs-build-consumer-{}-{}",
+        "necrassrs-build-consumer-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed),
     ));
     fs::create_dir(&directory).unwrap();
     fs::create_dir(directory.join("src")).unwrap();
@@ -60,16 +118,20 @@ fn cargo_build_compiles_generated_code_and_user_resolver() {
     )
     .unwrap();
 
-    let build = Command::new(env!("CARGO"))
-        .current_dir(&directory)
-        .args(["build", "--offline", "--target-dir"])
+    directory
+}
+
+fn build_consumer(directory: &Path) -> Output {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    Command::new(env!("CARGO"))
+        .current_dir(directory)
+        .args([
+            "build",
+            "--offline",
+            "--message-format=json",
+            "--target-dir",
+        ])
         .arg(workspace.join("target/cargo-consumer"))
-        .output();
-    fs::remove_dir_all(&directory).unwrap();
-    let build = build.expect("Cargo must be available");
-    assert!(
-        build.status.success(),
-        "consumer cargo build failed:\n{}",
-        String::from_utf8_lossy(&build.stderr),
-    );
+        .output()
+        .expect("Cargo must be available")
 }
