@@ -64,22 +64,37 @@ where
         let field = fields[0];
         let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
-        let definition: &FieldDefinition = if field.name.as_str() == "__typename" {
-            &field.definition
-        } else {
-            object_type
-                .fields
-                .get(field.name.as_str())
-                .expect("validated field must exist on the runtime object type")
-        };
+        let definition: &FieldDefinition =
+            match schema.type_field(object_type.name.as_str(), field.name.as_str()) {
+                Ok(definition) => definition,
+                Err(_) => {
+                    errors.push(*new_execution_error(
+                        &prepared,
+                        &path,
+                        format!("Could not resolve field definition '{}'.", field.name),
+                        field.name.location(),
+                    ));
 
-        let (value, has_error) = if field.name.as_str() == "__typename" {
-            (
+                    return Response::execution(None, errors);
+                }
+            };
+
+        let (value, has_error) = match field.name.as_str() {
+            "__typename" => (
                 JsonValue::from(prepared.operation.selection_set.ty.as_str()),
                 false,
-            )
-        } else {
-            match coerce_argument_values(schema, &prepared, &path, field, definition) {
+            ),
+            "__schema" | "__type" => {
+                errors.push(*new_execution_error(
+                    &prepared,
+                    &path,
+                    format!("Introspection field '{}' is not supported.", field.name),
+                    field.name.location(),
+                ));
+
+                (JsonValue::Null, true)
+            }
+            _ => match coerce_argument_values(schema, &prepared, &path, field, definition) {
                 Ok(arguments) => match dispatcher
                     .resolve(
                         context,
@@ -104,7 +119,7 @@ where
                     errors.push(*error);
                     (JsonValue::Null, true)
                 }
-            }
+            },
         };
 
         if value.is_null() && definition.ty.is_non_null() {
