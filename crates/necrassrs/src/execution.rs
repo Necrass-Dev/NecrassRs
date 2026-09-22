@@ -267,6 +267,8 @@ fn coerce_argument_values(
     field: &Field,
     field_definition: &FieldDefinition,
 ) -> Result<JsonMap, Box<GraphQLError>> {
+    let mut active_defaults = HashSet::default();
+
     field_definition
         .arguments
         .iter()
@@ -307,6 +309,7 @@ fn coerce_argument_values(
                             path,
                             &definition.ty,
                             default_value,
+                            &mut active_defaults,
                         )?,
                         None if definition.ty.is_non_null() => {
                             return Err(new_execution_error(
@@ -323,7 +326,14 @@ fn coerce_argument_values(
                     },
                 }
             } else {
-                coerce_input_value(schema, prepared, path, &definition.ty, argument_value)?
+                coerce_input_value(
+                    schema,
+                    prepared,
+                    path,
+                    &definition.ty,
+                    argument_value,
+                    &mut active_defaults,
+                )?
             };
 
             coerced_values.insert(definition.name.as_str(), value);
@@ -337,6 +347,7 @@ fn coerce_input_value(
     path: &[ResponseDataPathSegment],
     ty: &Type,
     value: &Node<Value>,
+    active_defaults: &mut HashSet<(Name, Name)>,
 ) -> Result<JsonValue, Box<GraphQLError>> {
     if let Some(variable_name) = value.as_variable() {
         return match prepared.variables.get(variable_name.as_str()) {
@@ -378,7 +389,9 @@ fn coerce_input_value(
                 .as_list()
                 .unwrap_or(std::slice::from_ref(value))
                 .iter()
-                .map(|value| coerce_input_value(schema, prepared, path, inner, value))
+                .map(|value| {
+                    coerce_input_value(schema, prepared, path, inner, value, active_defaults)
+                })
                 .collect::<Result<Vec<_>, _>>()
                 .map(Into::into);
         }
@@ -403,24 +416,46 @@ fn coerce_input_value(
                     .iter()
                     .find(|(field_name, _)| field_name == name)
                     .map(|(_, value)| value);
-                let value = match specified {
+                let (value, uses_default) = match specified {
                     Some(value)
                         if value.as_variable().is_some_and(|variable_name| {
                             !prepared.variables.contains_key(variable_name.as_str())
                         }) =>
                     {
-                        definition.default_value.as_ref()
+                        (definition.default_value.as_ref(), true)
                     }
-                    Some(value) => Some(value),
-                    None => definition.default_value.as_ref(),
+                    Some(value) => (Some(value), false),
+                    None => (definition.default_value.as_ref(), true),
                 };
 
                 match value {
                     Some(value) => {
-                        coerced.insert(
-                            name.as_str(),
-                            coerce_input_value(schema, prepared, path, &definition.ty, value)?,
+                        let coordinate = (type_name.clone(), name.clone());
+                        if uses_default && !active_defaults.insert(coordinate.clone()) {
+                            return Err(new_execution_error(
+                                prepared,
+                                path,
+                                format!(
+                                    "cyclic default value for input field '{type_name}.{name}'"
+                                ),
+                                value.location(),
+                            ));
+                        }
+
+                        let result = coerce_input_value(
+                            schema,
+                            prepared,
+                            path,
+                            &definition.ty,
+                            value,
+                            active_defaults,
                         );
+
+                        if uses_default {
+                            active_defaults.remove(&coordinate);
+                        }
+
+                        coerced.insert(name.as_str(), result?);
                     }
                     None if definition.ty.is_non_null() => {
                         return Err(new_execution_error(
