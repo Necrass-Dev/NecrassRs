@@ -58,6 +58,20 @@ Keep generation-specific information, such as Rust identifiers, generated type n
 
 Distinguish consumer APIs from internal schema representation. Users should not need Apollo internals to implement resolvers or Context. Generated code should access runtime contracts through public `necrassrs` paths.
 
+#### Generated argument names
+
+Generated field argument structs live at `generated::types::<object>::<field>::Args` in the consumer crate. For example, `Query.hello(name: String!)` produces `generated::types::Query::hello::Args` with a public `name: String` field. Preserve SDL case and object/field boundaries rather than concatenating or case-converting names. `Query.hello` and `Query.Hello` therefore have distinct paths.
+
+Apply the same injective identifier mapping to object modules, field modules, and argument fields:
+
+- Prefix `self`, `Self`, `super`, and `crate` with one underscore.
+- Prefix every SDL name already starting with an underscore with one additional underscore, including `_` itself. Thus `self` maps to `_self`, `_self` to `__self`, and `_` to `__`.
+- Preserve all other names. Emit mapped names as Rust raw identifiers so keywords such as `type` and `gen` remain usable. The `r#` syntax does not change identifier identity.
+
+For example, `Query.type(self: String!, _self: String!)` produces `types::Query::r#type::Args` with distinct `_self` and `__self` fields. Consumers can omit `r#` for non-keywords. Permit `non_snake_case` only within the generated `types` module, and qualify standard-library types to avoid name shadowing.
+
+Each field module reserves its own `Args` type; SDL field names occupy the parent object module instead. Keep future generated helpers separate from SDL-derived namespaces. This mapping does not rename SDL fields or change runtime field coordinates. Verify the mapping by compiling generated consumer code, including case differences, underscore boundaries, keywords, and raw-identifier exceptions.
+
 ### 3.3 Adoption limits
 
 Use the GraphQL September 2025 specification as the reference for supported behavior. The greeting MVP's scope and completion criteria are already defined in [issue #1](https://github.com/Necrass-Dev/NecrassRs/issues/1). Neither dependency adoption nor the MVP implies complete GraphQL conformance.
