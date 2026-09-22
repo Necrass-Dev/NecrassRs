@@ -401,6 +401,44 @@ mod test {
     }
 
     #[test]
+    fn embedded_sdl_preserves_definitions_and_extensions_from_multiple_sources() {
+        let schema = Schema::builder()
+            .parse(
+                "schema { query: ReadRoot } type ReadRoot { hello: String! }",
+                "root.graphql",
+            )
+            .parse(
+                "extend type ReadRoot { greet(name: String!): String! }",
+                "greeting.graphql",
+            )
+            .build()
+            .expect("the test schema must build")
+            .validate()
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "embedded.graphql",
+                ).unwrap();
+                assert_eq!(schema.schema_definition.query.as_ref().unwrap().as_str(), "ReadRoot");
+                let root = schema.get_object("ReadRoot").unwrap();
+                assert_eq!(root.fields["hello"].ty.to_string(), "String!");
+                let greet = &root.fields["greet"];
+                assert_eq!(greet.ty.to_string(), "String!");
+                assert_eq!(greet.arguments.len(), 1);
+                assert_eq!(greet.arguments[0].name.as_str(), "name");
+                assert_eq!(greet.arguments[0].ty.to_string(), "String!");
+            }
+        "#;
+        assert_consumer(
+            &format!("pub mod generated {{ {generated} }}"),
+            consumer,
+            true,
+        );
+    }
+
+    #[test]
     fn generated_dispatch_uses_schema_coordinates_and_preserves_errors() {
         let sdl = "schema { query: ReadRoot } type ReadRoot { greet(who: String!): String! fail: String! pending: String! }";
         let schema = Schema::parse_and_validate(sdl, "schema.graphql")
