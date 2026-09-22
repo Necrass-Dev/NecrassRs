@@ -299,7 +299,9 @@ name = "necrassrs-build"
 version = "0.1.0"
 dependencies = [
  "apollo-compiler",
+ "futures",
  "quote",
+ "serde_json",
 ]
 
 [[package]]

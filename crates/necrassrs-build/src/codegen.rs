@@ -270,6 +270,53 @@ mod test {
     }
 
     #[test]
+    fn generated_dispatch_executes_hello() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use generated::{resolvers::QueryResolver, types};
+
+            struct Query;
+            struct Context<'a> { greeting: &'a str }
+
+            impl<'ctx> QueryResolver<Context<'ctx>> for Query {
+                async fn hello<'a>(
+                    &'a self,
+                    context: &'a Context<'ctx>,
+                    args: types::Query::hello::Args,
+                ) -> Result<String, necrassrs::ResolverError> {
+                    Ok(format!("{}, {}", context.greeting, args.name))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    "type Query { hello(name: String!): String! }", "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let greeting = String::from("Hello");
+                let context = Context { greeting: &greeting };
+                let request = necrassrs::Request::new("{ hello(name: \"Sheri\") }");
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &context);
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "hello": "Hello, Sheri" } }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn generated_paths_preserve_case_boundaries_and_escape_rust_names() {
         let schema = Schema::parse_and_validate(
             r#"
@@ -325,7 +372,10 @@ mod test {
     }
 
     fn assert_consumer_compiles(generated: &str, consumer: &str) {
-        use apollo_compiler::response::serde_json_bytes::serde_json;
+        assert_consumer(generated, consumer, false);
+    }
+
+    fn assert_consumer(generated: &str, consumer: &str, run: bool) {
         use std::{
             io::Write,
             path::Path,
@@ -348,39 +398,50 @@ mod test {
             "{}",
             String::from_utf8_lossy(&build.stderr)
         );
-        let runtime = String::from_utf8(build.stdout)
+        let artifacts: Vec<_> = String::from_utf8(build.stdout)
             .unwrap()
             .lines()
             .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|message| {
-                message["reason"] == "compiler-artifact" && message["target"]["name"] == "necrassrs"
-            })
-            .find_map(|message| {
-                message["filenames"]
-                    .as_array()?
-                    .iter()
-                    .filter_map(|name| name.as_str())
-                    .find(|name| name.ends_with(".rlib"))
-                    .map(str::to_owned)
-            })
-            .expect("Cargo must report the necrassrs library artifact");
-        let directory = Path::new(&runtime).parent().unwrap();
-        let mut rustc = Command::new("rustc")
-            .arg("--extern")
-            .arg(format!("necrassrs={runtime}"))
-            .arg("-L")
-            .arg(format!("dependency={}", directory.display()))
-            .arg("-L")
-            .arg(format!("dependency={}", directory.join("deps").display()))
-            .args([
-                "--edition=2024",
-                "--crate-type=lib",
-                "--emit=metadata",
-                "--deny=warnings",
-                "-o",
-                "-",
-                "-",
-            ])
+            .filter(|message| message["reason"] == "compiler-artifact")
+            .collect();
+        let mut compiler = Command::new("rustc");
+        for name in ["necrassrs", "futures", "serde_json"] {
+            let artifact = artifacts
+                .iter()
+                .find(|message| message["target"]["name"] == name)
+                .expect("Cargo must report each consumer dependency");
+            let library = artifact["filenames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|name| name.as_str())
+                .find(|name| name.ends_with(".rlib"))
+                .expect("Cargo must report the library artifact");
+            let directory = Path::new(library).parent().unwrap();
+            compiler
+                .arg("--extern")
+                .arg(format!("{name}={library}"))
+                .arg("-L")
+                .arg(format!("dependency={}", directory.display()))
+                .arg("-L")
+                .arg(format!("dependency={}", directory.join("deps").display()));
+        }
+        let executable = std::env::temp_dir().join(format!(
+            "necrassrs-consumer-{}-{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            std::env::consts::EXE_SUFFIX,
+        ));
+        if run {
+            compiler.arg("-o").arg(&executable);
+        } else {
+            compiler.args(["--crate-type=lib", "--emit=metadata", "-o", "-"]);
+        }
+        let mut rustc = compiler
+            .args(["--edition=2024", "--deny=warnings", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -388,10 +449,24 @@ mod test {
             .expect("rustc must be available");
         write!(rustc.stdin.take().unwrap(), "{generated}\n{consumer}").unwrap();
         let output = rustc.wait_with_output().unwrap();
+        let execution = if run && output.status.success() {
+            let result = Command::new(&executable).output();
+            std::fs::remove_file(&executable).unwrap();
+            Some(result.expect("the compiled consumer must run"))
+        } else {
+            None
+        };
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        if let Some(output) = execution {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }
