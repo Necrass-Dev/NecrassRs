@@ -503,6 +503,134 @@ mod test {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn selected_unimplemented_field_aborts_dev_and_release_consumers() {
+        use std::{fs, os::unix::process::ExitStatusExt, path::Path, process::Command};
+
+        let schema = Schema::parse_and_validate(
+            "type Query { hello: String! pending: String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {
+                async fn hello<'a>(
+                    &'a self, _: &'a (), _: generated::types::Query::hello::Args,
+                ) -> Result<String, necrassrs::ResolverError> {
+                    Ok(String::from("Hello, Sheri"))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let document = std::env::args().nth(1).unwrap();
+                let request = necrassrs::Request::new(document);
+                let response = futures::executor::block_on(
+                    necrassrs::execute(&schema, &request, &dispatcher, &()),
+                );
+                println!("{}", serde_json::to_string(&response).unwrap());
+            }
+        "#;
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = std::env::temp_dir().join(format!(
+            "necrassrs-abort-consumer-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir(&directory).unwrap();
+        let runtime = workspace.join("crates/necrassrs").canonicalize().unwrap();
+        fs::write(
+            directory.join("Cargo.toml"),
+            format!(
+                r#"
+                    [package]
+                    name = "necrassrs-abort-consumer"
+                    version = "0.0.0"
+                    edition = "2024"
+                    [workspace]
+                    [[bin]]
+                    name = "necrassrs-abort-consumer"
+                    path = "main.rs"
+                    [dependencies]
+                    necrassrs = {{ path = {runtime:?} }}
+                    futures = "0.3"
+                    serde_json = "1.0"
+                    [profile.dev]
+                    panic = "abort"
+                    [profile.release]
+                    panic = "abort"
+                    [lints.rust]
+                    warnings = "deny"
+                "#,
+            ),
+        )
+        .unwrap();
+        fs::copy(workspace.join("Cargo.lock"), directory.join("Cargo.lock")).unwrap();
+        fs::write(
+            directory.join("main.rs"),
+            format!("mod generated {{ {generated} }}\n{consumer}"),
+        )
+        .unwrap();
+        let target = workspace.join("target/abort-consumer");
+        for (profile, output_directory) in [("dev", "debug"), ("release", "release")] {
+            let build = Command::new(env!("CARGO"))
+                .current_dir(&directory)
+                .args(["build", "--offline", "--profile", profile, "--target-dir"])
+                .arg(&target)
+                .output()
+                .expect("Cargo must be available");
+            assert!(
+                build.status.success(),
+                "{}",
+                String::from_utf8_lossy(&build.stderr)
+            );
+            let executable = target
+                .join(output_directory)
+                .join("necrassrs-abort-consumer");
+            let hello = Command::new(&executable)
+                .current_dir(&directory)
+                .arg("{ hello }")
+                .output()
+                .unwrap();
+            let pending = Command::new(&executable)
+                .current_dir(&directory)
+                .arg("{ pending }")
+                .output()
+                .unwrap();
+            assert!(
+                hello.status.success(),
+                "{profile}: {}",
+                String::from_utf8_lossy(&hello.stderr)
+            );
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&hello.stdout).unwrap(),
+                serde_json::json!({ "data": { "hello": "Hello, Sheri" } }),
+            );
+            // SIGABRT is 6 on Linux and macOS; a normal panic exit is insufficient.
+            assert_eq!(pending.status.signal(), Some(6), "{profile}: {pending:?}");
+            assert!(
+                pending.stdout.is_empty(),
+                "{profile}: execution must not return a response"
+            );
+            assert!(
+                String::from_utf8_lossy(&pending.stderr)
+                    .contains("Resolver Query.pending is not implemented"),
+                "{profile}: {}",
+                String::from_utf8_lossy(&pending.stderr),
+            );
+        }
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
     fn generated_paths_preserve_case_boundaries_and_escape_rust_names() {
         let schema = Schema::parse_and_validate(
             r#"

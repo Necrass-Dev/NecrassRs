@@ -94,7 +94,8 @@ Current implementation status:
 - The runtime completes String results, including nullable and list combinations, but does not generally complete other scalar, enum, or object results. Its broader input processing and Apollo validation do not establish complete type support.
 - Generated query dispatch executes through the runtime with borrowed Context and a `Send` execution future. Executable consumer checks cover the greeting, custom root/field names, argument conversion failures, domain-error preservation, and successful execution without selecting an unimplemented field.
 - The generator exposes `generated::SDL` as a public string constant using Apollo's schema serialization. Executable consumer checks reconstruct the runtime schema from it, including definitions and extensions from multiple sources.
-- Miette source diagnostics, consumer process-termination checks for selected unimplemented fields, and SDL contract-change compilation failures remain work for issue #3. Current generation errors contain messages without source spans.
+- A Linux/macOS subprocess test builds a partial consumer with `panic = "abort"` in both Cargo dev and release profiles. It checks successful execution of an implemented field and `SIGABRT` termination without a response when an unimplemented field is selected.
+- Miette source diagnostics and SDL contract-change compilation failures remain work for issue #3. Current generation errors contain messages without source spans.
 
 The support contract requires explicit diagnostics for unsupported schema features, with source locations when available. Do not silently map unsupported types to String or treat Apollo validation as proof that generation will succeed. Keep validation diagnostics separate from generation errors, and do not make temporary limitations such as lack of Int support permanent rejection contracts.
 
