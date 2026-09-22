@@ -1,7 +1,7 @@
 # NecrassRs architecture and development plan
 
 Date: 2026-09-17
-Updated: 2026-09-19
+Updated: 2026-09-22
 
 This document defines the target product structure, crate responsibilities, development and release practices, and consumer workflow. It does not describe a completed implementation. Package names and directory layouts are proposed; concrete Rust API signatures remain subject to design.
 
@@ -58,9 +58,49 @@ Keep generation-specific information, such as Rust identifiers, generated type n
 
 Distinguish consumer APIs from internal schema representation. Users should not need Apollo internals to implement resolvers or Context. Generated code should access runtime contracts through public `necrassrs` paths.
 
+#### Generated argument names
+
+Generated field argument structs live at `generated::types::<object>::<field>::Args` in the consumer crate. For example, `Query.hello(name: String!)` produces `generated::types::Query::hello::Args` with a public `name: String` field. Preserve SDL case and object/field boundaries rather than concatenating or case-converting names. `Query.hello` and `Query.Hello` therefore have distinct paths.
+
+Apply the same injective identifier mapping to object modules, field modules, and argument fields:
+
+- Prefix `self`, `Self`, `super`, and `crate` with one underscore.
+- Prefix every SDL name already starting with an underscore with one additional underscore, including `_` itself. Thus `self` maps to `_self`, `_self` to `__self`, and `_` to `__`.
+- Preserve all other names. Emit mapped names as Rust raw identifiers so keywords such as `type` and `gen` remain usable. The `r#` syntax does not change identifier identity.
+
+For example, `Query.type(self: String!, _self: String!)` produces `types::Query::r#type::Args` with distinct `_self` and `__self` fields. Consumers can omit `r#` for non-keywords. Permit `non_snake_case` only within the generated `types` module, and qualify standard-library types to avoid name shadowing.
+
+Each field module reserves its own `Args` type; SDL field names occupy the parent object module instead. Keep future generated helpers separate from SDL-derived namespaces. This mapping does not rename SDL fields or change runtime field coordinates. Verify the mapping by compiling generated consumer code, including case differences, underscore boundaries, keywords, and raw-identifier exceptions.
+
+Resolver traits live in `generated::resolvers`. Append the fixed suffix `Resolver` to the mapped object name without changing case: `User`, `user`, and `UserResolver` become `UserResolver`, `userResolver`, and `UserResolverResolver`. Allow `non_camel_case_types` and `non_snake_case` on these generated traits. Each trait has a generic Context parameter, and each field produces a method using the same identifier mapping.
+
+Methods borrow `self` and Context for the call lifetime, take the field's generated `Args` by value, and return `impl Future<Output = Result<T, necrassrs::ResolverError>> + Send` with that lifetime. Fields without arguments use an empty `Args` struct. Default methods return a future that calls `unimplemented!()` when polled, allowing partial trait implementations to compile. The current generator supports `String!` argument and return types; other argument and return types produce generation errors.
+
+Generate one `generated::dispatch::SchemaDispatcher` for the schema, rather than separate dispatcher types for each root. The current query-only implementation stores the application-owned Query value via `SchemaDispatcher::new(query)` and implements `necrassrs::Dispatcher<C>` with `C: Sync` and `Q: QueryRootResolver<C> + Sync`, using the actual query root's generated trait. It matches original SDL type/field coordinates, converts prepared arguments to the generated `Args`, invokes the resolver, converts successful results to `JsonValue`, and preserves `ResolverError` values. Unknown coordinates and invalid prepared arguments return errors without panicking. Schemas with mutation or subscription roots currently produce a generation error; their routing remains unimplemented.
+
 ### 3.3 Adoption limits
 
 Use the GraphQL September 2025 specification as the reference for supported behavior. The greeting MVP's scope and completion criteria are already defined in [issue #1](https://github.com/Necrass-Dev/NecrassRs/issues/1). Neither dependency adoption nor the MVP implies complete GraphQL conformance.
+
+#### MVP type support and current implementation
+
+Keep the generated API's type scope limited to `String!` arguments and results until issue #1 is complete. Establish expansion principles now; implement additional type support in follow-up issues rather than expanding the greeting MVP.
+
+Apollo schema validation establishes GraphQL validity, not NecrassRs code generation or execution support. Treat a type as supported through the generated API only when Rust generation, input conversion, dispatch, and runtime result completion work together and are tested.
+
+Current implementation status:
+
+- The generator produces argument structs and resolver methods for `String!`, including empty argument structs and default methods for partial implementations. Consumer compilation checks cover naming, borrowed Context values, and `Send` resolver futures.
+- The runtime completes String results, including nullable and list combinations, but does not generally complete other scalar, enum, or object results. Its broader input processing and Apollo validation do not establish complete type support.
+- Generated query dispatch executes through the runtime with borrowed Context and a `Send` execution future. Executable consumer checks cover the greeting, custom root/field names, argument conversion failures, domain-error preservation, and successful execution without selecting an unimplemented field.
+- The generator exposes `generated::SDL` as a public string constant using Apollo's schema serialization. Executable consumer checks reconstruct the runtime schema from it, including definitions and extensions from multiple sources.
+- A Linux/macOS subprocess test builds a partial consumer with `panic = "abort"` in both Cargo dev and release profiles. It checks successful execution of an implemented field and `SIGABRT` termination without a response when an unimplemented field is selected.
+- `CodegenError` implements `miette::Diagnostic`, retaining the original named source and available Apollo byte spans without reading files. Argument-type labels cover the complete type reference; return-type labels identify the named type. Missing locations or source entries leave the message available without fabricated sources or labels. Tests cover argument diagnostics across multiple sources, UTF-8 byte offsets, and type nodes without locations. Rendering and Cargo failure reporting remain work for issue #4.
+- Consumer compilation checks keep user code unchanged across SDL edits: field renames or removals reject existing resolver methods (`E0407`), argument renames or removals reject existing argument access (`E0609`), and added fields preserve compatible partial implementations. Each check establishes successful compilation before the change; failure checks inspect rustc JSON diagnostic codes rather than complete message text.
+
+The support contract requires explicit diagnostics for unsupported schema features, with source locations when available. Do not silently map unsupported types to String or treat Apollo validation as proof that generation will succeed. Keep validation diagnostics separate from generation errors, and do not make temporary limitations such as lack of Int support permanent rejection contracts.
+
+Type expansion must preserve SDL identity and nullability, distinguish omitted nullable inputs from explicit null, and preserve list-container and list-item nullability independently. `Option<T>` for nullable outputs and `Vec<T>` for lists are design candidates; concrete public representations for ID, input presence, enums, objects, and custom scalars remain uncommitted until their implementation and consumer contracts are validated. Do not add speculative public types for these future features during the MVP.
 
 Upstream release notes include fixes for interface implementation types and fragment validation. Record dependency versions and retain regression checks for important integration paths and known failures. Do not promise stable diagnostic wording or drive behavior by parsing error strings.
 
@@ -136,7 +176,7 @@ necrassrs-cli
   └─ Project initialization templates
 ```
 
-A build-time `Schema` instance does not survive into the running server. Start by embedding the validated SDL and parsing and validating it once during server initialization, then reuse that runtime schema across requests. The prototype verified caller-owned schema borrowing; generated embedding and initialization remain product implementation work. Do not introduce a schema serialization format.
+A build-time `Schema` instance does not survive into the running server. The generator embeds the validated schema as `generated::SDL` using Apollo's SDL serialization, preserving schema definitions and extensions rather than the original source formatting or comments. Parse and validate it once during server initialization, then reuse that runtime schema across requests. Executable consumer tests verify this path; Cargo integration and initialization wiring remain work for issue #4. Do not introduce a separate schema serialization format.
 
 The complete workflow is:
 
@@ -335,6 +375,17 @@ The executor direction is recorded in this document; it does not need a separate
 | Deliver the greeting example and integration checks | Real consumer example with hardcoded names, Cargo generation, user resolvers, Axum handler, and runnable instructions. Verify all acceptance criteria of #1 together. | All preceding tasks |
 
 Each task includes its own relevant checks. The final example verifies integration rather than postponing component testing. Code generation and Axum work can proceed independently once their runtime contracts are stable. CLI initialization, development UI, and release automation remain follow-up work outside #1.
+
+### 10.2 Type expansion after issue #1
+
+Defer implementation of broader generated type support until the integrated greeting MVP is complete. Organize follow-up issues around these scopes; these are planned work groups, not claims that tracking issues have already been created:
+
+1. Built-in scalars, lists, and nullability across generation, input conversion, and result completion.
+2. Enum and input-object representations and conversion, including input presence and recursive inputs.
+3. Output objects, interfaces, and unions, including resolver wiring and execution.
+4. Custom scalar contracts and input/output conversion.
+
+Existing runtime coverage beyond the generated MVP remains in place. Each expansion must validate the complete supported path rather than declaring support based only on generated Rust types or successful Apollo validation.
 
 ## 11. Open decisions
 

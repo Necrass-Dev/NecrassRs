@@ -1,0 +1,13 @@
+[package]
+name = "necrassrs-build"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+apollo-compiler.workspace = true
+miette = "7.6.0"
+quote = "1.0"
+
+[dev-dependencies]
+futures = "0.3"
+serde_json = "1.0"

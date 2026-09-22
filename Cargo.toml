@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/necrassrs"]
+members = ["crates/necrassrs", "crates/necrassrs-build"]
 resolver = "3"
 
 [workspace.package]
@@ -7,5 +7,5 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-apollo-compiler = "=1.33.0"
+apollo-compiler = "1.33.0"
 serde = { version = "1.0.229", features = ["derive"] }
