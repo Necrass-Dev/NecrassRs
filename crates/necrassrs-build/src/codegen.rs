@@ -787,11 +787,132 @@ mod test {
         assert_consumer_compiles(&generated, consumer);
     }
 
+    const HELLO_CONSUMER: &str = r#"
+        pub struct Query;
+        impl resolvers::QueryResolver<()> for Query {
+            async fn hello<'a>(
+                &'a self, _: &'a (), _: types::Query::hello::Args,
+            ) -> Result<String, necrassrs::ResolverError> {
+                Ok(String::from("Hello, Sheri"))
+            }
+        }
+    "#;
+
+    #[test]
+    fn renamed_or_removed_field_rejects_existing_resolver_implementation() {
+        for (sdl, compatible) in [
+            ("type Query { hello: String! ping: String! }", true),
+            ("type Query { greet: String! ping: String! }", false),
+            ("type Query { ping: String! }", false),
+        ] {
+            let schema = Schema::parse_and_validate(sdl, "schema.graphql")
+                .expect("the test schema must be valid");
+            let generated = super::generate(&schema).expect("generation must succeed");
+            if compatible {
+                assert_consumer_compiles(&generated, HELLO_CONSUMER);
+            } else {
+                assert_consumer_fails(&generated, HELLO_CONSUMER, "E0407");
+            }
+        }
+    }
+
+    #[test]
+    fn renamed_or_removed_argument_rejects_existing_argument_access() {
+        let consumer = r#"
+            pub struct Query;
+            impl resolvers::QueryResolver<()> for Query {
+                async fn hello<'a>(
+                    &'a self, _: &'a (), args: types::Query::hello::Args,
+                ) -> Result<String, necrassrs::ResolverError> {
+                    Ok(format!("Hello, {}", args.name))
+                }
+            }
+        "#;
+        for (sdl, compatible) in [
+            ("type Query { hello(name: String!): String! }", true),
+            ("type Query { hello(who: String!): String! }", false),
+            ("type Query { hello: String! }", false),
+        ] {
+            let schema = Schema::parse_and_validate(sdl, "schema.graphql")
+                .expect("the test schema must be valid");
+            let generated = super::generate(&schema).expect("generation must succeed");
+            if compatible {
+                assert_consumer_compiles(&generated, consumer);
+            } else {
+                assert_consumer_fails(&generated, consumer, "E0609");
+            }
+        }
+    }
+
+    #[test]
+    fn added_field_preserves_existing_partial_implementation() {
+        for sdl in [
+            "type Query { hello: String! }",
+            "type Query { hello: String! ping: String! }",
+        ] {
+            let schema = Schema::parse_and_validate(sdl, "schema.graphql")
+                .expect("the test schema must be valid");
+            let generated = super::generate(&schema).expect("generation must succeed");
+            assert_consumer_compiles(&generated, HELLO_CONSUMER);
+        }
+    }
+
     fn assert_consumer_compiles(generated: &str, consumer: &str) {
         assert_consumer(generated, consumer, false);
     }
 
+    fn assert_consumer_fails(generated: &str, consumer: &str, error_code: &str) {
+        let output = compile_consumer(generated, consumer, None);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "expected compilation to fail with {error_code}"
+        );
+        let diagnostics: Vec<serde_json::Value> = stderr
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("rustc must emit JSON diagnostics"))
+            .collect();
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic["level"] == "error" && diagnostic["code"]["code"] == error_code
+            }),
+            "expected {error_code}, got:\n{stderr}",
+        );
+    }
+
     fn assert_consumer(generated: &str, consumer: &str, run: bool) {
+        let executable = std::env::temp_dir().join(format!(
+            "necrassrs-consumer-{}-{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            std::env::consts::EXE_SUFFIX,
+        ));
+        let output = compile_consumer(generated, consumer, run.then_some(executable.as_path()));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if run {
+            let result = std::process::Command::new(&executable).output();
+            std::fs::remove_file(&executable).unwrap();
+            let output = result.expect("the compiled consumer must run");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    fn compile_consumer(
+        generated: &str,
+        consumer: &str,
+        executable: Option<&std::path::Path>,
+    ) -> std::process::Output {
         use std::{
             io::Write,
             path::Path,
@@ -842,47 +963,24 @@ mod test {
                 .arg("-L")
                 .arg(format!("dependency={}", directory.join("deps").display()));
         }
-        let executable = std::env::temp_dir().join(format!(
-            "necrassrs-consumer-{}-{}{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            std::env::consts::EXE_SUFFIX,
-        ));
-        if run {
-            compiler.arg("-o").arg(&executable);
+        if let Some(executable) = executable {
+            compiler.arg("-o").arg(executable);
         } else {
             compiler.args(["--crate-type=lib", "--emit=metadata", "-o", "-"]);
         }
         let mut rustc = compiler
-            .args(["--edition=2024", "--deny=warnings", "-"])
+            .args([
+                "--edition=2024",
+                "--deny=warnings",
+                "--error-format=json",
+                "-",
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
             .expect("rustc must be available");
         write!(rustc.stdin.take().unwrap(), "{generated}\n{consumer}").unwrap();
-        let output = rustc.wait_with_output().unwrap();
-        let execution = if run && output.status.success() {
-            let result = Command::new(&executable).output();
-            std::fs::remove_file(&executable).unwrap();
-            Some(result.expect("the compiled consumer must run"))
-        } else {
-            None
-        };
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if let Some(output) = execution {
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        rustc.wait_with_output().unwrap()
     }
 }
