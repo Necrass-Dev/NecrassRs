@@ -5,8 +5,11 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     let types = generate_types(schema)?;
     let resolvers = generate_resolvers(schema)?;
     let dispatch = generate_dispatch(schema)?;
+    let sdl = schema.to_string();
 
     Ok(quote! {
+        pub const SDL: &str = #sdl;
+
         #types
         #resolvers
         #dispatch
@@ -465,7 +468,7 @@ mod test {
             }
 
             fn main() {
-                let schema = necrassrs::Schema::parse_and_validate(SDL, "schema.graphql").unwrap();
+                let schema = necrassrs::Schema::parse_and_validate(generated::SDL, "schema.graphql").unwrap();
                 let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
                 let run = |document| {
                     let request = necrassrs::Request::new(document);
@@ -495,7 +498,7 @@ mod test {
                 }
             }
         "#;
-        let source = format!("const SDL: &str = {sdl:?}; mod generated {{ {generated} }}");
+        let source = format!("mod generated {{ {generated} }}");
         assert_consumer(&source, consumer, true);
     }
 

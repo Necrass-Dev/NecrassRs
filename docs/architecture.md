@@ -93,7 +93,8 @@ Current implementation status:
 - The generator produces argument structs and resolver methods for `String!`, including empty argument structs and default methods for partial implementations. Consumer compilation checks cover naming, borrowed Context values, and `Send` resolver futures.
 - The runtime completes String results, including nullable and list combinations, but does not generally complete other scalar, enum, or object results. Its broader input processing and Apollo validation do not establish complete type support.
 - Generated query dispatch executes through the runtime with borrowed Context and a `Send` execution future. Executable consumer checks cover the greeting, custom root/field names, argument conversion failures, domain-error preservation, and successful execution without selecting an unimplemented field.
-- Embedded SDL, miette source diagnostics, consumer process-termination checks for selected unimplemented fields, and SDL contract-change compilation failures remain work for issue #3. Current generation errors contain messages without source spans.
+- The generator exposes `generated::SDL` as a public string constant using Apollo's schema serialization. Executable consumer checks reconstruct the runtime schema from it, including definitions and extensions from multiple sources.
+- Miette source diagnostics, consumer process-termination checks for selected unimplemented fields, and SDL contract-change compilation failures remain work for issue #3. Current generation errors contain messages without source spans.
 
 The support contract requires explicit diagnostics for unsupported schema features, with source locations when available. Do not silently map unsupported types to String or treat Apollo validation as proof that generation will succeed. Keep validation diagnostics separate from generation errors, and do not make temporary limitations such as lack of Int support permanent rejection contracts.
 
@@ -173,7 +174,7 @@ necrassrs-cli
   └─ Project initialization templates
 ```
 
-A build-time `Schema` instance does not survive into the running server. Start by embedding the validated SDL and parsing and validating it once during server initialization, then reuse that runtime schema across requests. The prototype verified caller-owned schema borrowing; generated embedding and initialization remain product implementation work. Do not introduce a schema serialization format.
+A build-time `Schema` instance does not survive into the running server. The generator embeds the validated schema as `generated::SDL` using Apollo's SDL serialization, preserving schema definitions and extensions rather than the original source formatting or comments. Parse and validate it once during server initialization, then reuse that runtime schema across requests. Executable consumer tests verify this path; Cargo integration and initialization wiring remain work for issue #4. Do not introduce a separate schema serialization format.
 
 The complete workflow is:
 
