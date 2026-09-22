@@ -1300,4 +1300,26 @@ mod tests {
         );
         assert_eq!(response["errors"][0]["path"], json!(["hello"]));
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsupported_object_result_becomes_execution_error() {
+        let schema = Schema::parse_and_validate(
+            "type Query { viewer: User } type User { name: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("query { viewer { name } }");
+        let dispatcher = ValueDispatcher(json!({ "name": "Sheri" }));
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+        let response = to_value(response).unwrap();
+
+        assert_eq!(response["data"]["viewer"], JsonValue::Null);
+        assert!(
+            response["errors"][0]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert_eq!(response["errors"][0]["path"], json!(["viewer"]));
+    }
 }
