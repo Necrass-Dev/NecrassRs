@@ -1,7 +1,7 @@
 # NecrassRs architecture and development plan
 
 Date: 2026-09-17
-Updated: 2026-09-19
+Updated: 2026-09-22
 
 This document defines the target product structure, crate responsibilities, development and release practices, and consumer workflow. It does not describe a completed implementation. Package names and directory layouts are proposed; concrete Rust API signatures remain subject to design.
 
@@ -79,6 +79,22 @@ Methods borrow `self` and Context for the call lifetime, take the field's genera
 ### 3.3 Adoption limits
 
 Use the GraphQL September 2025 specification as the reference for supported behavior. The greeting MVP's scope and completion criteria are already defined in [issue #1](https://github.com/Necrass-Dev/NecrassRs/issues/1). Neither dependency adoption nor the MVP implies complete GraphQL conformance.
+
+#### MVP type support and current implementation
+
+Keep the generated API's type scope limited to `String!` arguments and results until issue #1 is complete. Establish expansion principles now; implement additional type support in follow-up issues rather than expanding the greeting MVP.
+
+Apollo schema validation establishes GraphQL validity, not NecrassRs code generation or execution support. Treat a type as supported through the generated API only when Rust generation, input conversion, dispatch, and runtime result completion work together and are tested.
+
+Current implementation status:
+
+- The generator produces argument structs and resolver methods for `String!`, including empty argument structs and default methods for partial implementations. Consumer compilation checks cover naming, borrowed Context values, and `Send` resolver futures.
+- The runtime completes String results, including nullable and list combinations, but does not generally complete other scalar, enum, or object results. Its broader input processing and Apollo validation do not establish complete type support.
+- Generated dispatch, embedded SDL, miette source diagnostics, selected/unselected partial-implementation execution checks, consumer process-termination checks, and SDL contract-change compilation failures remain work for issue #3. Current generation errors contain messages without source spans.
+
+The support contract requires explicit diagnostics for unsupported schema features, with source locations when available. Do not silently map unsupported types to String or treat Apollo validation as proof that generation will succeed. Keep validation diagnostics separate from generation errors, and do not make temporary limitations such as lack of Int support permanent rejection contracts.
+
+Type expansion must preserve SDL identity and nullability, distinguish omitted nullable inputs from explicit null, and preserve list-container and list-item nullability independently. `Option<T>` for nullable outputs and `Vec<T>` for lists are design candidates; concrete public representations for ID, input presence, enums, objects, and custom scalars remain uncommitted until their implementation and consumer contracts are validated. Do not add speculative public types for these future features during the MVP.
 
 Upstream release notes include fixes for interface implementation types and fragment validation. Record dependency versions and retain regression checks for important integration paths and known failures. Do not promise stable diagnostic wording or drive behavior by parsing error strings.
 
@@ -353,6 +369,17 @@ The executor direction is recorded in this document; it does not need a separate
 | Deliver the greeting example and integration checks | Real consumer example with hardcoded names, Cargo generation, user resolvers, Axum handler, and runnable instructions. Verify all acceptance criteria of #1 together. | All preceding tasks |
 
 Each task includes its own relevant checks. The final example verifies integration rather than postponing component testing. Code generation and Axum work can proceed independently once their runtime contracts are stable. CLI initialization, development UI, and release automation remain follow-up work outside #1.
+
+### 10.2 Type expansion after issue #1
+
+Defer implementation of broader generated type support until the integrated greeting MVP is complete. Organize follow-up issues around these scopes; these are planned work groups, not claims that tracking issues have already been created:
+
+1. Built-in scalars, lists, and nullability across generation, input conversion, and result completion.
+2. Enum and input-object representations and conversion, including input presence and recursive inputs.
+3. Output objects, interfaces, and unions, including resolver wiring and execution.
+4. Custom scalar contracts and input/output conversion.
+
+Existing runtime coverage beyond the generated MVP remains in place. Each expansion must validate the complete supported path rather than declaring support based only on generated Rust types or successful Apollo validation.
 
 ## 11. Open decisions
 
