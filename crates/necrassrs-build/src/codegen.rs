@@ -1,4 +1,6 @@
-use apollo_compiler::{Schema, ast::Type, schema::ExtendedType, validation::Valid};
+use apollo_compiler::{
+    Schema, ast::Type, parser::SourceSpan, schema::ExtendedType, validation::Valid,
+};
 use quote::{format_ident, quote};
 
 pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
@@ -43,12 +45,14 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             quote! { ::std::string::String }
                         }
                         unsupported => {
-                            return Err(CodegenError {
-                                message: format!(
+                            return Err(CodegenError::new(
+                                format!(
                                     "Unsupported argument type at {type_name}.{field_name}({}): {unsupported}",
                                     argument.name,
                                 ),
-                            });
+                                schema,
+                                argument.ty.location(),
+                            ));
                         }
                     };
 
@@ -106,11 +110,13 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
                     quote! { ::std::string::String }
                 }
                 unsupported => {
-                    return Err(CodegenError {
-                        message: format!(
+                    return Err(CodegenError::new(
+                        format!(
                             "Unsupported return type at {type_name}.{field_name}: {unsupported}"
                         ),
-                    });
+                        schema,
+                        field.ty.inner_named_type().location(),
+                    ));
                 }
             };
             let message = format!("Resolver {type_name}.{field_name} is not implemented");
@@ -143,20 +149,29 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
 }
 
 fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
-    if schema.schema_definition.mutation.is_some()
-        || schema.schema_definition.subscription.is_some()
+    if let Some(root) = schema
+        .schema_definition
+        .mutation
+        .as_ref()
+        .or(schema.schema_definition.subscription.as_ref())
     {
-        return Err(CodegenError {
-            message: "Generated dispatch currently supports query-only schemas".to_owned(),
-        });
+        return Err(CodegenError::new(
+            "Generated dispatch currently supports query-only schemas",
+            schema,
+            root.name.location(),
+        ));
     }
     let query = schema
         .schema_definition
         .query
         .as_ref()
         .and_then(|name| schema.get_object(name.as_str()))
-        .ok_or_else(|| CodegenError {
-            message: "A query root object is required".to_owned(),
+        .ok_or_else(|| {
+            CodegenError::new(
+                "A query root object is required",
+                schema,
+                schema.schema_definition.location(),
+            )
         })?;
     let type_name = query.name.as_str();
     let object_name = format_ident!("r#{}", rust_name(type_name));
@@ -232,9 +247,35 @@ fn rust_name(name: &str) -> String {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, miette::Diagnostic)]
 pub struct CodegenError {
     message: String,
+    #[source_code]
+    source: Option<miette::NamedSource<String>>,
+    #[label("{message}")]
+    span: Option<miette::SourceSpan>,
+}
+
+impl CodegenError {
+    fn new(message: impl Into<String>, schema: &Schema, location: Option<SourceSpan>) -> Self {
+        let (source, span) = location
+            .and_then(|location| {
+                let source = schema.sources.get(&location.file_id())?;
+                Some((
+                    miette::NamedSource::new(
+                        source.path().to_string_lossy(),
+                        source.source_text().to_owned(),
+                    ),
+                    (location.offset(), location.node_len()).into(),
+                ))
+            })
+            .unzip();
+        Self {
+            message: message.into(),
+            source,
+            span,
+        }
+    }
 }
 
 impl std::fmt::Display for CodegenError {
