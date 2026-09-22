@@ -145,6 +145,34 @@ fn apollo_parse_failure_reports_source_location_without_color() {
     }
 }
 
+#[test]
+fn apollo_validation_failure_preserves_multiple_source_diagnostics() {
+    let directory = create_consumer();
+    fs::write(
+        directory.join("schema/first.graphql"),
+        "extend type Query {\n  first: MissingFirst\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("schema/query/fields/second.graphql"),
+        "extend type Query {\n  second: MissingSecond\n}\n",
+    )
+    .unwrap();
+    let build = build_consumer(&directory);
+    fs::remove_dir_all(&directory).unwrap();
+
+    assert!(!build.status.success());
+    let stderr = String::from_utf8(build.stderr).unwrap();
+    for expected in [
+        "first.graphql:2:",
+        "first: MissingFirst",
+        "second.graphql:2:",
+        "second: MissingSecond",
+    ] {
+        assert!(stderr.contains(expected), "missing {expected:?}:\n{stderr}");
+    }
+}
+
 fn generated_path(build: &Output) -> PathBuf {
     assert!(
         build.status.success(),
