@@ -57,6 +57,49 @@ fn sdl_edit_regenerates_contract_without_changing_user_source() {
     );
 }
 
+#[test]
+fn sdl_addition_regenerates_contract_without_changing_user_source() {
+    let directory = create_consumer();
+    let initial = build_consumer(&directory);
+    let output = generated_path(&initial);
+    assert!(!fs::read_to_string(&output).unwrap().contains("addedField"));
+    let source = fs::read(directory.join("src/main.rs")).unwrap();
+
+    fs::create_dir_all(directory.join("schema/new/nested")).unwrap();
+    fs::write(
+        directory.join("schema/new/nested/addition.graphql"),
+        "extend type Query { addedField: String! }",
+    )
+    .unwrap();
+    let rebuilt = build_consumer(&directory);
+    let regenerated = fs::read_to_string(generated_path(&rebuilt)).unwrap();
+    let source_after = fs::read(directory.join("src/main.rs")).unwrap();
+    fs::remove_dir_all(&directory).unwrap();
+
+    assert!(regenerated.contains("addedField"));
+    assert_eq!(source, source_after);
+}
+
+fn generated_path(build: &Output) -> PathBuf {
+    assert!(
+        build.status.success(),
+        "consumer build failed:\n{}\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr),
+    );
+    String::from_utf8_lossy(&build.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|message| {
+            (message["reason"] == "build-script-executed")
+                .then(|| message["out_dir"].as_str().map(PathBuf::from))
+                .flatten()
+                .map(|directory| directory.join("necrassrs.rs"))
+                .filter(|path| path.is_file())
+        })
+        .expect("Cargo must report the generated file under the consumer OUT_DIR")
+}
+
 fn create_consumer() -> PathBuf {
     static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
