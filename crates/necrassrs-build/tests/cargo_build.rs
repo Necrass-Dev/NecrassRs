@@ -80,6 +80,38 @@ fn sdl_addition_regenerates_contract_without_changing_user_source() {
     assert_eq!(source, source_after);
 }
 
+#[test]
+fn sdl_deletion_removes_generated_contract_without_changing_user_source() {
+    let directory = create_consumer();
+    // The library must track SDL even when the consumer tracks other inputs.
+    fs::write(
+        directory.join("build.rs"),
+        include_str!("fixtures/consumer/build.rs").replace(
+            "    necrassrs_build::build",
+            "    println!(\"cargo::rerun-if-changed=build.rs\");\n    necrassrs_build::build",
+        ),
+    )
+    .unwrap();
+    let removed = directory.join("schema/query/fields/removable.graphql");
+    fs::write(&removed, "extend type Query { removableField: String! }").unwrap();
+    let initial = build_consumer(&directory);
+    assert!(
+        fs::read_to_string(generated_path(&initial))
+            .unwrap()
+            .contains("removableField")
+    );
+    let source = fs::read(directory.join("src/main.rs")).unwrap();
+
+    fs::remove_file(removed).unwrap();
+    let rebuilt = build_consumer(&directory);
+    let regenerated = fs::read_to_string(generated_path(&rebuilt)).unwrap();
+    let source_after = fs::read(directory.join("src/main.rs")).unwrap();
+    fs::remove_dir_all(&directory).unwrap();
+
+    assert!(!regenerated.contains("removableField"));
+    assert_eq!(source, source_after);
+}
+
 fn generated_path(build: &Output) -> PathBuf {
     assert!(
         build.status.success(),
