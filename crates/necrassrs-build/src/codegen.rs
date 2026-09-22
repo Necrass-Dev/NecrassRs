@@ -3,7 +3,7 @@ use quote::{format_ident, quote};
 
 pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     let types = generate_types(schema)?;
-    let resolvers = generate_resolvers(schema);
+    let resolvers = generate_resolvers(schema)?;
 
     Ok(quote! {
         #types
@@ -27,10 +27,6 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
         let mut field_modules = Vec::new();
 
         for (field_name, field) in &object.fields {
-            if field.arguments.is_empty() {
-                continue;
-            }
-
             let field_name = field_name.as_str();
             let field_ident = format_ident!("r#{}", rust_name(field_name));
             let (argument_names, argument_types) = field
@@ -84,26 +80,61 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
     })
 }
 
-fn generate_resolvers(schema: &Valid<Schema>) -> impl quote::ToTokens {
+fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
     let mut resolvers = Vec::new();
 
     for (type_name, definition) in &schema.types {
-        if type_name.as_str().starts_with("__") || !matches!(definition, ExtendedType::Object(_)) {
+        if type_name.as_str().starts_with("__") {
             continue;
         }
+        let ExtendedType::Object(object) = definition else {
+            continue;
+        };
 
+        let object_name = format_ident!("r#{}", rust_name(type_name.as_str()));
         let resolver_name = format_ident!("{}Resolver", rust_name(type_name.as_str()));
+        let mut methods = Vec::new();
+        for (field_name, field) in &object.fields {
+            let method_name = format_ident!("r#{}", rust_name(field_name.as_str()));
+            let return_type = match &field.ty {
+                Type::NonNullNamed(name) if name.as_str() == "String" => {
+                    quote! { ::std::string::String }
+                }
+                unsupported => {
+                    return Err(CodegenError {
+                        message: format!(
+                            "Unsupported return type at {type_name}.{field_name}: {unsupported}"
+                        ),
+                    });
+                }
+            };
+            let message = format!("Resolver {type_name}.{field_name} is not implemented");
+            methods.push(quote! {
+                fn #method_name<'a>(
+                    &'a self,
+                    _context: &'a C,
+                    _args: super::types::#object_name::#method_name::Args,
+                ) -> impl ::core::future::Future<
+                    Output = ::core::result::Result<#return_type, ::necrassrs::ResolverError>
+                > + ::core::marker::Send + 'a {
+                    async { ::core::unimplemented!(#message) }
+                }
+            });
+        }
+
         resolvers.push(quote! {
-            #[allow(non_camel_case_types)]
-            pub trait #resolver_name<C> {}
+            #[allow(non_camel_case_types, non_snake_case)]
+            pub trait #resolver_name<C> {
+                #(#methods)*
+            }
         });
     }
 
-    quote! {
+    Ok(quote! {
         pub mod resolvers {
             #(#resolvers)*
         }
-    }
+    })
 }
 
 fn rust_name(name: &str) -> String {
@@ -188,7 +219,7 @@ mod test {
     #[test]
     fn generated_resolver_accepts_borrowed_context_and_returns_send_future() {
         let schema = Schema::parse_and_validate(
-            "type Query { hello(name: String!): String! }",
+            "type Query { hello(name: String!): String! ping: String! }",
             "schema.graphql",
         )
         .expect("the test schema must be valid");
@@ -230,6 +261,8 @@ mod test {
                 let args = types::Query::hello::Args { name: String::from("Sheri") };
                 let future = check_contract(&query, &context, args);
                 drop(future);
+                let unimplemented = query.ping(&context, types::Query::ping::Args {});
+                drop(unimplemented);
             }
         "#;
 
