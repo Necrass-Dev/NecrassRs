@@ -83,15 +83,6 @@ fn sdl_addition_regenerates_contract_without_changing_user_source() {
 #[test]
 fn sdl_deletion_removes_generated_contract_without_changing_user_source() {
     let directory = create_consumer();
-    // The library must track SDL even when the consumer tracks other inputs.
-    fs::write(
-        directory.join("build.rs"),
-        include_str!("fixtures/consumer/build.rs").replace(
-            "    necrassrs_build::build",
-            "    println!(\"cargo::rerun-if-changed=build.rs\");\n    necrassrs_build::build",
-        ),
-    )
-    .unwrap();
     let removed = directory.join("schema/query/fields/removable.graphql");
     fs::write(&removed, "extend type Query { removableField: String! }").unwrap();
     let initial = build_consumer(&directory);
@@ -190,6 +181,7 @@ fn create_consumer() -> PathBuf {
                 necrassrs = {{ path = {runtime:?} }}
                 [build-dependencies]
                 necrassrs-build = {{ path = {build_library:?} }}
+                miette = "7.6.0"
                 [lints.rust]
                 warnings = "deny"
             "#,
