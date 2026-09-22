@@ -38,6 +38,15 @@ where
         Err(errors) => return Response::request_errors(errors),
     };
 
+    // TODO: Temporary unsupported-feature contract
+    if prepared.operation.is_subscription() {
+        return Response::request_error(GraphQLError::new(
+            "Subscription operations are not supported.",
+            prepared.operation.location(),
+            &prepared.document.sources,
+        ));
+    }
+
     let mut data = JsonMap::new();
     let mut errors = Vec::new();
 
@@ -1505,7 +1514,7 @@ mod tests {
         }
     }
 
-    // Temporary unsupported-feature contract: remove this rejection test when
+    // TODO: Temporary unsupported-feature contract: remove this rejection test when
     // subscription execution is implemented and replace it with response-stream tests.
     #[tokio::test(flavor = "current_thread")]
     async fn unsupported_subscription_is_rejected_before_dispatch() {
