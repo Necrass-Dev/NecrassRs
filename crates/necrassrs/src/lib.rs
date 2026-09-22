@@ -8,7 +8,7 @@ use serde::Serialize;
 
 mod execution;
 
-pub use execution::{Dispatcher, execute};
+pub use execution::{Dispatcher, FieldCoordinate, execute};
 
 pub struct ResolverError {
     message: String,

@@ -14,11 +14,17 @@ use crate::{
     request::{PreparedRequest, prepare_request},
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FieldCoordinate<'a> {
+    pub parent_type: &'a str,
+    pub field: &'a str,
+}
+
 pub trait Dispatcher<C> {
     fn resolve<'a>(
         &'a self,
         context: &'a C,
-        field_name: &'a str,
+        coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
     ) -> impl Future<Output = Result<JsonValue, ResolverError>> + Send + 'a;
 }
@@ -75,7 +81,14 @@ where
         } else {
             match coerce_argument_values(schema, &prepared, &path, field, definition) {
                 Ok(arguments) => match dispatcher
-                    .resolve(context, field.name.as_str(), &arguments)
+                    .resolve(
+                        context,
+                        FieldCoordinate {
+                            parent_type: object_type.name.as_str(),
+                            field: field.name.as_str(),
+                        },
+                        &arguments,
+                    )
                     .await
                 {
                     Ok(value) => (value, false),
@@ -599,7 +612,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use crate::{Request, ResolverError, request::prepare_request};
+    use crate::{FieldCoordinate, Request, ResolverError, request::prepare_request};
     use apollo_compiler::{
         Schema,
         response::{
@@ -630,12 +643,12 @@ mod tests {
         async fn resolve<'a>(
             &'a self,
             context: &'a TestContext<'context>,
-            field_name: &'a str,
+            coordinate: FieldCoordinate<'a>,
             arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
             tokio::task::yield_now().await;
 
-            assert_eq!(field_name, "hello");
+            assert_eq!(coordinate.field, "hello");
 
             let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
@@ -647,7 +660,7 @@ mod tests {
         async fn resolve<'a>(
             &'a self,
             _context: &'a (),
-            _field_name: &'a str,
+            _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
             Err(ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED"))
@@ -658,7 +671,7 @@ mod tests {
         async fn resolve<'a>(
             &'a self,
             _context: &'a (),
-            _field_name: &'a str,
+            _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
             Ok(JsonValue::Null)
@@ -669,7 +682,7 @@ mod tests {
         async fn resolve<'a>(
             &'a self,
             _context: &'a (),
-            _field_name: &'a str,
+            _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
             Ok(self.0.clone())
@@ -680,7 +693,7 @@ mod tests {
         async fn resolve<'a>(
             &'a self,
             _context: &'a (),
-            _field_name: &'a str,
+            _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
             self.0.fetch_add(1, Ordering::Relaxed);
@@ -693,7 +706,7 @@ mod tests {
         async fn resolve<'a>(
             &'a self,
             _context: &'a (),
-            _field_name: &'a str,
+            _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
             if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
@@ -708,12 +721,12 @@ mod tests {
         async fn resolve<'a>(
             &'a self,
             _context: &'a (),
-            field_name: &'a str,
+            coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
         ) -> Result<JsonValue, ResolverError> {
-            self.0.lock().unwrap().push(field_name.to_owned());
+            self.0.lock().unwrap().push(coordinate.field.to_owned());
 
-            Ok(json!(field_name))
+            Ok(json!(coordinate.field))
         }
     }
 
@@ -1480,10 +1493,13 @@ mod tests {
             async fn resolve<'a>(
                 &'a self,
                 _context: &'a (),
-                field_name: &'a str,
+                coordinate: FieldCoordinate<'a>,
                 _arguments: &'a JsonMap,
             ) -> Result<JsonValue, ResolverError> {
-                self.0.lock().unwrap().push(field_name.to_owned());
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("{}.{}", coordinate.parent_type, coordinate.field));
                 Ok(json!("Hello"))
             }
         }
