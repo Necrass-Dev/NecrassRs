@@ -1378,4 +1378,153 @@ mod tests {
         );
         assert_eq!(response["errors"][0]["path"], json!(["viewer"]));
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interface_selection_uses_object_field_nullability() {
+        let schema = Schema::parse_and_validate(
+            "interface Root { hello: String } \
+             type Query implements Root { hello: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("{ ... on Root { greeting: hello } }");
+
+        let response =
+            to_value(super::execute(&schema, &request, &NullDispatcher, &()).await).unwrap();
+
+        assert_eq!(response["data"], JsonValue::Null);
+        assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(response["errors"][0]["path"], json!(["greeting"]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interface_selection_uses_object_argument_default() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                interface Root { hello(name: String! = "Interface"): String! }
+                type Query implements Root { hello(name: String! = "Sheri"): String! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("{ ... on Root { hello } }");
+        let context = TestContext { greeting: "Hello" };
+
+        let response =
+            to_value(super::execute(&schema, &request, &TestDispatcher, &context).await).unwrap();
+
+        assert_eq!(response, json!({ "data": { "hello": "Hello, Sheri" } }));
+    }
+
+    #[test]
+    fn variable_list_default_is_coerced_to_a_list() {
+        let arguments = coerce_arguments(
+            "type Query { hello(names: [String!]): String }",
+            Request::new(r#"query($names: [String!] = "Sheri") { hello(names: $names) }"#),
+        );
+
+        assert_eq!(arguments.get("names"), Some(&json!(["Sheri"])));
+    }
+
+    #[test]
+    fn variable_object_default_applies_input_field_defaults() {
+        let arguments = coerce_arguments(
+            r#"
+                input GreetingInput { name: String! = "Sheri" }
+                type Query { hello(input: GreetingInput): String }
+            "#,
+            Request::new("query($input: GreetingInput = {}) { hello(input: $input) }"),
+        );
+
+        assert_eq!(arguments.get("input"), Some(&json!({ "name": "Sheri" })));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn query_and_mutation_dispatch_are_distinguishable() {
+        struct RecordingDispatcher(Mutex<Vec<(String, JsonMap)>>);
+
+        impl super::Dispatcher<()> for RecordingDispatcher {
+            async fn resolve<'a>(
+                &'a self,
+                _context: &'a (),
+                field_name: &'a str,
+                arguments: &'a JsonMap,
+            ) -> Result<JsonValue, ResolverError> {
+                // Capture all dispatch identity available in the current API. Extend this
+                // record with root identity when the Dispatcher contract exposes it.
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((field_name.to_owned(), arguments.clone()));
+                Ok(json!("Hello"))
+            }
+        }
+
+        let schema = Schema::parse_and_validate(
+            "type Query { hello: String! } type Mutation { hello: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let dispatcher = RecordingDispatcher(Mutex::new(Vec::new()));
+
+        for document in ["query { hello }", "mutation { hello }"] {
+            let response =
+                to_value(super::execute(&schema, &Request::new(document), &dispatcher, &()).await)
+                    .unwrap();
+            assert_eq!(response, json!({ "data": { "hello": "Hello" } }));
+        }
+
+        let calls = dispatcher.0.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_ne!(
+            calls[0], calls[1],
+            "dispatch must distinguish Query.hello from Mutation.hello"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn typename_returns_root_type_without_invoking_dispatcher() {
+        let schema = Schema::parse_and_validate(
+            "schema { query: ReadRoot mutation: WriteRoot } \
+             type ReadRoot { hello: String } type WriteRoot { hello: String }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+
+        for (document, expected) in [
+            ("query { kind: __typename }", "ReadRoot"),
+            ("mutation { kind: __typename }", "WriteRoot"),
+        ] {
+            let response =
+                to_value(super::execute(&schema, &Request::new(document), &dispatcher, &()).await)
+                    .unwrap();
+
+            assert_eq!(response, json!({ "data": { "kind": expected } }));
+            assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    // Temporary unsupported-feature contract: remove this rejection test when
+    // subscription execution is implemented and replace it with response-stream tests.
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsupported_subscription_is_rejected_before_dispatch() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello: String } type Subscription { hello: String }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("subscription { hello }");
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+        assert!(response.get("data").is_none());
+        assert!(
+            response["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty())
+        );
+    }
 }
