@@ -117,6 +117,43 @@ mod test {
     }
 
     #[test]
+    fn resolver_trait_names_preserve_object_names() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query { hello(name: String!): String! }
+                type User { hello(name: String!): String! }
+                type user { hello(name: String!): String! }
+                type UserResolver { hello(name: String!): String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let normalized = generated
+            .split_whitespace()
+            .collect::<String>()
+            .replace("r#", "");
+
+        assert!(
+            normalized.contains("pubmodresolvers{"),
+            "expected a public resolvers module, got:\n{generated}"
+        );
+        for name in [
+            "QueryResolver",
+            "UserResolver",
+            "userResolver",
+            "UserResolverResolver",
+        ] {
+            assert_eq!(
+                normalized.matches(&format!("pubtrait{name}<")).count(),
+                1,
+                "expected exactly one public {name} trait with a Context parameter, got:\n{generated}"
+            );
+        }
+    }
+
+    #[test]
     fn generated_paths_preserve_case_boundaries_and_escape_rust_names() {
         use std::{
             io::Write,
