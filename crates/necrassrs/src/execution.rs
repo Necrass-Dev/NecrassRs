@@ -5,7 +5,7 @@ use apollo_compiler::{
     executable::{Field, Selection},
     parser::SourceSpan,
     response::{GraphQLError, JsonMap, JsonValue, ResponseDataPathSegment},
-    schema::ExtendedType,
+    schema::{ExtendedType, ObjectType},
     validation::Valid,
 };
 
@@ -41,7 +41,7 @@ where
     let mut data = JsonMap::new();
     let mut errors = Vec::new();
 
-    for (response_key, fields) in collect_fields(&prepared) {
+    for (response_key, fields) in collect_fields(schema, &prepared) {
         // TODO: Expand next line, 필드 병합 테스트가 변경을 요구할 때 구현.
         let field = fields[0];
         let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
@@ -117,11 +117,19 @@ fn resolver_error_to_graphql_error(
     error
 }
 
-fn collect_fields(prepared: &PreparedRequest) -> IndexMap<Name, Vec<&Field>> {
+fn collect_fields<'a>(
+    schema: &Valid<Schema>,
+    prepared: &'a PreparedRequest,
+) -> IndexMap<Name, Vec<&'a Field>> {
     let mut fields = IndexMap::default();
     let mut visited_fragments = HashSet::default();
+    let object_type = schema
+        .get_object(prepared.operation.selection_set.ty.as_str())
+        .expect("validated operation root must be an object");
 
     collect_selections(
+        schema,
+        object_type,
         prepared,
         &prepared.operation.selection_set.selections,
         &mut visited_fragments,
@@ -129,6 +137,69 @@ fn collect_fields(prepared: &PreparedRequest) -> IndexMap<Name, Vec<&Field>> {
     );
 
     fields
+}
+
+fn collect_selections<'a>(
+    schema: &Valid<Schema>,
+    object_type: &ObjectType,
+    prepared: &'a PreparedRequest,
+    selections: &'a [Selection],
+    visited_fragments: &mut HashSet<&'a Name>,
+    fields: &mut IndexMap<Name, Vec<&'a Field>>,
+) {
+    selections
+        .iter()
+        .filter(|selection| should_include(selection, &prepared.variables))
+        .for_each(|selection| match selection {
+            Selection::Field(field) => {
+                fields
+                    .entry(field.response_key().clone())
+                    .or_default()
+                    .push(field);
+            }
+            Selection::FragmentSpread(spread) => {
+                if visited_fragments.insert(&spread.fragment_name)
+                    && let Some(fragment) = prepared.document.fragments.get(&spread.fragment_name)
+                    && does_fragment_type_apply(schema, object_type, fragment.type_condition())
+                {
+                    collect_selections(
+                        schema,
+                        object_type,
+                        prepared,
+                        &fragment.selection_set.selections,
+                        visited_fragments,
+                        fields,
+                    );
+                }
+            }
+            Selection::InlineFragment(fragment) => {
+                if fragment.type_condition.as_ref().is_none_or(|condition| {
+                    does_fragment_type_apply(schema, object_type, condition)
+                }) {
+                    collect_selections(
+                        schema,
+                        object_type,
+                        prepared,
+                        &fragment.selection_set.selections,
+                        visited_fragments,
+                        fields,
+                    );
+                }
+            }
+        });
+}
+
+fn does_fragment_type_apply(
+    schema: &Valid<Schema>,
+    object_type: &ObjectType,
+    condition: &Name,
+) -> bool {
+    match schema.types.get(condition) {
+        Some(ExtendedType::Object(_)) => condition == &object_type.name,
+        Some(ExtendedType::Interface(_)) => object_type.implements_interfaces.contains(condition),
+        Some(ExtendedType::Union(union)) => union.members.contains(&object_type.name),
+        _ => false,
+    }
 }
 
 fn coerce_argument_values(
@@ -479,45 +550,6 @@ fn should_include(selection: &Selection, variables: &JsonMap) -> bool {
         && directive_condition(selection, "include", variables).unwrap_or(true)
 }
 
-fn collect_selections<'a>(
-    prepared: &'a PreparedRequest,
-    selections: &'a [Selection],
-    visited_fragments: &mut HashSet<&'a Name>,
-    fields: &mut IndexMap<Name, Vec<&'a Field>>,
-) {
-    selections
-        .iter()
-        .filter(|selection| should_include(selection, &prepared.variables))
-        .for_each(|selection| match selection {
-            Selection::Field(field) => {
-                fields
-                    .entry(field.response_key().clone())
-                    .or_default()
-                    .push(field);
-            }
-            Selection::FragmentSpread(spread) => {
-                if visited_fragments.insert(&spread.fragment_name)
-                    && let Some(fragment) = prepared.document.fragments.get(&spread.fragment_name)
-                {
-                    collect_selections(
-                        prepared,
-                        &fragment.selection_set.selections,
-                        visited_fragments,
-                        fields,
-                    );
-                }
-            }
-            Selection::InlineFragment(fragment) => {
-                collect_selections(
-                    prepared,
-                    &fragment.selection_set.selections,
-                    visited_fragments,
-                    fields,
-                );
-            }
-        });
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -613,7 +645,7 @@ mod tests {
     fn coerce_arguments(schema_source: &str, request: Request) -> JsonMap {
         let schema = Schema::parse_and_validate(schema_source, "schema.graphql").unwrap();
         let prepared = prepare_request(&schema, &request).unwrap();
-        let field = super::collect_fields(&prepared)
+        let field = super::collect_fields(&schema, &prepared)
             .into_values()
             .next()
             .unwrap()[0];
@@ -655,7 +687,7 @@ mod tests {
 
         let prepared = prepare_request(&schema, &request).unwrap();
 
-        let fields = super::collect_fields(&prepared);
+        let fields = super::collect_fields(&schema, &prepared);
         let collected = fields.get("greeting").unwrap();
 
         assert_eq!(fields.len(), 1);
@@ -755,7 +787,7 @@ mod tests {
         );
 
         let prepared = prepare_request(&schema, &request).unwrap();
-        let fields = super::collect_fields(&prepared);
+        let fields = super::collect_fields(&schema, &prepared);
         let field = fields.get("hello").unwrap()[0];
 
         let arguments = super::coerce_argument_values(&schema, &prepared, &[], field).unwrap();
@@ -872,7 +904,9 @@ mod tests {
         .with_variables(variables);
 
         let prepared = prepare_request(&schema, &request).unwrap();
-        let field = super::collect_fields(&prepared).get("greeting").unwrap()[0];
+        let field = super::collect_fields(&schema, &prepared)
+            .get("greeting")
+            .unwrap()[0];
         let path = vec![ResponseDataPathSegment::Field(field.response_key().clone())];
 
         let error = super::coerce_argument_values(&schema, &prepared, &path, field).unwrap_err();
@@ -893,7 +927,9 @@ mod tests {
         );
 
         let prepared = prepare_request(&schema, &request).unwrap();
-        let field = super::collect_fields(&prepared).get("greeting").unwrap()[0];
+        let field = super::collect_fields(&schema, &prepared)
+            .get("greeting")
+            .unwrap()[0];
         let path = vec![ResponseDataPathSegment::Field(field.response_key().clone())];
         let resolver_error =
             ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED");
