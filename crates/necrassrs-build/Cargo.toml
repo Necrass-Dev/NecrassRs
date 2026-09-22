@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 apollo-compiler.workspace = true
+miette = "7.6.0"
 quote = "1.0"
 
 [dev-dependencies]
