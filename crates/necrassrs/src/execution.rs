@@ -1473,22 +1473,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn query_and_mutation_dispatch_are_distinguishable() {
-        struct RecordingDispatcher(Mutex<Vec<(String, JsonMap)>>);
+    async fn dispatch_identifies_root_fields_by_schema_coordinate() {
+        struct RecordingDispatcher(Mutex<Vec<String>>);
 
         impl super::Dispatcher<()> for RecordingDispatcher {
             async fn resolve<'a>(
                 &'a self,
                 _context: &'a (),
                 field_name: &'a str,
-                arguments: &'a JsonMap,
+                _arguments: &'a JsonMap,
             ) -> Result<JsonValue, ResolverError> {
-                // Capture all dispatch identity available in the current API. Extend this
-                // record with root identity when the Dispatcher contract exposes it.
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((field_name.to_owned(), arguments.clone()));
+                self.0.lock().unwrap().push(field_name.to_owned());
                 Ok(json!("Hello"))
             }
         }
@@ -1508,10 +1503,9 @@ mod tests {
         }
 
         let calls = dispatcher.0.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_ne!(
-            calls[0], calls[1],
-            "dispatch must distinguish Query.hello from Mutation.hello"
+        assert_eq!(
+            calls.as_slice(),
+            ["Query.hello".to_owned(), "Mutation.hello".to_owned()]
         );
     }
 
