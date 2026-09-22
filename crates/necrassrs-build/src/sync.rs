@@ -1,5 +1,5 @@
 use apollo_compiler::{Schema, validation::Valid};
-use quote::{ToTokens, format_ident, quote};
+use quote::{format_ident, quote};
 use std::{collections::BTreeMap, fs, ops::Range, path::Path};
 use syn::{FnArg, ImplItem, ImplItemFn, Item, Type, ext::IdentExt, spanned::Spanned};
 
@@ -42,9 +42,9 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             )
             .map_err(BuildError::Codegen)?;
             Ok(syn::parse_quote! {
-                async fn #name<'a>(
-                    &'a self,
-                    _context: &'a C,
+                async fn #name(
+                    &self,
+                    _context: &C,
                     _args: crate::generated::types::#object::#name::Args,
                 ) -> ::core::result::Result<#result, ::necrassrs::ResolverError> {
                     ::core::unimplemented!()
@@ -120,6 +120,9 @@ fn update_existing(
     methods: &[ImplItemFn],
 ) -> syn::Result<String> {
     let ast = syn::parse_file(source)?;
+    // parse_file removes these prefixes before assigning token byte ranges.
+    let source_offset = if source.starts_with('\u{feff}') { 3 } else { 0 }
+        + ast.shebang.as_ref().map_or(0, String::len);
     let mut implementations = ast.items.iter().filter_map(|item| {
         let Item::Impl(item) = item else { return None };
         let (_, trait_path, _) = item.trait_.as_ref()?;
@@ -195,37 +198,28 @@ fn update_existing(
                 "Duplicate resolver methods are ambiguous",
             ));
         }
-        let Some(expected) = desired.remove(&name) else {
+        if desired.remove(&name).is_none() {
             edits.push(Edit {
                 range: method.span().byte_range(),
                 replacement: String::new(),
             });
             continue;
-        };
+        }
         if method.sig.asyncness.is_none() || method.sig.inputs.len() != 3 {
             return Err(syn::Error::new_spanned(
                 &method.sig,
                 "Expected an async resolver with self, Context, and Args parameters",
             ));
         }
-        let Some(FnArg::Typed(actual_args)) = method.sig.inputs.last() else {
+        if !matches!(method.sig.inputs.last(), Some(FnArg::Typed(_))) {
             return Err(syn::Error::new_spanned(
                 &method.sig,
                 "Expected a typed Args parameter",
             ));
-        };
-        let Some(FnArg::Typed(expected_args)) = expected.sig.inputs.last() else {
-            return Err(syn::Error::new_spanned(
-                &expected.sig,
-                "Generated resolver has no Args parameter",
-            ));
-        };
-        replace_if_changed(
-            &mut edits,
-            actual_args.ty.as_ref(),
-            expected_args.ty.as_ref(),
-        );
-        replace_if_changed(&mut edits, &method.sig.output, &expected.sig.output);
+        }
+        // In the String!-only contract, retained fields keep the same return type
+        // and Args path. Argument changes update Args in OUT_DIR, not this signature.
+        // Preserve user spelling, aliases, and comments instead of normalizing them.
     }
 
     let added = desired
@@ -233,7 +227,7 @@ fn update_existing(
         .map(|method| {
             let mut method = method.clone();
             if let Some(FnArg::Typed(argument)) = method.sig.inputs.iter_mut().nth(1) {
-                *argument.ty = syn::parse_quote!(&'a #context);
+                *argument.ty = syn::parse_quote!(&#context);
             }
             render_method(&method)
         })
@@ -250,7 +244,9 @@ fn update_existing(
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.range.start));
     let mut updated = source.to_owned();
     let mut next_start = source.len();
-    for edit in edits {
+    for mut edit in edits {
+        edit.range.start += source_offset;
+        edit.range.end += source_offset;
         if edit.range.end > next_start || source.get(edit.range.clone()).is_none() {
             return Err(syn::Error::new_spanned(
                 implementation,
@@ -266,16 +262,6 @@ fn update_existing(
 struct Edit {
     range: Range<usize>,
     replacement: String,
-}
-
-fn replace_if_changed<T: ToTokens + Spanned>(edits: &mut Vec<Edit>, actual: &T, expected: &T) {
-    let replacement = expected.to_token_stream().to_string();
-    if actual.to_token_stream().to_string() != replacement {
-        edits.push(Edit {
-            range: actual.span().byte_range(),
-            replacement,
-        });
-    }
 }
 
 fn render_method(method: &ImplItemFn) -> String {
