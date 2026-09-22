@@ -1,4 +1,9 @@
-use apollo_compiler::response::{ExecutionResponse, GraphQLError, JsonMap, JsonValue};
+use apollo_compiler::response::ExecutionResponse;
+pub use apollo_compiler::{
+    Schema,
+    response::{GraphQLError, JsonMap, JsonValue},
+    validation::Valid,
+};
 use serde::Serialize;
 
 mod execution;
