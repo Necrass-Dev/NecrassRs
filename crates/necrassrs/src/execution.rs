@@ -82,6 +82,7 @@ where
         }
 
         let value = match complete_value(
+            schema,
             &prepared,
             field,
             &field.definition.ty,
@@ -449,6 +450,7 @@ fn new_execution_error(
 struct PropagateNull;
 
 fn complete_value(
+    schema: &Valid<Schema>,
     prepared: &PreparedRequest,
     field: &Field,
     ty: &Type,
@@ -497,7 +499,8 @@ fn complete_value(
                 .map(|(index, value)| {
                     path.push(ResponseDataPathSegment::ListIndex(index));
 
-                    let completed = complete_value(prepared, field, item_type, value, path, errors);
+                    let completed =
+                        complete_value(schema, prepared, field, item_type, value, path, errors);
 
                     path.pop();
 
@@ -512,22 +515,33 @@ fn complete_value(
             }
         }
         Type::Named(name) | Type::NonNullNamed(name) => {
-            if name.as_str() == "String" && !value.is_string() {
-                errors.push(*new_execution_error(
-                    prepared,
-                    path,
-                    format!("Expected field '{}' to return a String.", field.name),
-                    field.name.location(),
-                ));
+            let message = match schema.types.get(name) {
+                Some(ExtendedType::Scalar(_)) if name.as_str() == "String" && value.is_string() => {
+                    return Ok(value);
+                }
+                Some(ExtendedType::Scalar(_)) if name.as_str() == "String" => {
+                    format!("Expected field '{}' to return a String.", field.name)
+                }
+                Some(_) => {
+                    format!("Result completion for type '{name}' is not supported.")
+                }
+                None => {
+                    format!("Unknown output type '{name}'.")
+                }
+            };
 
-                return if ty.is_non_null() {
-                    Err(PropagateNull)
-                } else {
-                    Ok(JsonValue::Null)
-                };
+            errors.push(*new_execution_error(
+                prepared,
+                path,
+                message,
+                field.name.location(),
+            ));
+
+            if ty.is_non_null() {
+                Err(PropagateNull)
+            } else {
+                Ok(JsonValue::Null)
             }
-
-            Ok(value)
         }
     }
 }
