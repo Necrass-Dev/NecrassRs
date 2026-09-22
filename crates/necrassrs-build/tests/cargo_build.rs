@@ -13,7 +13,7 @@ fn cargo_build_compiles_generated_code_and_user_resolver() {
     ));
     fs::create_dir(&directory).unwrap();
     fs::create_dir(directory.join("src")).unwrap();
-    fs::create_dir(directory.join("schema")).unwrap();
+    fs::create_dir_all(directory.join("schema/query/fields")).unwrap();
 
     let runtime = workspace.join("crates/necrassrs").canonicalize().unwrap();
     let build_library = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -47,6 +47,11 @@ fn cargo_build_compiles_generated_code_and_user_resolver() {
     fs::write(
         directory.join("schema/schema.graphql"),
         include_str!("fixtures/consumer/schema.graphql"),
+    )
+    .unwrap();
+    fs::write(
+        directory.join("schema/query/fields/hello.graphql"),
+        include_str!("fixtures/consumer/hello.graphql"),
     )
     .unwrap();
     fs::write(
