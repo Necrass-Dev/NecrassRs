@@ -26,9 +26,9 @@ dependencies = [
 
 [[package]]
 name = "apollo-compiler"
-version = "1.32.0"
+version = "1.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b877306ffde4d3cc428bbc8f506fdd67b99255298ae92b919954c0c52f530504"
+checksum = "5cf9cb85c9c600cc8ff8154d502a4c8bbf9abb8c3f915d34914c1950a1a6273a"
 dependencies = [
  "ahash",
  "apollo-parser",
