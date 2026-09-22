@@ -994,6 +994,106 @@ mod tests {
     }
 
     #[test]
+    fn cyclic_default_execution_preserves_errors_without_dispatch() {
+        const CHILD_ENV: &str = "NECRASSRS_CYCLIC_EXECUTION_TEST_CASE";
+        let cases = [
+            (
+                "literal input",
+                "input R { next: R = {} } type Query { hello(input: R): String }",
+                "{ greeting: hello(input: {}) }",
+            ),
+            (
+                "omitted argument",
+                "input R { next: R = {} } type Query { hello(input: R = {}): String }",
+                "{ greeting: hello }",
+            ),
+            (
+                "missing argument variable",
+                "input R { next: R = {} } type Query { hello(input: R = {}): String }",
+                "query($input: R) { greeting: hello(input: $input) }",
+            ),
+            (
+                "missing input field variable",
+                "input R { next: R = {} } type Query { hello(input: R): String }",
+                "query($next: R) { greeting: hello(input: {next: $next}) }",
+            ),
+            (
+                "mutual cycle through a list",
+                "input A { bs: [B] = [{}] } input B { a: A = {} } \
+                 type Query { hello(input: A): String }",
+                "{ greeting: hello(input: {}) }",
+            ),
+        ];
+
+        if let Ok(index) = std::env::var(CHILD_ENV) {
+            let (case, source, document) = cases[index.parse::<usize>().unwrap()];
+            let schema = Schema::parse_and_validate(source, "schema.graphql").unwrap();
+            let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let response = to_value(runtime.block_on(super::execute(
+                &schema,
+                &Request::new(document),
+                &dispatcher,
+                &(),
+            )))
+            .unwrap();
+
+            assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0, "{case}");
+            assert_eq!(response["data"], json!({ "greeting": null }), "{case}");
+            let errors = response["errors"].as_array().unwrap();
+            assert_eq!(errors.len(), 1, "{case}");
+            assert_eq!(errors[0]["path"], json!(["greeting"]), "{case}");
+            assert!(
+                errors[0]["message"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty()),
+                "{case}"
+            );
+            return;
+        }
+
+        // Isolate each case so a regression causing stack overflow cannot abort the suite.
+        for (index, (case, _, _)) in cases.iter().enumerate() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "execution::tests::cyclic_default_execution_preserves_errors_without_dispatch",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, index.to_string())
+                .output()
+                .unwrap();
+
+            assert!(
+                output.status.success(),
+                "{case}: {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    fn finite_defaults_can_be_reused_across_list_items_and_arguments() {
+        let arguments = coerce_arguments(
+            "input R { next: R = {next: null} } \
+             type Query { hello(first: [R], second: R): String }",
+            Request::new("{ hello(first: [{}, {}], second: {}) }"),
+        );
+
+        assert_eq!(
+            JsonValue::Object(arguments),
+            json!({
+                "first": [{ "next": { "next": null } }, { "next": { "next": null } }],
+                "second": { "next": { "next": null } }
+            })
+        );
+    }
+
+    #[test]
     fn coerced_variable_is_used_as_an_argument() {
         let variables = json!({ "name": "Sheri" }).as_object().unwrap().clone();
         let request = Request::new(
