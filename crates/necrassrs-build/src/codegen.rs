@@ -354,7 +354,7 @@ mod test {
     }
 
     #[test]
-    fn generated_dispatch_executes_hello() {
+    fn generated_dispatch_executes_hello_with_embedded_sdl() {
         let schema = Schema::parse_and_validate(
             "type Query { hello(name: String!): String! }",
             "schema.graphql",
@@ -379,7 +379,7 @@ mod test {
 
             fn main() {
                 let schema = necrassrs::Schema::parse_and_validate(
-                    "type Query { hello(name: String!): String! }", "schema.graphql",
+                    generated::SDL, "schema.graphql",
                 ).unwrap();
                 let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
                 let greeting = String::from("Hello");
