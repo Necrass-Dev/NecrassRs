@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::State, routing::post};
+use axum::{
+    Router,
+    extract::State,
+    routing::{get, post},
+};
 use necrassrs::{Schema, Valid};
-use necrassrs_axum::{GraphQLRequest, GraphQLResponse};
+use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html};
 
 mod generated;
 mod resolvers;
@@ -28,6 +32,7 @@ fn app() -> Router {
     });
     Router::new()
         .route("/graphql", post(graphql))
+        .route("/graphql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }
 
@@ -185,5 +190,21 @@ mod tests {
                 "USER_NOT_FOUND"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn graphiql_page_uses_the_existing_endpoint() {
+        let response = app()
+            .oneshot(Request::get("/graphql").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let html = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = std::str::from_utf8(&html).unwrap();
+        assert!(html.contains("data-endpoint=\"/graphql\""));
     }
 }

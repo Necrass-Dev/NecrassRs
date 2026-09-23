@@ -5,12 +5,12 @@ use axum::{
     body::{Body, to_bytes},
     extract::State,
     http::{HeaderMap, Request as HttpRequest, StatusCode, header},
-    routing::post,
+    routing::{get, post},
 };
 use necrassrs::{
     Dispatcher, FieldCoordinate, JsonMap, JsonValue, ResolverError, Schema, Valid, execute,
 };
-use necrassrs_axum::{GraphQLRequest, GraphQLResponse};
+use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -60,13 +60,17 @@ async fn graphql(
 }
 
 fn app() -> Router {
+    app_at("/graphql")
+}
+
+fn app_at(endpoint: &str) -> Router {
     let schema = Schema::parse_and_validate(
         "type Query { hello(name: String!): String! }",
         "schema.graphql",
     )
     .unwrap();
     Router::new()
-        .route("/graphql", post(graphql))
+        .route(endpoint, post(graphql))
         .with_state(Arc::new(AppState {
             schema,
             dispatcher: GreetingDispatcher,
@@ -80,7 +84,18 @@ async fn send(
     prefix: Option<&str>,
     body: impl Into<Body>,
 ) -> (StatusCode, Option<String>, Value) {
-    let mut builder = HttpRequest::builder().method(method).uri("/graphql");
+    send_at(app, "/graphql", method, content_type, prefix, body).await
+}
+
+async fn send_at(
+    app: &Router,
+    endpoint: &str,
+    method: &str,
+    content_type: Option<&str>,
+    prefix: Option<&str>,
+    body: impl Into<Body>,
+) -> (StatusCode, Option<String>, Value) {
+    let mut builder = HttpRequest::builder().method(method).uri(endpoint);
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
@@ -181,4 +196,84 @@ async fn route_only_accepts_post() {
     let app = app();
     let (status, _, _) = send(&app, "GET", None, None, "").await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn schema_discovery_and_queries_share_the_existing_graphql_endpoint() {
+    let app = app();
+    let (status, _, response) = send(
+        &app,
+        "POST",
+        Some("application/json"),
+        None,
+        json!({ "query": "{ __schema { queryType { name } } }" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response,
+        json!({ "data": { "__schema": { "queryType": { "name": "Query" } } } })
+    );
+
+    let (status, _, response) = send(
+        &app,
+        "POST",
+        Some("application/json"),
+        None,
+        json!({ "query": "{ hello(name: \"Sheri\") }" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response, json!({ "data": { "hello": "Hello, Sheri" } }));
+}
+
+#[tokio::test]
+async fn graphiql_is_opt_in_and_uses_the_configured_endpoint() {
+    let request = || {
+        HttpRequest::get("/api/graphql")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let absent = app_at("/api/graphql").oneshot(request()).await.unwrap();
+    assert_eq!(absent.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    let app = app_at("/api/graphql").route(
+        "/api/graphql",
+        get(|| async { graphiql_html("/api/graphql") }),
+    );
+    let page = app.clone().oneshot(request()).await.unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    assert_eq!(
+        page.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/html; charset=utf-8"
+    );
+    let html = to_bytes(page.into_body(), usize::MAX).await.unwrap();
+    let html = std::str::from_utf8(&html).unwrap();
+    assert!(html.contains("/api/graphql"));
+    assert!(html.contains("rel=\"stylesheet\""));
+    assert!(html.contains("type=\"module\""));
+    assert!(html.contains("createGraphiQLFetcher({ url: element.dataset.endpoint })"));
+
+    for (query, expected) in [
+        (
+            "{ __schema { queryType { name } } }",
+            json!({ "data": { "__schema": { "queryType": { "name": "Query" } } } }),
+        ),
+        (
+            "{ hello(name: \"Sheri\") }",
+            json!({ "data": { "hello": "Hello, Sheri" } }),
+        ),
+    ] {
+        let (status, _, response) = send_at(
+            &app,
+            "/api/graphql",
+            "POST",
+            Some("application/json"),
+            None,
+            json!({ "query": query }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response, expected);
+    }
 }

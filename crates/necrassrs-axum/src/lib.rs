@@ -16,10 +16,24 @@ use axum::{
     Json,
     extract::{FromRequest, Request as AxumRequest, rejection::JsonRejection},
     http::StatusCode,
-    response::{IntoResponse, Response as AxumResponse},
+    response::{Html, IntoResponse, Response as AxumResponse},
 };
 use necrassrs::{JsonMap, Request, Response};
 use serde::Deserialize;
+
+/// A GraphiQL page configured to send requests to an application-owned endpoint.
+///
+/// Mount this response on an application-chosen GET route. Browser assets load
+/// from the version-pinned esm.sh URLs in the page and require network access.
+pub fn graphiql_html(endpoint_url: &str) -> Html<String> {
+    let endpoint_url = endpoint_url
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    Html(include_str!("graphiql.html").replace("__NECRASSRS_ENDPOINT__", &endpoint_url))
+}
 
 /// A GraphQL request parsed from an Axum JSON request body.
 pub struct GraphQLRequest(pub Request);
@@ -132,5 +146,12 @@ mod tests {
             GraphQLResponse(execution).into_response().status(),
             StatusCode::OK
         );
+    }
+
+    #[test]
+    fn graphiql_endpoint_is_escaped_in_html() {
+        let html = graphiql_html("/graphql?x=\"<script>&'").0;
+        assert!(html.contains("data-endpoint=\"/graphql?x=&quot;&lt;script&gt;&amp;&#39;\""));
+        assert!(!html.contains("<script>&'"));
     }
 }

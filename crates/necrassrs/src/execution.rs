@@ -3,6 +3,7 @@ use apollo_compiler::{
     ast::{Type, Value},
     collections::{HashSet, IndexMap},
     executable::{Field, Selection},
+    introspection,
     parser::SourceSpan,
     response::{GraphQLError, JsonMap, JsonValue, ResponseDataPathSegment},
     schema::{ExtendedType, FieldDefinition, ObjectType},
@@ -30,11 +31,47 @@ pub trait Dispatcher<C> {
     ) -> impl Future<Output = Result<JsonValue, ResolverError>> + Send + 'a;
 }
 
+/// Server-controlled execution settings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionOptions {
+    /// Whether `__schema` and `__type` may be queried. Enabled by default.
+    pub introspection: bool,
+}
+
+impl Default for ExecutionOptions {
+    fn default() -> Self {
+        Self {
+            introspection: true,
+        }
+    }
+}
+
 pub async fn execute<C, D>(
     schema: &Valid<Schema>,
     request: &Request,
     dispatcher: &D,
     context: &C,
+) -> Response
+where
+    C: Sync,
+    D: Dispatcher<C> + Sync,
+{
+    execute_with_options(
+        schema,
+        request,
+        dispatcher,
+        context,
+        ExecutionOptions::default(),
+    )
+    .await
+}
+
+pub async fn execute_with_options<C, D>(
+    schema: &Valid<Schema>,
+    request: &Request,
+    dispatcher: &D,
+    context: &C,
+    options: ExecutionOptions,
 ) -> Response
 where
     C: Sync,
@@ -58,11 +95,52 @@ where
         .get_object(prepared.operation.selection_set.ty.as_str())
         .expect("validated operation root must be an object");
 
-    let mut data = JsonMap::new();
-    let mut errors = Vec::new();
+    let fields = collect_fields(schema, &prepared);
+    let introspection_field = fields
+        .values()
+        .map(|fields| fields[0])
+        .find(|field| matches!(field.name.as_str(), "__schema" | "__type"));
+    if let Some(field) = introspection_field.filter(|_| !options.introspection) {
+        return Response::request_error(GraphQLError::new(
+            "Schema introspection is disabled.",
+            field.name.location(),
+            &prepared.document.sources,
+        ));
+    }
 
-    for (response_key, fields) in collect_fields(schema, &prepared) {
+    let mut introspection_data = JsonMap::new();
+    let mut errors = Vec::new();
+    if introspection_field.is_some() {
+        if let Err(error) = introspection::check_max_depth(&prepared.document, &prepared.operation)
+        {
+            return Response::request_error(error.to_graphql_error(&prepared.document.sources));
+        }
+        match introspection::partial_execute(
+            schema,
+            &schema.implementers_map(),
+            &prepared.document,
+            &prepared.operation,
+            &prepared.variables,
+        ) {
+            Ok(response) => {
+                introspection_data = response.data.unwrap_or_default();
+                errors = response.errors;
+            }
+            Err(error) => {
+                return Response::request_error(error.to_graphql_error(&prepared.document.sources));
+            }
+        }
+    }
+
+    let mut data = JsonMap::new();
+    for (response_key, fields) in fields {
         let field = fields[0];
+        if matches!(field.name.as_str(), "__schema" | "__type") {
+            if let Some(value) = introspection_data.remove(response_key.as_str()) {
+                data.insert(response_key.as_str(), value);
+            }
+            continue;
+        }
         let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
         let definition: &FieldDefinition =
@@ -85,16 +163,6 @@ where
                 JsonValue::from(prepared.operation.selection_set.ty.as_str()),
                 false,
             ),
-            "__schema" | "__type" => {
-                errors.push(*new_execution_error(
-                    &prepared,
-                    &path,
-                    format!("Introspection field '{}' is not supported.", field.name),
-                    field.name.location(),
-                ));
-
-                (JsonValue::Null, true)
-            }
             _ => match coerce_argument_values(schema, &prepared, &path, field, definition) {
                 Ok(arguments) => match dispatcher
                     .resolve(
@@ -1653,26 +1721,171 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn unsupported_introspection_fields_return_errors_without_dispatch() {
-        let schema =
-            Schema::parse_and_validate("type Query { hello: String }", "schema.graphql").unwrap();
+    async fn introspection_exposes_the_generated_schema_without_dispatch() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
         let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new(
+            "{ __schema { queryType { name } types { kind name fields { name args { name type { kind name ofType { kind name } } } type { kind name ofType { kind name } } } } } }",
+        );
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
 
-        for document in [
-            "{ __schema { queryType { name } } }",
-            r#"{ __type(name: "Query") { name } }"#,
-        ] {
-            let response =
-                to_value(super::execute(&schema, &Request::new(document), &dispatcher, &()).await)
-                    .unwrap();
+        assert!(response.get("errors").is_none(), "{response:?}");
+        assert_eq!(response["data"]["__schema"]["queryType"]["name"], "Query");
+        let types = response["data"]["__schema"]["types"].as_array().unwrap();
+        let query = types.iter().find(|ty| ty["name"] == "Query").unwrap();
+        assert_eq!(query["kind"], "OBJECT");
+        let hello = query["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|field| field["name"] == "hello")
+            .unwrap();
+        assert_eq!(
+            hello["type"],
+            json!({ "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "String" } })
+        );
+        assert_eq!(hello["args"][0]["name"], "name");
+        assert_eq!(hello["args"][0]["type"], hello["type"]);
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+    }
 
-            assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
-            assert!(
-                response["errors"]
-                    .as_array()
-                    .is_some_and(|errors| !errors.is_empty())
-            );
-        }
+    #[tokio::test(flavor = "current_thread")]
+    async fn type_lookup_honors_aliases_fragments_and_unknown_names() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new(
+            "query($name: String!) { known: __type(name: $name) { ...TypeName } missing: __type(name: \"Missing\") { name } } fragment TypeName on __Type { name kind }",
+        ).with_variables(json!({ "name": "Query" }).as_object().unwrap().clone());
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(
+            response,
+            json!({ "data": { "known": { "name": "Query", "kind": "OBJECT" }, "missing": null } })
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn disabled_introspection_rejects_schema_queries_before_dispatch() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new("{ __schema { queryType { name } } hello }");
+        let response = to_value(
+            super::execute_with_options(
+                &schema,
+                &request,
+                &dispatcher,
+                &(),
+                super::ExecutionOptions {
+                    introspection: false,
+                },
+            )
+            .await,
+        )
+        .unwrap();
+
+        assert!(response.get("data").is_none());
+        assert_eq!(
+            response["errors"][0]["locations"][0],
+            json!({ "line": 1, "column": 3 })
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+
+        let typename = to_value(
+            super::execute_with_options(
+                &schema,
+                &Request::new("{ __typename }"),
+                &dispatcher,
+                &(),
+                super::ExecutionOptions {
+                    introspection: false,
+                },
+            )
+            .await,
+        )
+        .unwrap();
+        assert_eq!(typename, json!({ "data": { "__typename": "Query" } }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn introspection_and_resolver_fields_share_one_response() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new("{ hello schema: __schema { queryType { name } } }");
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(
+            response,
+            json!({ "data": { "hello": "unexpected resolver call", "schema": { "queryType": { "name": "Query" } } } })
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn schema_query_returns_nested_type_metadata() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            r#"
+            query IntrospectionQuery {
+              __schema {
+                queryType { name }
+                mutationType { name }
+                types { ...FullType }
+                directives { name locations args { name type { ...TypeRef } } }
+              }
+            }
+            fragment FullType on __Type {
+              kind name description
+              fields(includeDeprecated: true) {
+                name args { name type { ...TypeRef } }
+                type { ...TypeRef }
+              }
+              inputFields { name type { ...TypeRef } }
+              enumValues(includeDeprecated: true) { name }
+              interfaces { name }
+              possibleTypes { name }
+            }
+            fragment TypeRef on __Type {
+              kind name ofType { kind name ofType { kind name } }
+            }
+            "#,
+        );
+        let response =
+            to_value(super::execute(&schema, &request, &NullDispatcher, &()).await).unwrap();
+
+        assert!(response.get("errors").is_none(), "{response:?}");
+        assert_eq!(response["data"]["__schema"]["queryType"]["name"], "Query");
+        assert_eq!(
+            response["data"]["__schema"]["mutationType"],
+            JsonValue::Null
+        );
+        assert!(
+            response["data"]["__schema"]["directives"]
+                .as_array()
+                .is_some_and(|directives| !directives.is_empty())
+        );
+        let query = response["data"]["__schema"]["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ty| ty["name"] == "Query")
+            .unwrap();
+        let hello = &query["fields"][0];
+        assert_eq!(hello["name"], "hello");
+        assert_eq!(hello["args"][0]["name"], "name");
+        assert_eq!(hello["type"]["kind"], "NON_NULL");
+        assert_eq!(hello["type"]["ofType"]["name"], "String");
     }
 
     // TODO: Temporary unsupported-feature contract: remove this rejection test when

@@ -223,6 +223,8 @@ The execution core accepts GraphQL request information and user Context, not an 
 
 `necrassrs-axum` provides extraction and response conversion that users can compose in their handlers. It does not require a dedicated server runner, authentication middleware, or Context factory callback.
 
+The runtime allows schema introspection by default and offers server-controlled execution options to disable `__schema` and `__type`. Applications may register an optional GraphiQL page with `necrassrs-axum::graphiql_html(endpoint_url)` on a route they own. The page uses the existing GraphQL endpoint and loads version-pinned browser assets from a CDN; see [Introspection and GraphiQL](graphiql.md) for development and production policy.
+
 | Application responsibility | NecrassRs responsibility |
 | --- | --- |
 | Routing, middleware, and server lifecycle | GraphQL execution entry point |
@@ -428,7 +430,7 @@ Existing runtime coverage beyond the generated MVP remains in place. Each expans
 2. **Execution details:** Field scheduling, recursive completion representation, and generated-dispatch handoff. Ownership of execution and reuse of Apollo validation are established.
 3. **Source synchronization implementation:** AST editing and diagnostics that realize section 7.3. Explicit stubs, identity-based updates, retained-body preservation, deletion, and rename-as-delete-plus-add are established requirements, not open product decisions.
 4. **Coverage beyond the greeting MVP:** Additional supported types/features, explicit rejection diagnostics, and custom scalar conversion. Do not reopen #1's agreed behavior as an executor-selection task.
-5. **HTTP and development UI:** Methods, media types, status codes, introspection settings, and asset distribution.
+5. **Further HTTP adapters:** Support and shared behavior beyond the current Axum adapter. The current introspection and GraphiQL policy is documented in [Introspection and GraphiQL](graphiql.md).
 6. **Release contract:** MSRV, default features, generator/runtime compatibility, and CLI initialization details.
 
 SQL generation, ORM integration, automatic batching, a separate non-`Send` mode, standalone watch, and performance optimization are not prerequisites for this architecture.

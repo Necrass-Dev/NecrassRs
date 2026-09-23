@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::State, routing::post};
+use axum::{
+    Router,
+    extract::State,
+    routing::{get, post},
+};
 use necrassrs::{Schema, Valid};
-use necrassrs_axum::{GraphQLRequest, GraphQLResponse};
+use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html};
 
 mod generated;
 mod resolvers;
@@ -28,6 +32,7 @@ fn app() -> Router {
     });
     Router::new()
         .route("/graphql", post(graphql))
+        .route("/graphql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }
 

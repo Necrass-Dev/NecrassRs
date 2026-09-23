@@ -9,7 +9,7 @@ use serde::Serialize;
 mod execution;
 mod input;
 
-pub use execution::{Dispatcher, FieldCoordinate, execute};
+pub use execution::{Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options};
 
 pub struct ResolverError {
     message: String,
