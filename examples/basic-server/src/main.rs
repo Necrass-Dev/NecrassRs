@@ -98,6 +98,38 @@ mod tests {
             })
         );
 
+        for (request, path) in [
+            (
+                json!({
+                    "query": "query($name: String!) { hello(name: $name) }",
+                    "variables": { "name": "Unknown" }
+                }),
+                "hello",
+            ),
+            (
+                json!({ "query": "{ alias: hello(name: \"Unknown\") }" }),
+                "alias",
+            ),
+        ] {
+            let (status, response) = post(&app, request).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(response["data"], Value::Null);
+            assert_eq!(
+                response["errors"][0]["message"],
+                "User \"Unknown\" was not found."
+            );
+            assert_eq!(response["errors"][0]["path"], json!([path]));
+            assert_eq!(
+                response["errors"][0]["extensions"]["code"],
+                "USER_NOT_FOUND"
+            );
+            assert!(
+                response["errors"][0]["locations"]
+                    .as_array()
+                    .is_some_and(|locations| !locations.is_empty())
+            );
+        }
+
         let (status, response) = post(&app, json!({ "query": "{ hello(name: \"Sheri\") }" })).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response, json!({ "data": { "hello": "Hello, Sheri" } }));
