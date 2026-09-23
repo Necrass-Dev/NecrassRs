@@ -38,6 +38,9 @@ fn init_creates_project_at_explicit_path_and_name() {
     ] {
         assert!(project.join(path).is_file(), "missing {path}");
     }
+    let main = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(main.contains("graphiql_html(\"/graphql\")"));
+    assert!(main.contains("\"/graphiql\""));
 
     let manifest = fs::read(project.join("Cargo.toml")).unwrap();
     let repeated = Command::new(env!("CARGO_BIN_EXE_necrass"))

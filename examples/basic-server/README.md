@@ -14,6 +14,10 @@ The server listens on `127.0.0.1:3000` and accepts JSON POST requests at `/graph
 
 The example's `[dependencies]` contain the runtime, Axum adapter, Axum, and Tokio. Its `[build-dependencies]` contain `necrassrs-build`. The NecrassRs dependencies use local paths and matching versions for this workspace. `serde_json` and `tower` are development dependencies used by the HTTP checks.
 
+## Development UI
+
+The example registers `/graphiql` by default. Open `http://127.0.0.1:3000/graphiql`; the page uses this application's existing `/graphql` endpoint. The browser loads version-pinned assets from `esm.sh` and needs network access. Remove or gate the route when deploying an application that should not expose the UI. See [Introspection and GraphiQL](../../docs/graphiql.md) for endpoint configuration and production introspection policy.
+
 ## Requests
 
 Run these commands in a second terminal:

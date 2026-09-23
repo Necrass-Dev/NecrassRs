@@ -60,13 +60,17 @@ async fn graphql(
 }
 
 fn app() -> Router {
+    app_at("/graphql")
+}
+
+fn app_at(endpoint: &str) -> Router {
     let schema = Schema::parse_and_validate(
         "type Query { hello(name: String!): String! }",
         "schema.graphql",
     )
     .unwrap();
     Router::new()
-        .route("/graphql", post(graphql))
+        .route(endpoint, post(graphql))
         .with_state(Arc::new(AppState {
             schema,
             dispatcher: GreetingDispatcher,
@@ -80,7 +84,18 @@ async fn send(
     prefix: Option<&str>,
     body: impl Into<Body>,
 ) -> (StatusCode, Option<String>, Value) {
-    let mut builder = HttpRequest::builder().method(method).uri("/graphql");
+    send_at(app, "/graphql", method, content_type, prefix, body).await
+}
+
+async fn send_at(
+    app: &Router,
+    endpoint: &str,
+    method: &str,
+    content_type: Option<&str>,
+    prefix: Option<&str>,
+    body: impl Into<Body>,
+) -> (StatusCode, Option<String>, Value) {
+    let mut builder = HttpRequest::builder().method(method).uri(endpoint);
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
@@ -218,8 +233,9 @@ async fn graphiql_is_opt_in_and_uses_the_configured_endpoint() {
     let absent = app().oneshot(request()).await.unwrap();
     assert_eq!(absent.status(), StatusCode::NOT_FOUND);
 
-    let app = app().route("/graphiql", get(|| async { graphiql_html("/api/graphql") }));
-    let page = app.oneshot(request()).await.unwrap();
+    let app =
+        app_at("/api/graphql").route("/graphiql", get(|| async { graphiql_html("/api/graphql") }));
+    let page = app.clone().oneshot(request()).await.unwrap();
     assert_eq!(page.status(), StatusCode::OK);
     assert_eq!(
         page.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -230,4 +246,28 @@ async fn graphiql_is_opt_in_and_uses_the_configured_endpoint() {
     assert!(html.contains("/api/graphql"));
     assert!(html.contains("rel=\"stylesheet\""));
     assert!(html.contains("type=\"module\""));
+    assert!(html.contains("createGraphiQLFetcher({ url: element.dataset.endpoint })"));
+
+    for (query, expected) in [
+        (
+            "{ __schema { queryType { name } } }",
+            json!({ "data": { "__schema": { "queryType": { "name": "Query" } } } }),
+        ),
+        (
+            "{ hello(name: \"Sheri\") }",
+            json!({ "data": { "hello": "Hello, Sheri" } }),
+        ),
+    ] {
+        let (status, _, response) = send_at(
+            &app,
+            "/api/graphql",
+            "POST",
+            Some("application/json"),
+            None,
+            json!({ "query": query }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response, expected);
+    }
 }

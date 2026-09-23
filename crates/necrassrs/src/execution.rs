@@ -1772,6 +1772,124 @@ mod tests {
         assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn disabled_introspection_rejects_schema_queries_before_dispatch() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new("{ __schema { queryType { name } } hello }");
+        let response = to_value(
+            super::execute_with_options(
+                &schema,
+                &request,
+                &dispatcher,
+                &(),
+                super::ExecutionOptions {
+                    introspection: false,
+                },
+            )
+            .await,
+        )
+        .unwrap();
+
+        assert!(response.get("data").is_none());
+        assert_eq!(
+            response["errors"][0]["locations"][0],
+            json!({ "line": 1, "column": 3 })
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+
+        let typename = to_value(
+            super::execute_with_options(
+                &schema,
+                &Request::new("{ __typename }"),
+                &dispatcher,
+                &(),
+                super::ExecutionOptions {
+                    introspection: false,
+                },
+            )
+            .await,
+        )
+        .unwrap();
+        assert_eq!(typename, json!({ "data": { "__typename": "Query" } }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn introspection_and_resolver_fields_share_one_response() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new("{ hello schema: __schema { queryType { name } } }");
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(
+            response,
+            json!({ "data": { "hello": "unexpected resolver call", "schema": { "queryType": { "name": "Query" } } } })
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn schema_query_returns_nested_type_metadata() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            r#"
+            query IntrospectionQuery {
+              __schema {
+                queryType { name }
+                mutationType { name }
+                types { ...FullType }
+                directives { name locations args { name type { ...TypeRef } } }
+              }
+            }
+            fragment FullType on __Type {
+              kind name description
+              fields(includeDeprecated: true) {
+                name args { name type { ...TypeRef } }
+                type { ...TypeRef }
+              }
+              inputFields { name type { ...TypeRef } }
+              enumValues(includeDeprecated: true) { name }
+              interfaces { name }
+              possibleTypes { name }
+            }
+            fragment TypeRef on __Type {
+              kind name ofType { kind name ofType { kind name } }
+            }
+            "#,
+        );
+        let response =
+            to_value(super::execute(&schema, &request, &NullDispatcher, &()).await).unwrap();
+
+        assert!(response.get("errors").is_none(), "{response:?}");
+        assert_eq!(response["data"]["__schema"]["queryType"]["name"], "Query");
+        assert_eq!(
+            response["data"]["__schema"]["mutationType"],
+            JsonValue::Null
+        );
+        assert!(
+            response["data"]["__schema"]["directives"]
+                .as_array()
+                .is_some_and(|directives| !directives.is_empty())
+        );
+        let query = response["data"]["__schema"]["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ty| ty["name"] == "Query")
+            .unwrap();
+        let hello = &query["fields"][0];
+        assert_eq!(hello["name"], "hello");
+        assert_eq!(hello["args"][0]["name"], "name");
+        assert_eq!(hello["type"]["kind"], "NON_NULL");
+        assert_eq!(hello["type"]["ofType"]["name"], "String");
+    }
+
     // TODO: Temporary unsupported-feature contract: remove this rejection test when
     // subscription execution is implemented and replace it with response-stream tests.
     #[tokio::test(flavor = "current_thread")]
