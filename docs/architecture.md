@@ -1,7 +1,7 @@
 # NecrassRs architecture and development plan
 
 Date: 2026-09-17
-Updated: 2026-09-22
+Updated: 2026-09-23
 
 This document defines the target product structure, crate responsibilities, development and release practices, and consumer workflow. It does not describe a completed implementation. Package names and directory layouts are proposed; concrete Rust API signatures remain subject to design.
 
@@ -13,7 +13,7 @@ The product has three entry points:
 
 | Entry point | When used | Responsibility |
 | --- | --- | --- |
-| `necrass init` | Project initialization | Create `build.rs`; full project scaffolding is a later convenience |
+| `necrass init` | Project initialization | Create a runnable consumer project from a starter template |
 | `necrassrs-build` | Consumer builds | Validate SDL, generate contracts in `OUT_DIR`, and create/synchronize editable resolver implementations in `src` |
 | `necrassrs` and an HTTP adapter | Server execution | Validate requests, invoke user resolvers, and construct responses |
 
@@ -143,7 +143,7 @@ Request errors omit the `data` entry. Execution results contain `data`, which ma
 | `necrassrs` | Public runtime API and integration of request validation, input processing, resolver execution, and response completion | Applications and HTTP adapters |
 | `necrassrs-build` | Discover and validate SDL, generate contracts and dispatch, synchronize editable resolver implementations through Rust ASTs, and manage Cargo rebuilds and output | Consumer `build.rs` |
 | `necrassrs-axum` | GraphQL HTTP extraction, response conversion, and development UI integration | Axum applications |
-| `necrassrs-cli` | The `necrass` binary, initialization templates, and file creation | Developers |
+| `necrassrs-cli` | The `necrass` binary and new-project scaffolding | Developers |
 
 Within `necrassrs-build`, keep contract generation independent of Cargo environment variables and filesystem operations so it can be tested directly. Cargo integration manages inputs, rebuild instructions, disposable output, and reading/writing the designated implementation source. Source synchronization compares Rust ASTs; it does not duplicate Apollo's schema model. The runtime does not depend on the build library.
 
@@ -157,7 +157,7 @@ necrassrs-build/src/
 └── codegen.rs   # Validated schema to Rust code
 ```
 
-The CLI creates the build-script entry point. Resolver scaffolding and subsequent synchronization are responsibilities of the build library, triggered by Cargo, not a one-time CLI template operation. If later initialization needs schema processing, reuse the library instead of duplicating its logic.
+The CLI creates a starter Cargo project, including SDL, a build script, generated-code inclusion, an Axum entry point, and an initial resolver implementation. Subsequent SDL-driven resolver synchronization is the build library's responsibility, triggered by Cargo. The CLI does not parse SDL or duplicate generation logic.
 
 Do not create `necrassrs-http` yet. Consider extracting common HTTP behavior when multiple official adapters need it. Do not add a facade that only re-exports the runtime or a generic executor-backend trait without a concrete requirement.
 
@@ -178,7 +178,7 @@ Consumer server and generated code
        └─ axum
 
 necrassrs-cli
-  └─ Project initialization templates
+  └─ New-project templates
 ```
 
 A build-time `Schema` instance does not survive into the running server. The generator embeds the validated schema as `generated::SDL` using Apollo's SDL serialization, preserving schema definitions and extensions rather than the original source formatting or comments. Parse and validate it once during application initialization, then reuse that runtime schema across requests. The synchronization acceptance flow edits a generated resolver body and runs that consumer without source SDL files. Do not introduce a separate schema serialization format.
@@ -186,11 +186,10 @@ A build-time `Schema` instance does not survive into the running server. The gen
 The complete workflow is:
 
 ```text
-cargo install necrassrs-cli --locked
+cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked
   → Install the necrass executable
-  → necrass init in a consumer project
-  → Create build.rs without overwriting an existing file
-  → Manually prepare dependencies, SDL, and the application entry point
+  → necrass init [PATH] [--name NAME]
+  → Create a new consumer project without overwriting existing content
 
 Edit SDL
   → cargo build
@@ -242,26 +241,27 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 ### 7.1 Initial CLI scope
 
-The first `necrass init` scope, tracked in issue #9 under #1, creates only `build.rs` in an existing consumer project. It does not edit Cargo.toml or generate SDL, resolvers, or an Axum server. The consumer supplies dependencies, SDL, and an application entry point; Cargo then invokes the build library to generate and synchronize resolver implementations. Full runnable-project initialization is deferred. Do not add framework selection options or empty templates for other adapters.
+The first `necrass init` scope, tracked in issue #9 under #1, creates a new, runnable consumer project based on the basic-server example. It supplies a Cargo manifest, build script, SDL, generated-code inclusion, an Axum entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration and additional framework choices are deferred.
 
 The intended installation and initialization flow is shown below. These commands describe the planned product, not an available release:
 
 ```sh
-cargo install necrassrs-cli --locked
-cargo new my-api
+cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked
+necrass init my-api
 cd my-api
-necrass init
+cargo run
 ```
 
-The package is named `necrassrs-cli`; its installed executable is named `necrass`. It is a separately installed development tool, not a consumer `dev-dependency`. Adding a package to `[dev-dependencies]` does not install its executable as a shell command.
+For a local checkout, use `cargo install --path crates/necrassrs-cli --locked` from the repository root. The package is named `necrassrs-cli`; its installed executable is named `necrass`. It is a separately installed development tool, not a consumer `dev-dependency`. Adding a package to `[dev-dependencies]` does not install its executable as a shell command.
 
-The initial CLI does not merge dependencies into an existing `Cargo.toml`. Existing applications follow manual integration instructions. Exact CLI arguments remain open; automatic existing-project integration is deferred until its configuration-preservation behavior is designed.
+The command is `necrass init [PATH] [--name NAME]`. `PATH` defaults to the current directory; a missing target directory is created, and an existing empty directory is accepted. The Cargo package name defaults to the target directory's final component, with `--name` as an override. Refuse nonempty targets, existing Cargo projects, and symbolic-link targets without modifying them. There is no overwrite mode. Existing applications follow manual integration instructions; merging into an existing `Cargo.toml` remains deferred.
 
-Generated server code is ordinary application-owned source. The execution core remains independent of Axum. Existing projects can integrate `necrassrs`, `necrassrs-build`, and `necrassrs-axum` without using the CLI.
+Generated starter source is ordinary application-owned source. The build library subsequently synchronizes SDL-owned resolver declarations while preserving retained business logic. The execution core remains independent of Axum. Existing projects can integrate `necrassrs`, `necrassrs-build`, and `necrassrs-axum` without using the CLI.
 
 ```text
 my-api/
 ├── Cargo.toml
+├── README.md
 ├── build.rs
 ├── schema/
 │   └── schema.graphql
@@ -274,6 +274,7 @@ my-api/
 
 | File | Ownership and purpose |
 | --- | --- |
+| `README.md` | Starter setup, build, and sample-query instructions |
 | `schema/**/*.graphql` | User-written public GraphQL contract, discovered recursively |
 | `build.rs` | Build-library invocation and input configuration |
 | `main.rs` | User routing, handlers, and server configuration |
@@ -282,23 +283,23 @@ my-api/
 | `generated.rs` | Module that includes generated code from `OUT_DIR` |
 | Rust files in `OUT_DIR` | Automatically generated; not edited manually |
 
-Manual setup uses the following dependency locations. A later full-project initializer may write them using a tested release combination; the first CLI command does not:
+The initializer writes the application dependencies into its new manifest. Before registry publication, its NecrassRs dependencies use the same Git repository so a Git-installed CLI can create a buildable project. Cargo locks those dependencies to a commit when the consumer first builds. Manual integration of an existing project uses the following dependency locations:
 
 | Installation or manifest location | Contents |
 | --- | --- |
 | `cargo install` | `necrassrs-cli`, providing the `necrass` executable |
 | `[dependencies]` | `necrassrs`, `necrassrs-axum`, Axum, the async runtime, and other libraries directly used by the application |
-| `[build-dependencies]` | `necrassrs-build`, called by `build.rs` |
+| `[build-dependencies]` | `necrassrs-build`, called by `build.rs`, plus any build-script diagnostic-rendering dependency used by the chosen template |
 | `[dev-dependencies]` | Test and example dependencies only when needed; not the CLI |
 
 Ordinary consumers should not need a direct Apollo Compiler dependency. Once initialized, the application builds and runs with Cargo without an installed CLI.
 
 ### 7.2 Everyday development
 
-1. Create or choose a consumer Cargo project and prepare its dependencies and entry point. Use `necrass init` to create `build.rs`, or write the build script manually.
+1. Use `necrass init` to create a new consumer project, or integrate the runtime, build library, and adapter manually into an existing project.
 2. Define objects, fields, arguments, and nullability in SDL.
-3. Run Cargo to generate contracts and wiring and create the editable resolver structs and explicit `unimplemented!()` methods from SDL.
-4. Replace generated method bodies with business logic; no handwritten Query or resolver signatures are required to bootstrap.
+3. Run Cargo to generate contracts and wiring. If the resolver implementation file is absent, the build library creates its structs and explicit `unimplemented!()` methods from SDL; the CLI starter already includes a working initial resolver.
+4. Replace new `unimplemented!()` method bodies with business logic; no handwritten Query or resolver signatures are required to bootstrap a manual consumer.
 5. Return user objects through generated wrappers from parent resolvers.
 6. Construct Context in the handler and pass it to execution.
 7. Run the server and test completed fields.
@@ -310,7 +311,7 @@ Constructing a wrapper does not execute child fields. Execution invokes only sel
 
 The build library generates an editable concrete resolver struct and explicit async trait methods in `src/resolvers.rs`. Every new field starts with an `unimplemented!()` body. Existing trait defaults remain a fallback but do not satisfy this scaffolding requirement. A test that supplies a handwritten Query implementation before its first build does not verify this workflow.
 
-For the first query-only consumer, `build("schema")` creates `src/resolvers.rs`, which the application imports with `mod resolvers`. Contracts and dispatch remain included from `OUT_DIR/necrassrs.rs`. The implementation file must expose the SDL-derived root struct and implement its generated resolver trait, compatible with the application's Context.
+For the first query-only consumer, `build("schema")` creates `src/resolvers.rs` when it is absent and synchronizes it when present, as in a CLI-created starter. The application imports it with `mod resolvers`. Contracts and dispatch remain included from `OUT_DIR/necrassrs.rs`. The implementation file must expose the SDL-derived root struct and implement its generated resolver trait, compatible with the application's Context.
 
 Use the injective naming rules in section 3.2 to compare the desired SDL-derived declarations with the existing Rust AST:
 
@@ -402,11 +403,11 @@ The executor direction is recorded in this document; it does not need a separate
 | Implement the MVP runtime and execution core | `necrassrs` request, resolver, Context, error, and response contracts plus execution over Apollo models. Verify the greeting behavior with a handwritten test adapter, full-future `Send`, request borrowing, invalid inputs, error paths, and specification-based completion regressions. No production greeting-specific dispatch or hardcoded root-null handling. Establish the workspace as needed. | None |
 | Generate resolver contracts and dispatch from SDL | `necrassrs-build` codegen module producing argument structs, resolver contracts, wrappers/dispatch as needed, and embedded SDL. Compile generated code with user implementations; diagnose invalid/unsupported schemas and Rust naming collisions. Verify partial-implementation behavior with the runtime, including subprocess termination checks. | Runtime contracts |
 | Integrate generation with Cargo builds | Build-library entry point, SDL discovery, rebuild tracking, `OUT_DIR` contracts, editable resolver scaffolding and AST synchronization, and runtime schema initialization wiring. Test the complete generate/edit/rebuild flow without supplying initial resolver implementations. | Code generation |
-| Create the CLI build-script initializer | `necrass init` creates build.rs without overwriting existing entries. Resolver generation and synchronization remain in the build library. | Build API |
 | Implement the Axum adapter | `necrassrs-axum` extraction and response conversion with documented methods, media types, status codes, and body limits. Verify user-owned handlers and per-request Context construction through HTTP checks. | Runtime request/response API |
-| Deliver the greeting example and integration checks | Real consumer example with hardcoded names, Cargo generation, user resolvers, Axum handler, and runnable instructions. Verify all acceptance criteria of #1 together. | All preceding tasks |
+| Deliver the greeting example and integration checks | Real consumer example with hardcoded names, Cargo generation, user resolvers, Axum handler, and runnable instructions. Verify the integrated runtime, build library, and adapter against #1. | Runtime, code generation, Cargo integration, and Axum adapter |
+| Create the CLI project initializer | `necrass init [PATH] [--name NAME]` creates a runnable starter without overwriting existing content. Later resolver synchronization remains in the build library. | Build API and Axum example |
 
-Each task includes its own relevant checks. The final example verifies integration rather than postponing component testing. Code generation and Axum work can proceed independently once their runtime contracts are stable. Minimal CLI build-script creation is tracked under #1; full-project initialization, development UI, and release automation remain deferred.
+Each task includes its own relevant checks. The example verifies integration rather than postponing component testing, and the CLI uses it as a starter reference. Code generation and Axum work can proceed independently once their runtime contracts are stable. New-project initialization is tracked under #1; existing-project integration, development UI, and release automation remain deferred.
 
 ### 10.2 Type expansion after issue #1
 
