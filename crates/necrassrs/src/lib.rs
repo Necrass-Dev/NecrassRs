@@ -53,6 +53,11 @@ enum ResponseKind {
 }
 
 impl Response {
+    /// Whether execution stopped before producing GraphQL data.
+    pub fn is_request_error(&self) -> bool {
+        matches!(self.0, ResponseKind::RequestError { .. })
+    }
+
     pub fn request_error(error: GraphQLError) -> Self {
         Self::request_errors(vec![error])
     }
