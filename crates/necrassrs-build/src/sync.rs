@@ -271,3 +271,209 @@ fn render_method(method: &ImplItemFn) -> String {
         quote!(#signature)
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ResolverFile {
+        directory: std::path::PathBuf,
+        path: std::path::PathBuf,
+    }
+
+    impl ResolverFile {
+        fn new() -> Self {
+            static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+            let directory = std::env::temp_dir().join(format!(
+                "necrassrs-sync-unit-{}-{}",
+                std::process::id(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            ));
+            fs::create_dir(&directory).unwrap();
+            let path = directory.join("resolvers.rs");
+            Self { directory, path }
+        }
+
+        fn synchronize(&self, sdl: &str) -> Result<(), BuildError> {
+            let schema = Schema::parse_and_validate(sdl, "schema.graphql").unwrap();
+            super::synchronize(&schema, &self.path)
+        }
+
+        fn read(&self) -> String {
+            fs::read_to_string(&self.path).unwrap()
+        }
+    }
+
+    impl Drop for ResolverFile {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn creates_resolvers_and_preserves_unchanged_source() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        assert!(matches!(&ast.items[0], Item::Struct(item) if item.ident == "Query"));
+        assert!(source.contains("async fn r#hello"));
+        assert!(source.contains("unimplemented"));
+
+        file.synchronize("type Query { hello: String! }").unwrap();
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
+    fn adds_and_removes_methods_without_rewriting_retained_code() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! old: String! }")
+            .unwrap();
+        let source = file.read().replace(
+            "::core::unimplemented!()",
+            "{ /* retain this comment */ Ok(String::from(\"hello\")) }",
+        );
+        fs::write(&file.path, &source).unwrap();
+
+        file.synchronize("type Query { hello: String! added: String! }")
+            .unwrap();
+        let updated = file.read();
+        assert!(updated.contains("/* retain this comment */"));
+        assert!(updated.contains("async fn r#added"));
+        assert!(!updated.contains("async fn r#old"));
+        syn::parse_file(&updated).unwrap();
+    }
+
+    #[test]
+    fn source_prefixes_do_not_shift_edits() {
+        for prefix in ["\u{feff}", "#!/usr/bin/env rust-script\n"] {
+            let file = ResolverFile::new();
+            file.synchronize("type Query { hello: String! }").unwrap();
+            let source = format!("{prefix}{}", file.read());
+            fs::write(&file.path, &source).unwrap();
+            file.synchronize("type Query { hello: String! added: String! }")
+                .unwrap();
+            let updated = file.read();
+            assert!(updated.starts_with(prefix));
+            assert!(updated.contains("async fn r#hello"));
+            assert!(updated.contains("async fn r#added"));
+        }
+    }
+
+    #[test]
+    fn added_method_uses_the_existing_context_type() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = file.read().replace(
+            "QueryResolver<C> for self::Query",
+            "QueryResolver<AppContext> for self::Query",
+        );
+        fs::write(&file.path, source).unwrap();
+
+        file.synchronize("type Query { hello: String! added: String! }")
+            .unwrap();
+        let ast = syn::parse_file(&file.read()).unwrap();
+        let implementation = ast
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Impl(item) => Some(item),
+                _ => None,
+            })
+            .unwrap();
+        let added = implementation
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ImplItem::Fn(method) if method.sig.ident.unraw() == "added" => Some(method),
+                _ => None,
+            })
+            .unwrap();
+        let context = &added.sig.inputs[1];
+        assert_eq!(quote!(#context).to_string(), "_context : & AppContext");
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_malformed_implementations_without_writing() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = file.read();
+        let cases = [
+            (
+                source.replace("crate::generated::resolvers", "resolvers"),
+                "Expected one explicit",
+            ),
+            (
+                format!("{source}\n{}", &source[source.find("impl<").unwrap()..]),
+                "Multiple query",
+            ),
+            (
+                source.replace("QueryResolver<C>", "QueryResolver"),
+                "Expected one resolver Context",
+            ),
+            (
+                source.replace("async fn r#hello", "fn r#hello"),
+                "Expected an async resolver",
+            ),
+            (
+                source.replace(
+                    ", _args : crate :: generated :: types :: Query :: r#hello :: Args",
+                    "",
+                ),
+                "Expected an async resolver",
+            ),
+            (
+                source.replace("    }\n}", "    }\n    async fn hello(&self) {}\n}"),
+                "Duplicate resolver methods",
+            ),
+            ("not Rust source".to_owned(), "expected"),
+        ];
+        for (index, (input, expected)) in cases.into_iter().enumerate() {
+            fs::write(&file.path, &input).unwrap();
+            let error = file
+                .synchronize("type Query { hello: String! }")
+                .expect_err(&format!("case {index} unexpectedly succeeded"));
+            assert!(
+                error.to_string().contains(expected),
+                "case {index}: {error}"
+            );
+            assert_eq!(file.read(), input);
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_return_type_before_creating_source() {
+        let file = ResolverFile::new();
+        let error = file.synchronize("type Query { count: Int! }").unwrap_err();
+        assert!(matches!(error, BuildError::Codegen(_)));
+        assert!(!file.path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_destination_and_parent() {
+        use std::os::unix::fs::symlink;
+
+        let file = ResolverFile::new();
+        let target = file.directory.join("target.rs");
+        fs::write(&target, "user code").unwrap();
+        symlink(&target, &file.path).unwrap();
+        assert!(matches!(
+            file.synchronize("type Query { hello: String! }"),
+            Err(BuildError::Io { .. })
+        ));
+        assert_eq!(fs::read_to_string(target).unwrap(), "user code");
+
+        let parent = file.directory.join("linked");
+        symlink(&file.directory, &parent).unwrap();
+        let linked = parent.join("new.rs");
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        assert!(matches!(
+            super::synchronize(&schema, &linked),
+            Err(BuildError::Io { .. })
+        ));
+        assert!(!file.directory.join("new.rs").exists());
+    }
+}
