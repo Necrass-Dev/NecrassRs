@@ -103,20 +103,7 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         let mut methods = Vec::new();
         for (field_name, field) in &object.fields {
             let method_name = format_ident!("r#{}", rust_name(field_name.as_str()));
-            let return_type = match &field.ty {
-                Type::NonNullNamed(name) if name.as_str() == "String" => {
-                    quote! { ::std::string::String }
-                }
-                unsupported => {
-                    return Err(CodegenError::new(
-                        format!(
-                            "Unsupported return type at {type_name}.{field_name}: {unsupported}"
-                        ),
-                        schema,
-                        field.ty.inner_named_type().location(),
-                    ));
-                }
-            };
+            let return_type = resolver_return_type(schema, type_name, field_name, &field.ty)?;
             let message = format!("Resolver {type_name}.{field_name} is not implemented");
             methods.push(quote! {
                 fn #method_name<'a>(
@@ -237,7 +224,25 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
     })
 }
 
-fn rust_name(name: &str) -> String {
+pub(crate) fn resolver_return_type(
+    schema: &Schema,
+    type_name: &str,
+    field_name: &str,
+    ty: &Type,
+) -> Result<proc_macro2::TokenStream, CodegenError> {
+    match ty {
+        Type::NonNullNamed(name) if name.as_str() == "String" => {
+            Ok(quote! { ::std::string::String })
+        }
+        unsupported => Err(CodegenError::new(
+            format!("Unsupported return type at {type_name}.{field_name}: {unsupported}"),
+            schema,
+            ty.inner_named_type().location(),
+        )),
+    }
+}
+
+pub(crate) fn rust_name(name: &str) -> String {
     if name.starts_with('_') || matches!(name, "self" | "Self" | "super" | "crate") {
         format!("_{name}")
     } else {

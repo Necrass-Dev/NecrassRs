@@ -25,7 +25,7 @@ These instructions apply to AI agents working in the NecrassRs repository. See [
 - Use Apollo Compiler's models and validation. Do not duplicate its schema model or validator. Choosing an execution engine remains a separate decision.
 - Separate code generation, Cargo and filesystem integration, runtime execution, the Axum adapter, and the CLI as described in the architecture document.
 - Keep Axum, CLI, and build-tool dependencies out of the execution core. Applications own their Context types and construction.
-- Place generated code in `OUT_DIR` and user implementations in `src`. Regeneration must not modify user files.
+- Place disposable contracts and dispatch in `OUT_DIR`. Build integration creates and synchronizes the designated resolver implementation in `src` using the SDL-to-Rust naming rules: preserve retained method bodies and unrelated user code, add explicit stubs, and delete removed methods. A rename is deletion plus addition. Follow `docs/architecture.md` section 7.3; do not interpret user-code preservation as a ban on synchronizing SDL-owned declarations.
 - Initialization must not overwrite existing files or symbolic links.
 - Do not copy prototype code. Implement from the observed behavior and validation scenarios.
 - Check existing code, the standard library, and existing dependencies first. Do not add abstractions, configuration, crates, or dependencies without a concrete requirement.
