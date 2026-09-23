@@ -5,12 +5,12 @@ use axum::{
     body::{Body, to_bytes},
     extract::State,
     http::{HeaderMap, Request as HttpRequest, StatusCode, header},
-    routing::post,
+    routing::{get, post},
 };
 use necrassrs::{
     Dispatcher, FieldCoordinate, JsonMap, JsonValue, ResolverError, Schema, Valid, execute,
 };
-use necrassrs_axum::{GraphQLRequest, GraphQLResponse};
+use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -210,4 +210,24 @@ async fn schema_discovery_and_queries_share_the_existing_graphql_endpoint() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(response, json!({ "data": { "hello": "Hello, Sheri" } }));
+}
+
+#[tokio::test]
+async fn graphiql_is_opt_in_and_uses_the_configured_endpoint() {
+    let request = || HttpRequest::get("/graphiql").body(Body::empty()).unwrap();
+    let absent = app().oneshot(request()).await.unwrap();
+    assert_eq!(absent.status(), StatusCode::NOT_FOUND);
+
+    let app = app().route("/graphiql", get(|| async { graphiql_html("/api/graphql") }));
+    let page = app.oneshot(request()).await.unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    assert_eq!(
+        page.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/html; charset=utf-8"
+    );
+    let html = to_bytes(page.into_body(), usize::MAX).await.unwrap();
+    let html = std::str::from_utf8(&html).unwrap();
+    assert!(html.contains("/api/graphql"));
+    assert!(html.contains("rel=\"stylesheet\""));
+    assert!(html.contains("type=\"module\""));
 }
