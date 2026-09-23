@@ -100,9 +100,7 @@ where
         .values()
         .map(|fields| fields[0])
         .find(|field| matches!(field.name.as_str(), "__schema" | "__type"));
-    if !options.introspection
-        && let Some(field) = introspection_field
-    {
+    if let Some(field) = introspection_field.filter(|_| !options.introspection) {
         return Response::request_error(GraphQLError::new(
             "Schema introspection is disabled.",
             field.name.location(),
