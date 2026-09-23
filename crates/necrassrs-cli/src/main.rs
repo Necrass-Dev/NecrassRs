@@ -30,7 +30,7 @@ fn create_package(path: &Path, name: &str) -> io::Result<()> {
     for (relative, contents) in [
         (
             "Cargo.toml",
-            include_str!("../templates/Cargo.toml").replace("{{name}}", name),
+            include_str!("../templates/manifest.toml").replace("{{name}}", name),
         ),
         (
             "README.md",
