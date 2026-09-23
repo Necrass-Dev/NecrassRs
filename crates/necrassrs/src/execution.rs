@@ -1653,26 +1653,53 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn unsupported_introspection_fields_return_errors_without_dispatch() {
-        let schema =
-            Schema::parse_and_validate("type Query { hello: String }", "schema.graphql").unwrap();
+    async fn introspection_exposes_the_generated_schema_without_dispatch() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
         let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new(
+            "{ __schema { queryType { name } types { kind name fields { name args { name type { kind name ofType { kind name } } } type { kind name ofType { kind name } } } } } }",
+        );
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
 
-        for document in [
-            "{ __schema { queryType { name } } }",
-            r#"{ __type(name: "Query") { name } }"#,
-        ] {
-            let response =
-                to_value(super::execute(&schema, &Request::new(document), &dispatcher, &()).await)
-                    .unwrap();
+        assert!(response.get("errors").is_none(), "{response:?}");
+        assert_eq!(response["data"]["__schema"]["queryType"]["name"], "Query");
+        let types = response["data"]["__schema"]["types"].as_array().unwrap();
+        let query = types.iter().find(|ty| ty["name"] == "Query").unwrap();
+        assert_eq!(query["kind"], "OBJECT");
+        let hello = query["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|field| field["name"] == "hello")
+            .unwrap();
+        assert_eq!(
+            hello["type"],
+            json!({ "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "String" } })
+        );
+        assert_eq!(hello["args"][0]["name"], "name");
+        assert_eq!(hello["args"][0]["type"], hello["type"]);
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+    }
 
-            assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
-            assert!(
-                response["errors"]
-                    .as_array()
-                    .is_some_and(|errors| !errors.is_empty())
-            );
-        }
+    #[tokio::test(flavor = "current_thread")]
+    async fn type_lookup_honors_aliases_fragments_and_unknown_names() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new(
+            "query($name: String!) { known: __type(name: $name) { ...TypeName } missing: __type(name: \"Missing\") { name } } fragment TypeName on __Type { name kind }",
+        ).with_variables(json!({ "name": "Query" }).as_object().unwrap().clone());
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(
+            response,
+            json!({ "data": { "known": { "name": "Query", "kind": "OBJECT" }, "missing": null } })
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
     }
 
     // TODO: Temporary unsupported-feature contract: remove this rejection test when

@@ -182,3 +182,32 @@ async fn route_only_accepts_post() {
     let (status, _, _) = send(&app, "GET", None, None, "").await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
 }
+
+#[tokio::test]
+async fn schema_discovery_and_queries_share_the_existing_graphql_endpoint() {
+    let app = app();
+    let (status, _, response) = send(
+        &app,
+        "POST",
+        Some("application/json"),
+        None,
+        json!({ "query": "{ __schema { queryType { name } } }" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response,
+        json!({ "data": { "__schema": { "queryType": { "name": "Query" } } } })
+    );
+
+    let (status, _, response) = send(
+        &app,
+        "POST",
+        Some("application/json"),
+        None,
+        json!({ "query": "{ hello(name: \"Sheri\") }" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response, json!({ "data": { "hello": "Hello, Sheri" } }));
+}
