@@ -3,6 +3,7 @@ use apollo_compiler::{
     ast::{Type, Value},
     collections::{HashSet, IndexMap},
     executable::{Field, Selection},
+    introspection,
     parser::SourceSpan,
     response::{GraphQLError, JsonMap, JsonValue, ResponseDataPathSegment},
     schema::{ExtendedType, FieldDefinition, ObjectType},
@@ -30,11 +31,47 @@ pub trait Dispatcher<C> {
     ) -> impl Future<Output = Result<JsonValue, ResolverError>> + Send + 'a;
 }
 
+/// Server-controlled execution settings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionOptions {
+    /// Whether `__schema` and `__type` may be queried. Enabled by default.
+    pub introspection: bool,
+}
+
+impl Default for ExecutionOptions {
+    fn default() -> Self {
+        Self {
+            introspection: true,
+        }
+    }
+}
+
 pub async fn execute<C, D>(
     schema: &Valid<Schema>,
     request: &Request,
     dispatcher: &D,
     context: &C,
+) -> Response
+where
+    C: Sync,
+    D: Dispatcher<C> + Sync,
+{
+    execute_with_options(
+        schema,
+        request,
+        dispatcher,
+        context,
+        ExecutionOptions::default(),
+    )
+    .await
+}
+
+pub async fn execute_with_options<C, D>(
+    schema: &Valid<Schema>,
+    request: &Request,
+    dispatcher: &D,
+    context: &C,
+    options: ExecutionOptions,
 ) -> Response
 where
     C: Sync,
@@ -58,11 +95,54 @@ where
         .get_object(prepared.operation.selection_set.ty.as_str())
         .expect("validated operation root must be an object");
 
-    let mut data = JsonMap::new();
-    let mut errors = Vec::new();
+    let fields = collect_fields(schema, &prepared);
+    let introspection_field = fields
+        .values()
+        .map(|fields| fields[0])
+        .find(|field| matches!(field.name.as_str(), "__schema" | "__type"));
+    if !options.introspection
+        && let Some(field) = introspection_field
+    {
+        return Response::request_error(GraphQLError::new(
+            "Schema introspection is disabled.",
+            field.name.location(),
+            &prepared.document.sources,
+        ));
+    }
 
-    for (response_key, fields) in collect_fields(schema, &prepared) {
+    let mut introspection_data = JsonMap::new();
+    let mut errors = Vec::new();
+    if introspection_field.is_some() {
+        if let Err(error) = introspection::check_max_depth(&prepared.document, &prepared.operation)
+        {
+            return Response::request_error(error.to_graphql_error(&prepared.document.sources));
+        }
+        match introspection::partial_execute(
+            schema,
+            &schema.implementers_map(),
+            &prepared.document,
+            &prepared.operation,
+            &prepared.variables,
+        ) {
+            Ok(response) => {
+                introspection_data = response.data.unwrap_or_default();
+                errors = response.errors;
+            }
+            Err(error) => {
+                return Response::request_error(error.to_graphql_error(&prepared.document.sources));
+            }
+        }
+    }
+
+    let mut data = JsonMap::new();
+    for (response_key, fields) in fields {
         let field = fields[0];
+        if matches!(field.name.as_str(), "__schema" | "__type") {
+            if let Some(value) = introspection_data.remove(response_key.as_str()) {
+                data.insert(response_key.as_str(), value);
+            }
+            continue;
+        }
         let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
 
         let definition: &FieldDefinition =
@@ -85,16 +165,6 @@ where
                 JsonValue::from(prepared.operation.selection_set.ty.as_str()),
                 false,
             ),
-            "__schema" | "__type" => {
-                errors.push(*new_execution_error(
-                    &prepared,
-                    &path,
-                    format!("Introspection field '{}' is not supported.", field.name),
-                    field.name.location(),
-                ));
-
-                (JsonValue::Null, true)
-            }
             _ => match coerce_argument_values(schema, &prepared, &path, field, definition) {
                 Ok(arguments) => match dispatcher
                     .resolve(
