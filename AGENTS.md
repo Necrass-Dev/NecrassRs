@@ -63,6 +63,8 @@ Summarize changes, validation commands and results, unverified behavior, and unr
 
 Do not copy private neighboring repositories, conversation transcripts, credentials, or personal filesystem paths into public artifacts. Include only the design facts that can be shared publicly.
 
+Do not use prefix like `feat:` for `docs:` in commit messages.
+
 ## Reference
 
 The organization of these instructions was informed by [Gelite's AGENTS.md](https://github.com/gelite-dev/gelite/blob/main/AGENTS.md) and adapted to NecrassRs. External documents are references; changes to them do not automatically change this repository's rules.
