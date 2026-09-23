@@ -256,6 +256,8 @@ For a local checkout, use `cargo install --path crates/necrassrs-cli --locked` f
 
 The command is `necrass init [PATH] [--name NAME]`. `PATH` defaults to the current directory; a missing target directory is created, and an existing empty directory is accepted. The Cargo package name defaults to the target directory's final component, with `--name` as an override. Refuse nonempty targets, existing Cargo projects, and symbolic-link targets without modifying them. There is no overwrite mode. Existing applications follow manual integration instructions; merging into an existing `Cargo.toml` remains deferred.
 
+The CLI writes the starter files directly. Invoking `cargo init` inside another workspace can rewrite its parent `Cargo.toml`, so the initializer must not use it there. The generated manifest contains its own `[workspace]` section to keep the new project independent of a parent workspace.
+
 Generated starter source is ordinary application-owned source. The build library subsequently synchronizes SDL-owned resolver declarations while preserving retained business logic. The execution core remains independent of Axum. Existing projects can integrate `necrassrs`, `necrassrs-build`, and `necrassrs-axum` without using the CLI.
 
 ```text
