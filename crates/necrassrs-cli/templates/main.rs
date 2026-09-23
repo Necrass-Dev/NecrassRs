@@ -32,7 +32,7 @@ fn app() -> Router {
     });
     Router::new()
         .route("/graphql", post(graphql))
-        .route("/graphiql", get(|| async { graphiql_html("/graphql") }))
+        .route("/graphql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }
 

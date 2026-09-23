@@ -16,7 +16,7 @@ The example's `[dependencies]` contain the runtime, Axum adapter, Axum, and Toki
 
 ## Development UI
 
-The example registers `/graphiql` by default. Open `http://127.0.0.1:3000/graphiql`; the page uses this application's existing `/graphql` endpoint. The browser loads version-pinned assets from `esm.sh` and needs network access. Remove or gate the route when deploying an application that should not expose the UI. See [Introspection and GraphiQL](../../docs/graphiql.md) for endpoint configuration and production introspection policy.
+The example serves GraphiQL on GET `/graphql` by default. Open `http://127.0.0.1:3000/graphql`; the page sends requests to POST `/graphql`. The browser loads version-pinned assets from `esm.sh` and needs network access. Remove or gate the GET handler when deploying an application that should not expose the UI. See [Introspection and GraphiQL](../../docs/graphiql.md) for endpoint configuration and production introspection policy.
 
 ## Requests
 

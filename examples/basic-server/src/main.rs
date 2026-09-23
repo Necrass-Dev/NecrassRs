@@ -32,7 +32,7 @@ fn app() -> Router {
     });
     Router::new()
         .route("/graphql", post(graphql))
-        .route("/graphiql", get(|| async { graphiql_html("/graphql") }))
+        .route("/graphql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }
 
@@ -195,7 +195,7 @@ mod tests {
     #[tokio::test]
     async fn graphiql_page_uses_the_existing_endpoint() {
         let response = app()
-            .oneshot(Request::get("/graphiql").body(Body::empty()).unwrap())
+            .oneshot(Request::get("/graphql").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);

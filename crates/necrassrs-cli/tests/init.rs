@@ -40,7 +40,7 @@ fn init_creates_project_at_explicit_path_and_name() {
     }
     let main = fs::read_to_string(project.join("src/main.rs")).unwrap();
     assert!(main.contains("graphiql_html(\"/graphql\")"));
-    assert!(main.contains("\"/graphiql\""));
+    assert!(main.contains(".route(\"/graphql\", get("));
 
     let manifest = fs::read(project.join("Cargo.toml")).unwrap();
     let repeated = Command::new(env!("CARGO_BIN_EXE_necrass"))

@@ -28,7 +28,7 @@ use necrassrs_axum::graphiql_html;
 
 let app = Router::new().route("/graphql", post(graphql));
 let app = if development {
-    app.route("/graphiql", get(|| async { graphiql_html("/graphql") }))
+    app.route("/graphql", get(|| async { graphiql_html("/graphql") }))
 } else {
     app
 };
@@ -38,4 +38,4 @@ let app = if development {
 
 The page loads version-pinned GraphiQL, React, and GraphQL modules and the GraphiQL stylesheet from `https://esm.sh`. These assets are not bundled with the Rust crate, so the browser needs access to that CDN. A restrictive Content Security Policy must allow the relevant styles, scripts, and workers. The application may instead serve its own page if offline assets are required.
 
-The basic-server example and projects created by `necrass init` register `/graphiql` by default. The page sends requests to each application's existing `/graphql` route. Remove or gate that route before deployment when the UI should be unavailable. This route choice is independent of introspection: the runtime allows introspection by default. An application that wants production introspection disabled must use `execute_with_options` in its GraphQL handler.
+The basic-server example and projects created by `necrass init` serve GraphiQL on GET `/graphql` by default. The page sends requests to POST `/graphql`. Remove or gate the GET handler before deployment when the UI should be unavailable. This route choice is independent of introspection: the runtime allows introspection by default. An application that wants production introspection disabled must use `execute_with_options` in its GraphQL handler.

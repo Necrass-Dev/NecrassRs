@@ -229,12 +229,18 @@ async fn schema_discovery_and_queries_share_the_existing_graphql_endpoint() {
 
 #[tokio::test]
 async fn graphiql_is_opt_in_and_uses_the_configured_endpoint() {
-    let request = || HttpRequest::get("/graphiql").body(Body::empty()).unwrap();
-    let absent = app().oneshot(request()).await.unwrap();
-    assert_eq!(absent.status(), StatusCode::NOT_FOUND);
+    let request = || {
+        HttpRequest::get("/api/graphql")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let absent = app_at("/api/graphql").oneshot(request()).await.unwrap();
+    assert_eq!(absent.status(), StatusCode::METHOD_NOT_ALLOWED);
 
-    let app =
-        app_at("/api/graphql").route("/graphiql", get(|| async { graphiql_html("/api/graphql") }));
+    let app = app_at("/api/graphql").route(
+        "/api/graphql",
+        get(|| async { graphiql_html("/api/graphql") }),
+    );
     let page = app.clone().oneshot(request()).await.unwrap();
     assert_eq!(page.status(), StatusCode::OK);
     assert_eq!(
