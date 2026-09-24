@@ -1,20 +1,20 @@
 <div align="center">
   <h1>NecrassRs</h1>
   <img src="logo/logo.svg" alt="NecrassRs logo" width="180">
-  <p style="font-weight:bold">Your schema leads. Rust delivers.<p>
+  <p style="font-weight:bold">Your schema leads. Rust delivers.</p>
 </div>
 
 NecrassRs is an SDL-first GraphQL server framework for Rust. Define your public API in GraphQL SDL, let Cargo generate Rust contracts and resolver scaffolding, and fill in the resolver bodies with your application logic.
 
 > [!WARNING]
-> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API currently supports query fields with `String!` arguments and return values.
+> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API currently supports query fields with `String!` return values and either no arguments or `String!` arguments.
 
 ## Quick start
 
 With Rust and Cargo installed, install the CLI from Git:
 
 ```sh
-cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli
+cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked
 ```
 
 The package is named `necrassrs-cli`; the installed command is `necrass`. Create and run a project:
@@ -26,6 +26,8 @@ cargo run
 ```
 
 The target directory must be new or empty. The starter uses Git dependencies for NecrassRs. After initialization, ordinary builds and runs only require Cargo; no separate generation command is needed.
+
+The starter's NecrassRs dependencies are not pinned to the CLI's revision. The first build resolves them from the Git repository's default branch and records the resolved revision in the project's `Cargo.lock`.
 
 Open [GraphiQL](http://127.0.0.1:3000/graphql) and run:
 
@@ -61,6 +63,9 @@ type Query {
 
 Cargo runs `build.rs`, which calls `necrassrs_build::build("schema")`. The build library validates the SDL, generates argument types and resolver contracts, and synchronizes editable resolver declarations in `src/resolvers.rs`.
 
+> [!IMPORTANT]
+> Cargo builds write disposable generated code to `OUT_DIR` and update `src/resolvers.rs`. Retained fields keep their method bodies. Deleting or renaming a field removes its old resolver method, including any user-written body.
+
 The starter already includes this working resolver:
 
 ```rust
@@ -85,6 +90,8 @@ Your application owns routing and request Context construction. At runtime, Necr
 2. Run `cargo build` to regenerate contracts and synchronize resolver declarations.
 3. Implement new resolver bodies in `src/resolvers.rs`.
 4. Run `cargo run` and query the server.
+
+Generated contracts in `OUT_DIR` are disposable. In `src/resolvers.rs`, SDL owns resolver declarations, while you own retained method bodies and unrelated application code.
 
 | File | Purpose |
 | --- | --- |
