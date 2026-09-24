@@ -6,3 +6,4 @@ edition.workspace = true
 [[bin]]
 name = "necrass"
 path = "src/main.rs"
+doc = false
