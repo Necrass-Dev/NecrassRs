@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[[bin]]
+name = "basic-server"
+path = "src/main.rs"
+doc = false
+
 [dependencies]
 axum = "0.8.9"
 necrassrs = { path = "../../crates/necrassrs", version = "0.1.0" }
