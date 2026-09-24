@@ -1,3 +1,44 @@
+//! SDL validation, Rust generation, and resolver synchronization for Cargo builds.
+//!
+//! Add this crate to your application's build dependencies and call [`build`]
+//! from `build.rs`. No installed CLI or separate generation command is required.
+//!
+//! # Build script
+//!
+//! ```no_run
+//! fn main() -> Result<(), necrassrs_build::BuildError> {
+//!     necrassrs_build::build("schema")
+//! }
+//! ```
+//!
+//! Include the disposable output in your application's `src/generated.rs`:
+//!
+//! ```text
+//! include!(concat!(env!("OUT_DIR"), "/necrassrs.rs"));
+//! ```
+//!
+//! Declare `mod generated;` and `mod resolvers;` in the application root.
+//! Generated code refers to the application's `necrassrs` runtime dependency.
+//! Contracts live in `generated::resolvers`, argument structs in
+//! `generated::types::<Object>::<field>::Args`, and execution wiring in
+//! `generated::dispatch`. The generated `SDL` constant contains the schema.
+//!
+//! # Source ownership
+//!
+//! **Building modifies `src/resolvers.rs`.** SDL owns resolver declarations;
+//! applications own retained method bodies and unrelated code. New fields get
+//! explicit `unimplemented!()` stubs. Deleted fields lose their methods and
+//! bodies. A rename is a deletion plus a new stub, without body migration.
+//! Review source changes after editing SDL. Retained bodies may need manual
+//! changes when arguments change.
+//!
+//! Generated contracts currently support query fields returning `String!` with
+//! no arguments or `String!` arguments. Mutation and subscription roots are
+//! rejected. Applications must configure `panic = "abort"` in their root dev
+//! and release profiles to enforce process termination on unimplemented calls.
+//! This affects all panics; ordinary application failures should be returned as
+//! runtime resolver errors.
+
 use apollo_compiler::Schema;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +48,26 @@ mod sync;
 /// Generates `OUT_DIR/necrassrs.rs` from `.graphql` files recursively discovered
 /// under `schema_dir`, sorted by path. Symbolic-link entries are skipped.
 /// Creates and synchronizes editable query resolvers in `src/resolvers.rs`.
+///
+/// Relative schema paths are resolved against the process's working directory
+/// (the package root for a Cargo build script). Cargo supplies `OUT_DIR` and
+/// `CARGO_MANIFEST_DIR`; the resolver file is under the latter. Emits Cargo
+/// rebuild directives for the schema directory and discovered files.
+///
+/// Retained methods keep their bodies; deleted and renamed fields lose their
+/// old methods. Source is written only when synchronization changes it.
+///
+/// # Errors
+///
+/// Returns [`BuildError`] for missing Cargo environment variables, filesystem
+/// failures, invalid SDL, unsupported generation features, or invalid resolver
+/// source. Invalid SDL and generation errors leave resolver source untouched.
+/// Resolver synchronization rejects symbolic-link destinations and unparseable
+/// source. Generated output is written before resolver synchronization, so an
+/// error does not imply that no files changed. Writes are not atomic, and an
+/// interrupted write may leave partial output.
+///
+/// See the [crate documentation](crate) for build-script setup.
 pub fn build(schema_dir: impl AsRef<Path>) -> Result<(), BuildError> {
     let out_dir = std::env::var("OUT_DIR").map_err(|source| BuildError::Environment {
         variable: "OUT_DIR",
@@ -92,20 +153,32 @@ fn schema_paths(directory: &Path) -> Result<Vec<PathBuf>, BuildError> {
         })
 }
 
+/// A failure while reading inputs, generating contracts, or synchronizing source.
 #[derive(Debug)]
 pub enum BuildError {
+    /// A required Cargo environment variable is missing or is not Unicode.
     Environment {
+        /// Name of the required variable.
         variable: &'static str,
+        /// Environment lookup failure.
         source: std::env::VarError,
     },
+    /// A filesystem operation failed, including a rejected source destination.
     Io {
+        /// Path associated with the failure.
         path: std::path::PathBuf,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// SDL parsing or schema validation diagnostics from Apollo Compiler.
     Schema(apollo_compiler::validation::DiagnosticList),
+    /// A valid GraphQL schema uses an unsupported generation feature.
     Codegen(codegen::CodegenError),
+    /// Existing or synchronized resolver source could not be parsed or reconciled.
     ResolverSource {
+        /// Resolver implementation file.
         path: PathBuf,
+        /// Source parsing or reconciliation error.
         source: syn::Error,
     },
 }

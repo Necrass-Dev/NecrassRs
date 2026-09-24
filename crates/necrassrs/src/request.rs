@@ -12,6 +12,19 @@ use apollo_compiler::{
 
 use crate::input::{InputCoercionError, literal_to_json as default_value_to_json};
 
+/// An owned GraphQL document, optional operation name, and variable values.
+///
+/// Construction does not validate input. [`crate::execute`] parses and validates
+/// the document, selects an operation, and coerces variables before dispatch.
+///
+/// ```
+/// use necrassrs::{JsonMap, Request};
+/// let mut variables = JsonMap::new();
+/// variables.insert("name", "Sheri".into());
+/// let request = Request::new("query Greeting($name: String!) { hello(name: $name) }")
+///     .with_operation_name("Greeting")
+///     .with_variables(variables);
+/// ```
 pub struct Request {
     document: String,
     operation_name: Option<String>,
@@ -19,6 +32,7 @@ pub struct Request {
 }
 
 impl Request {
+    /// Stores a document with no operation name and an empty variable map.
     pub fn new(document: impl Into<String>) -> Self {
         Self {
             document: document.into(),
@@ -27,11 +41,18 @@ impl Request {
         }
     }
 
+    /// Selects an operation by name, replacing any previous selection.
+    ///
+    /// Required when the document contains multiple operations. Unknown names
+    /// produce request errors during execution.
     pub fn with_operation_name(mut self, operation_name: impl Into<String>) -> Self {
         self.operation_name = Some(operation_name.into());
         self
     }
 
+    /// Replaces all variable values. Keys are variable names without `$`.
+    ///
+    /// Omitted entries and explicit JSON nulls remain distinct during coercion.
     pub fn with_variables(mut self, variables: JsonMap) -> Self {
         self.variables = variables;
         self

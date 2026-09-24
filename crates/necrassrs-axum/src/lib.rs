@@ -1,5 +1,36 @@
 //! Axum extraction and response conversion for GraphQL handlers.
 //!
+//! Applications own routing, shared schema/dispatcher state, and per-request
+//! Context construction. [`GraphQLRequest`] extracts a runtime request;
+//! [`GraphQLResponse`] converts the result of [`necrassrs::execute`] to HTTP.
+//!
+//! # Handler integration
+//!
+//! ```
+//! use axum::{Router, extract::State, routing::post};
+//! use necrassrs::{Dispatcher, Schema, Valid};
+//! use necrassrs_axum::{GraphQLRequest, GraphQLResponse};
+//! use std::sync::Arc;
+//!
+//! struct App<D> { schema: Valid<Schema>, dispatcher: D }
+//!
+//! async fn graphql<D: Dispatcher<()> + Send + Sync + 'static>(
+//!     State(state): State<Arc<App<D>>>,
+//!     GraphQLRequest(request): GraphQLRequest,
+//! ) -> GraphQLResponse {
+//!     let context = (); // Replace with application-owned request Context.
+//!     GraphQLResponse(necrassrs::execute(
+//!         &state.schema, &request, &state.dispatcher, &context,
+//!     ).await)
+//! }
+//!
+//! fn app<D: Dispatcher<()> + Send + Sync + 'static>(state: Arc<App<D>>) -> Router {
+//!     Router::new().route("/graphql", post(graphql::<D>)).with_state(state)
+//! }
+//! ```
+//!
+//! # HTTP behavior
+//!
 //! Mount application-owned handlers with `post`. Request bodies are JSON with
 //! `query`, optional `variables`, and optional `operationName`. Axum accepts
 //! `application/json` and JSON suffix media types. Its default 2 MiB body
@@ -25,6 +56,16 @@ use serde::Deserialize;
 ///
 /// Mount this response on an application-chosen GET route. Browser assets load
 /// from the version-pinned esm.sh URLs in the page and require network access.
+/// The endpoint is escaped for its HTML attribute; this function does not create
+/// the POST route or change runtime introspection settings. Gate or omit the UI
+/// route when it should not be exposed in a deployment.
+///
+/// ```
+/// use axum::{Router, routing::get};
+/// use necrassrs_axum::graphiql_html;
+/// let app: Router = Router::new()
+///     .route("/playground", get(|| async { graphiql_html("/graphql") }));
+/// ```
 pub fn graphiql_html(endpoint_url: &str) -> Html<String> {
     let endpoint_url = endpoint_url
         .replace('&', "&amp;")
@@ -36,7 +77,15 @@ pub fn graphiql_html(endpoint_url: &str) -> Html<String> {
 }
 
 /// A GraphQL request parsed from an Axum JSON request body.
-pub struct GraphQLRequest(pub Request);
+///
+/// Extracts `query`, optional `variables`, and optional `operationName`.
+/// GraphQL document validation happens during runtime execution, not extraction.
+/// This consumes the request body and should be the handler's last extractor.
+/// Extraction failures use Axum's JSON rejection responses.
+pub struct GraphQLRequest(
+    /// Runtime request to pass to execution.
+    pub Request,
+);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,7 +117,15 @@ where
 }
 
 /// Converts a completed runtime response to an HTTP response.
-pub struct GraphQLResponse(pub Response);
+///
+/// Request errors receive HTTP 422; execution responses receive HTTP 200,
+/// including responses with resolver errors or `data: null`. The content type
+/// is `application/json`. See the [crate documentation](crate) for extraction
+/// errors, which follow a separate path.
+pub struct GraphQLResponse(
+    /// Completed runtime response.
+    pub Response,
+);
 
 impl IntoResponse for GraphQLResponse {
     fn into_response(self) -> AxumResponse {

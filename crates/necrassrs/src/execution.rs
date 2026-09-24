@@ -16,13 +16,26 @@ use crate::{
     request::{PreparedRequest, prepare_request},
 };
 
+/// Original SDL coordinates of a field to resolve, independent of query aliases.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FieldCoordinate<'a> {
+    /// Name of the object type declaring the field.
     pub parent_type: &'a str,
+    /// Field name as written in SDL, not its response alias or Rust identifier.
     pub field: &'a str,
 }
 
+/// Connects execution to application resolvers for Context type `C`.
+///
+/// Usually implemented by the generated `SchemaDispatcher`. Applications can
+/// provide a custom dispatcher when integrating directly with the runtime.
 pub trait Dispatcher<C> {
+    /// Resolves a selected field using coerced arguments and request Context.
+    ///
+    /// Argument keys are original SDL names. The returned `Send` future may
+    /// borrow these inputs for the call lifetime. Return [`ResolverError`] for
+    /// application failures; execution adds the response path and location and
+    /// completes successful JSON values according to the field's declared type.
     fn resolve<'a>(
         &'a self,
         context: &'a C,
@@ -46,6 +59,41 @@ impl Default for ExecutionOptions {
     }
 }
 
+/// Validates and executes a request with introspection enabled.
+///
+/// Equivalent to [`execute_with_options`] with [`ExecutionOptions::default`].
+/// The application owns the validated schema, dispatcher, and Context; the
+/// returned future borrows them and is `Send`. No independent field tasks are
+/// spawned. Validation failures are returned as request-error [`Response`] values.
+///
+/// # Example
+///
+/// ```
+/// use necrassrs::{Dispatcher, FieldCoordinate, JsonMap, JsonValue, Request,
+///     ResolverError, Schema, execute};
+///
+/// struct Greeting;
+/// impl Dispatcher<()> for Greeting {
+///     async fn resolve<'a>(
+///         &'a self, _context: &'a (), coordinate: FieldCoordinate<'a>,
+///         _arguments: &'a JsonMap,
+///     ) -> Result<JsonValue, ResolverError> {
+///         match (coordinate.parent_type, coordinate.field) {
+///             ("Query", "hello") => Ok("Hello, Sheri".into()),
+///             _ => Err(ResolverError::new("Unknown field")),
+///         }
+///     }
+/// }
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// let schema = Schema::parse_and_validate(
+///     "type Query { hello: String! }", "schema.graphql",
+/// ).unwrap();
+/// let response = execute(&schema, &Request::new("{ hello }"), &Greeting, &()).await;
+/// assert!(!response.is_request_error());
+/// # }
+/// ```
 pub async fn execute<C, D>(
     schema: &Valid<Schema>,
     request: &Request,
@@ -66,6 +114,19 @@ where
     .await
 }
 
+/// Executes a request with server-owned settings.
+///
+/// Performs document validation, operation selection, and variable coercion
+/// before invoking the dispatcher. Subscription operations are rejected.
+/// Disabling introspection rejects selected `__schema` and `__type` fields
+/// before resolver calls; `__typename` remains available.
+///
+/// Resolver errors become execution errors and follow GraphQL null propagation.
+/// Resolver panics are not caught. Applications enforcing termination for
+/// unimplemented resolvers must set `panic = "abort"` in their root Cargo profiles.
+///
+/// See [`execute`] for a complete example. To disable introspection, pass
+/// `ExecutionOptions { introspection: false }` as the final argument here.
 pub async fn execute_with_options<C, D>(
     schema: &Valid<Schema>,
     request: &Request,

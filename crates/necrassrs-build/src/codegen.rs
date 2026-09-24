@@ -1,8 +1,35 @@
+//! In-memory Rust generation from a validated Apollo schema.
+//!
+//! Use [`crate::build`] for normal Cargo integration and editable resolver
+//! synchronization. This module only generates disposable contract source.
+
 use apollo_compiler::{
     Schema, ast::Type, parser::SourceSpan, schema::ExtendedType, validation::Valid,
 };
 use quote::{format_ident, quote};
 
+/// Returns Rust source containing embedded SDL, argument types, resolver traits,
+/// and a schema dispatcher. Does not write files or synchronize user source.
+///
+/// The output expects a compatible `necrassrs` dependency in the consumer.
+/// Field and argument names preserve SDL case, with escaping for Rust identifiers.
+/// Fields without arguments receive empty `Args` structs. Default resolver
+/// methods panic when their returned futures are polled.
+///
+/// # Errors
+///
+/// Returns [`CodegenError`] for unsupported argument/result types or mutation
+/// and subscription roots. Currently, argument and result types must be `String!`.
+///
+/// ```
+/// use apollo_compiler::Schema;
+/// let schema = Schema::parse_and_validate(
+///     "type Query { hello: String! }", "schema.graphql",
+/// ).unwrap();
+/// let source = necrassrs_build::codegen::generate(&schema)?;
+/// assert!(source.contains("QueryResolver"));
+/// # Ok::<(), necrassrs_build::codegen::CodegenError>(())
+/// ```
 pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     let types = generate_types(schema)?;
     let resolvers = generate_resolvers(schema)?;
@@ -251,6 +278,9 @@ pub(crate) fn rust_name(name: &str) -> String {
 }
 
 #[derive(Debug, miette::Diagnostic)]
+/// An unsupported schema feature, with source location when available.
+///
+/// Implements [`miette::Diagnostic`] for rendering annotated diagnostics.
 pub struct CodegenError {
     message: String,
     #[source_code]
