@@ -28,7 +28,7 @@ Without this middleware, `GraphQLResponse` preserves the existing `application/j
 
 Use `web::Data` for application state and construct Context inside the handler. Configure JSON limits with `web::JsonConfig::limit`. Standard JSON extraction errors are mapped to the status codes below; custom JSON error handlers returning other error types retain their own responses.
 
-The Actix adapter is under development. Its maintained consumer example and CLI framework-selection option are not delivered by these changes.
+The [Actix consumer example](../examples/actix-server/README.md) connects Cargo generation and user resolvers to an application-owned server. CLI framework selection remains follow-up work.
 
 ## Media types
 

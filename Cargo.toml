@@ -6,7 +6,8 @@ members = [
     "crates/necrassrs-build",
     "crates/necrassrs-cli",
     "crates/necrassrs-http",
-    "examples/axum-server"
+    "examples/axum-server",
+    "examples/actix-server"
 ]
 resolver = "3"
 

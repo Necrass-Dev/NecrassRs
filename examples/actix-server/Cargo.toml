@@ -1,0 +1,21 @@
+[package]
+name = "actix-server"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "actix-server"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+actix-web = "4"
+necrassrs = { path = "../../crates/necrassrs", version = "0.1.0" }
+necrassrs-actix = { path = "../../crates/necrassrs-actix", version = "0.1.0" }
+
+[build-dependencies]
+necrassrs-build = { path = "../../crates/necrassrs-build", version = "0.1.0" }
+
+[dev-dependencies]
+serde_json = "1.0"

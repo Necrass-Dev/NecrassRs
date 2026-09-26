@@ -95,6 +95,17 @@ dependencies = [
 
 [[package]]
 name = "actix-server"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "necrassrs",
+ "necrassrs-actix",
+ "necrassrs-build",
+ "serde_json",
+]
+
+[[package]]
+name = "actix-server"
 version = "2.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8db2cf6f034e227c0c79825fbf11f3cad48569109515f62542b84d8abedb9376"
@@ -140,7 +151,7 @@ dependencies = [
  "actix-macros",
  "actix-router",
  "actix-rt",
- "actix-server",
+ "actix-server 2.9.7",
  "actix-service",
  "actix-utils",
  "actix-web-codegen",

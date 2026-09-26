@@ -54,4 +54,4 @@ let app = App::new()
     .route("/graphiql", web::get().to(|| async { graphiql_html("/api/graphql") }));
 ```
 
-Both helpers use the same pinned browser asset versions and escape the configured endpoint. UI registration does not change the runtime's introspection setting. The Actix consumer example is still pending; its planned default is to register this built-in UI. HTTP content negotiation applies to the GraphQL endpoint, not the HTML page; see [HTTP adapters and response negotiation](http.md).
+Both helpers use the same pinned browser asset versions and escape the configured endpoint. UI registration does not change the runtime's introspection setting. The [Actix consumer example](../examples/actix-server/README.md) serves the built-in UI on GET `/graphql` by default, with execution on POST `/graphql`. HTTP content negotiation applies to the GraphQL endpoint, not the HTML page; see [HTTP adapters and response negotiation](http.md).
