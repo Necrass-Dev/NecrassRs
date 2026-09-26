@@ -489,3 +489,44 @@ async fn unsupported_request_media_type_returns_415() {
     let (status, _, _) = response_parts(response).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
+
+#[actix_web::test]
+async fn unacceptable_response_type_is_rejected_before_body_extraction() {
+    let app = test::init_service(app()).await;
+    let req = request("POST", Some("application/json"), None, "{")
+        .insert_header((header::ACCEPT, "text/html"))
+        .to_request();
+    let response = test::call_service(&app, req).await;
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(response.headers().get(header::VARY).unwrap(), "Accept");
+    assert!(response.headers().get(header::CONTENT_TYPE).is_none());
+}
+
+#[actix_web::test]
+async fn json_configuration_preserves_body_limits_and_custom_errors() {
+    let limited = test::init_service(app().app_data(web::JsonConfig::default().limit(8))).await;
+    let req = request(
+        "POST",
+        Some("application/json"),
+        None,
+        json!({ "query": "{ __typename }" }).to_string(),
+    )
+    .to_request();
+    let response = test::call_service(&limited, req).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let custom = test::init_service(
+        app().app_data(
+            web::JsonConfig::default()
+                .error_handler(|_, _| actix_web::error::ErrorConflict("custom JSON error")),
+        ),
+    )
+    .await;
+    let req = request("POST", Some("application/json"), None, "{}").to_request();
+    let response = test::call_service(&custom, req).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        test::read_body(response).await.as_ref(),
+        b"custom JSON error"
+    );
+}

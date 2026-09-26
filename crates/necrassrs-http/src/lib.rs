@@ -80,3 +80,47 @@ fn parse_quality(value: &str) -> Option<u16> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negotiates_quality_specificity_and_exclusions() {
+        assert_eq!(response_media_type([]), Some(JSON));
+        for (accept, expected) in [
+            (GRAPHQL_JSON, Some(GRAPHQL_JSON)),
+            (JSON, Some(JSON)),
+            ("*/*", Some(GRAPHQL_JSON)),
+            ("application/*", Some(GRAPHQL_JSON)),
+            (
+                "application/json;q=1, application/graphql-response+json;q=0.5",
+                Some(JSON),
+            ),
+            (
+                "application/json;q=0.5, application/graphql-response+json;q=1",
+                Some(GRAPHQL_JSON),
+            ),
+            ("application/graphql-response+json;q=0, */*;q=1", Some(JSON)),
+            (
+                "application/json;q=0, application/graphql-response+json;q=0, */*",
+                None,
+            ),
+            ("application/json;charset=utf-8", Some(JSON)),
+            ("application/json;charset=ascii", None),
+            ("text/html;example=\"a,b\", application/json", Some(JSON)),
+            ("text/html", None),
+            ("", None),
+            ("application/json;q=NaN", None),
+            ("application/json;q=1.001", None),
+            ("application/json;q=0.0001", None),
+            ("application/json;q=-1", None),
+        ] {
+            assert_eq!(response_media_type([accept]), expected, "{accept}");
+        }
+        assert_eq!(
+            response_media_type(["application/json;q=0.5", GRAPHQL_JSON]),
+            Some(GRAPHQL_JSON)
+        );
+    }
+}

@@ -259,7 +259,7 @@ mod tests {
 
             let errors = prepare_request(&schema, &request)
                 .expect_err("cyclic defaults must be rejected before execution");
-            assert!(!errors.is_empty());
+            assert!(!errors.errors.is_empty());
             return;
         }
 
@@ -295,8 +295,9 @@ mod tests {
 
         let errors = prepare_request(&schema, &request).unwrap_err();
 
-        assert!(!errors.is_empty());
-        assert!(!errors[0].locations.is_empty());
+        assert!(errors.syntax_error);
+        assert!(!errors.errors.is_empty());
+        assert!(!errors.errors[0].locations.is_empty());
     }
 
     #[test]
@@ -306,7 +307,7 @@ mod tests {
 
         let errors = prepare_request(&schema, &request).unwrap_err();
 
-        assert_eq!(errors.len(), 1);
+        assert_eq!(errors.errors.len(), 1);
     }
 
     #[test]
@@ -326,7 +327,7 @@ mod tests {
 
         let errors = prepare_request(&schema, &request).unwrap_err();
 
-        assert_eq!(errors.len(), 1);
+        assert_eq!(errors.errors.len(), 1);
     }
 
     #[test]
@@ -347,10 +348,10 @@ mod tests {
 
         let errors = prepare_request(&schema, &request).unwrap_err();
 
-        assert_eq!(errors.len(), 1);
-        assert!(!errors[0].message.is_empty());
-        assert!(!errors[0].locations.is_empty());
-        assert!(errors[0].path.is_empty());
+        assert_eq!(errors.errors.len(), 1);
+        assert!(!errors.errors[0].message.is_empty());
+        assert!(!errors.errors[0].locations.is_empty());
+        assert!(errors.errors[0].path.is_empty());
     }
 
     #[test]

@@ -10,7 +10,7 @@ use axum::{
 use necrassrs::{
     Dispatcher, FieldCoordinate, JsonMap, JsonValue, ResolverError, Schema, Valid, execute,
 };
-use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html};
+use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -70,7 +70,10 @@ fn app_at(endpoint: &str) -> Router {
     )
     .unwrap();
     Router::new()
-        .route(endpoint, post(graphql))
+        .route(
+            endpoint,
+            post(graphql).layer(axum::middleware::from_fn(negotiate_response)),
+        )
         .with_state(Arc::new(AppState {
             schema,
             dispatcher: GreetingDispatcher,
@@ -455,4 +458,21 @@ async fn unsupported_request_media_type_returns_415() {
     )
     .await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
+async fn unacceptable_response_type_is_rejected_before_body_extraction() {
+    let response = app()
+        .oneshot(
+            HttpRequest::post("/graphql")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "text/html")
+                .body(Body::from("{"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(response.headers().get(header::VARY).unwrap(), "Accept");
+    assert!(response.headers().get(header::CONTENT_TYPE).is_none());
 }
