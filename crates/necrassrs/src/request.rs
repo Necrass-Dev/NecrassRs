@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use apollo_compiler::{
     ExecutableDocument, Name, Node, Schema,
-    ast::Type,
+    ast::{Document, Type},
     executable::Operation,
     request::coerce_variable_values,
     response::{GraphQLError, JsonMap, JsonValue},
@@ -66,16 +66,37 @@ pub(crate) struct PreparedRequest {
     pub(crate) variables: Valid<JsonMap>,
 }
 
+#[derive(Debug)]
+pub(crate) struct RequestError {
+    pub(crate) errors: Vec<GraphQLError>,
+    pub(crate) syntax_error: bool,
+}
+
+impl From<Vec<GraphQLError>> for RequestError {
+    fn from(errors: Vec<GraphQLError>) -> Self {
+        Self {
+            errors,
+            syntax_error: false,
+        }
+    }
+}
+
 pub(crate) fn prepare_request(
     schema: &Valid<apollo_compiler::Schema>,
     request: &Request,
-) -> Result<PreparedRequest, Vec<GraphQLError>> {
-    let document = ExecutableDocument::parse_and_validate(
-        schema,
-        request.document.as_str(),
-        "request.graphql",
-    )
-    .map_err(|error| {
+) -> Result<PreparedRequest, RequestError> {
+    // Parse once into Apollo's AST so syntax and validation failures remain distinct.
+    let ast = Document::parse(request.document.as_str(), "request.graphql").map_err(|error| {
+        RequestError {
+            errors: error
+                .errors
+                .iter()
+                .map(|diagnostic| diagnostic.to_json())
+                .collect(),
+            syntax_error: true,
+        }
+    })?;
+    let document = ast.to_executable_validate(schema).map_err(|error| {
         error
             .errors
             .iter()

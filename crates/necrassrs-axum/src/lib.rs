@@ -46,11 +46,50 @@
 use axum::{
     Json,
     extract::{FromRequest, Request as AxumRequest, rejection::JsonRejection},
-    http::StatusCode,
+    http::{StatusCode, header},
+    middleware::Next,
     response::{Html, IntoResponse, Response as AxumResponse},
 };
 use necrassrs::{JsonMap, Request, Response};
 use serde::Deserialize;
+
+#[derive(Clone, Copy)]
+struct RuntimeResponse;
+
+pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumResponse {
+    let headers = request
+        .headers()
+        .get_all(header::ACCEPT)
+        .iter()
+        .map(|value| value.to_str())
+        .collect::<Result<Vec<_>, _>>();
+    let selected = headers.ok().and_then(necrassrs_http::response_media_type);
+    let mut response = if let Some(media_type) = selected {
+        let mut response = next.run(request).await;
+        if response
+            .extensions_mut()
+            .remove::<RuntimeResponse>()
+            .is_some()
+        {
+            // Keep non-2xx GraphQL results identifiable to legacy clients too.
+            let media_type = if response.status().is_success() {
+                media_type
+            } else {
+                necrassrs_http::GRAPHQL_JSON
+            };
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, media_type.parse().unwrap());
+        }
+        response
+    } else {
+        StatusCode::NOT_ACCEPTABLE.into_response()
+    };
+    response
+        .headers_mut()
+        .append(header::VARY, "Accept".parse().unwrap());
+    response
+}
 
 /// A GraphiQL page configured to send requests to an application-owned endpoint.
 ///
@@ -129,13 +168,17 @@ pub struct GraphQLResponse(
 
 impl IntoResponse for GraphQLResponse {
     fn into_response(self) -> AxumResponse {
-        let status = if self.0.is_request_error() {
+        let status = if self.0.is_syntax_error() {
+            StatusCode::BAD_REQUEST
+        } else if self.0.is_request_error() {
             StatusCode::UNPROCESSABLE_ENTITY
         } else {
             StatusCode::OK
         };
 
-        (status, Json(self.0)).into_response()
+        let mut response = (status, Json(self.0)).into_response();
+        response.extensions_mut().insert(RuntimeResponse);
+        response
     }
 }
 

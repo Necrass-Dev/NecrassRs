@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use necrassrs::{Schema, Valid};
-use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html};
+use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
 
 mod generated;
 mod resolvers;
@@ -31,7 +31,7 @@ fn app() -> Router {
         dispatcher: generated::dispatch::SchemaDispatcher::new(resolvers::Query),
     });
     Router::new()
-        .route("/graphql", post(graphql))
+        .route("/graphql", post(graphql).layer(axum::middleware::from_fn(negotiate_response)))
         .route("/graphql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }
