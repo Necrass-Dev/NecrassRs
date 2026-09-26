@@ -29,7 +29,7 @@ impl Dispatcher<Context> for GreetingDispatcher {
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
     ) -> Result<JsonValue, ResolverError> {
-        assert_eq!(coordinate.field, "hello");
+        assert!(matches!(coordinate.field, "hello" | "nullableHello"));
         let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
         if name == "Unknown" {
@@ -83,7 +83,7 @@ fn app_at(
     >,
 > {
     let schema = Schema::parse_and_validate(
-        "type Query { hello(name: String!): String! }",
+        "type Query { hello(name: String!): String! nullableHello(name: String!): String }",
         "schema.graphql",
     )
     .unwrap();
@@ -117,7 +117,8 @@ fn request_at(
 ) -> test::TestRequest {
     let mut request = test::TestRequest::default()
         .uri(endpoint)
-        .method(Method::from_bytes(method.as_bytes()).unwrap());
+        .method(Method::from_bytes(method.as_bytes()).unwrap())
+        .insert_header((header::ACCEPT, "application/json"));
     if let Some(content_type) = content_type {
         request = request.insert_header((header::CONTENT_TYPE, content_type));
     }
@@ -235,6 +236,7 @@ async fn route_only_accepts_post() {
     let req = request("GET", None, None, "").to_request();
     let response = test::call_service(&app, req).await;
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.headers().get(header::ALLOW).unwrap(), "POST");
 }
 
 #[actix_web::test]
@@ -326,4 +328,164 @@ async fn built_in_graphiql_uses_the_application_route_and_configured_endpoint() 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response_body, expected);
     }
+}
+
+// HTTP acceptance cases informed by graphql-over-http revision 3903e680.
+// These do not establish complete conformance or a policy for missing Accept.
+#[actix_web::test]
+async fn graphql_syntax_errors_return_400_without_data() {
+    let app = test::init_service(app()).await;
+    let req = request(
+        "POST",
+        Some("application/json"),
+        None,
+        json!({ "query": "{" }).to_string(),
+    )
+    .to_request();
+    let response = test::call_service(&app, req).await;
+    let (status, _, response_body) = response_parts(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(response_body.get("data").is_none());
+    assert!(
+        response_body["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty())
+    );
+}
+
+#[actix_web::test]
+async fn validation_operation_selection_and_variable_errors_return_422() {
+    let app = test::init_service(app()).await;
+    for body in [
+        json!({ "query": "{ missing }" }),
+        json!({ "query": "query A { hello(name: \"Sheri\") } query B { hello(name: \"Sheri\") }" }),
+        json!({ "query": "query A { hello(name: \"Sheri\") }", "operationName": "Missing" }),
+        json!({ "query": "query($name: String!) { hello(name: $name) }", "variables": {} }),
+        json!({ "query": "query($name: String!) { hello(name: $name) }", "variables": { "name": null } }),
+        json!({ "query": "query($name: String!) { hello(name: $name) }", "variables": { "name": 3 } }),
+    ] {
+        let req = request("POST", Some("application/json"), None, body.to_string()).to_request();
+        let response = test::call_service(&app, req).await;
+        let (status, _, response_body) = response_parts(response).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(response_body.get("data").is_none(), "{body}");
+        assert!(
+            response_body["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty()),
+            "{body}"
+        );
+    }
+}
+
+#[actix_web::test]
+async fn partial_execution_errors_remain_http_200() {
+    let app = test::init_service(app()).await;
+    // Maintainer decision in #18: execution errors use 200, never 294.
+    let body = json!({
+        "query": "{ ok: hello(name: \"Sheri\") failed: nullableHello(name: \"Unknown\") }"
+    })
+    .to_string();
+    let req = request("POST", Some("application/json"), None, body).to_request();
+    let response = test::call_service(&app, req).await;
+    let (status, _, response_body) = response_parts(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response_body["data"],
+        json!({ "ok": "Hello, Sheri", "failed": null })
+    );
+    assert_eq!(response_body["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(response_body["errors"][0]["path"], json!(["failed"]));
+    assert_eq!(
+        response_body["errors"][0]["extensions"]["code"],
+        "USER_NOT_FOUND"
+    );
+}
+
+#[actix_web::test]
+async fn negotiates_graphql_response_media_type() {
+    let app = test::init_service(app()).await;
+    for (accept, expected) in [
+        (
+            "application/graphql-response+json",
+            "application/graphql-response+json",
+        ),
+        (
+            "application/json;q=0.5, application/graphql-response+json;q=1",
+            "application/graphql-response+json",
+        ),
+        (
+            "application/graphql-response+json;q=0.5, application/json;q=1",
+            "application/json",
+        ),
+        (
+            "application/graphql-response+json;q=0, application/json",
+            "application/json",
+        ),
+    ] {
+        let req = request(
+            "POST",
+            Some("application/json"),
+            None,
+            json!({ "query": "{ hello(name: \"Sheri\") }" }).to_string(),
+        )
+        .insert_header((header::ACCEPT, accept))
+        .to_request();
+        let response = test::call_service(&app, req).await;
+        let (status, media_type, response_body) = response_parts(response).await;
+        assert_eq!(status, StatusCode::OK, "{accept}");
+        // An optional charset parameter must not make the media-type check fail.
+        assert_eq!(
+            media_type
+                .as_deref()
+                .and_then(|value| value.split(';').next())
+                .map(str::trim),
+            Some(expected),
+            "{accept}"
+        );
+        assert_eq!(
+            response_body,
+            json!({ "data": { "hello": "Hello, Sheri" } })
+        );
+    }
+}
+
+#[actix_web::test]
+async fn malformed_json_returns_400() {
+    let app = test::init_service(app()).await;
+    let req = request("POST", Some("application/json"), None, "{").to_request();
+    let response = test::call_service(&app, req).await;
+    let (status, _, _) = response_parts(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[actix_web::test]
+async fn invalid_request_fields_return_422() {
+    let app = test::init_service(app()).await;
+    for body in [
+        json!({}),
+        json!({ "query": 3 }),
+        json!({ "query": "{ __typename }", "variables": [] }),
+        json!({ "query": "{ __typename }", "operationName": 3 }),
+    ] {
+        let req = request("POST", Some("application/json"), None, body.to_string()).to_request();
+        let response = test::call_service(&app, req).await;
+        let (status, _, _) = response_parts(response).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+}
+
+#[actix_web::test]
+async fn unsupported_request_media_type_returns_415() {
+    let app = test::init_service(app()).await;
+    let req = request(
+        "POST",
+        Some("text/plain"),
+        None,
+        json!({ "query": "{ __typename }" }).to_string(),
+    )
+    .to_request();
+    let response = test::call_service(&app, req).await;
+    let (status, _, _) = response_parts(response).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }

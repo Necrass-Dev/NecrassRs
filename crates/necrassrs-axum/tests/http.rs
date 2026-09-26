@@ -32,7 +32,7 @@ impl Dispatcher<Context> for GreetingDispatcher {
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
     ) -> Result<JsonValue, ResolverError> {
-        assert_eq!(coordinate.field, "hello");
+        assert!(matches!(coordinate.field, "hello" | "nullableHello"));
         let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
         if name == "Unknown" {
@@ -65,7 +65,7 @@ fn app() -> Router {
 
 fn app_at(endpoint: &str) -> Router {
     let schema = Schema::parse_and_validate(
-        "type Query { hello(name: String!): String! }",
+        "type Query { hello(name: String!): String! nullableHello(name: String!): String }",
         "schema.graphql",
     )
     .unwrap();
@@ -95,7 +95,10 @@ async fn send_at(
     prefix: Option<&str>,
     body: impl Into<Body>,
 ) -> (StatusCode, Option<String>, Value) {
-    let mut builder = HttpRequest::builder().method(method).uri(endpoint);
+    let mut builder = HttpRequest::builder()
+        .method(method)
+        .uri(endpoint)
+        .header(header::ACCEPT, "application/json");
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
@@ -107,6 +110,10 @@ async fn send_at(
         .oneshot(builder.body(body.into()).unwrap())
         .await
         .unwrap();
+    response_parts(response).await
+}
+
+async fn response_parts(response: axum::response::Response) -> (StatusCode, Option<String>, Value) {
     let status = response.status();
     let content_type = response
         .headers()
@@ -194,8 +201,12 @@ async fn distinguishes_request_and_execution_errors_and_recovers() {
 #[tokio::test]
 async fn route_only_accepts_post() {
     let app = app();
-    let (status, _, _) = send(&app, "GET", None, None, "").await;
-    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    let response = app
+        .oneshot(HttpRequest::get("/graphql").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.headers().get(header::ALLOW).unwrap(), "POST");
 }
 
 #[tokio::test]
@@ -276,4 +287,172 @@ async fn graphiql_is_opt_in_and_uses_the_configured_endpoint() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response, expected);
     }
+}
+
+// HTTP acceptance cases informed by graphql-over-http revision 3903e680.
+// These do not establish complete conformance or a policy for missing Accept.
+#[tokio::test]
+async fn graphql_syntax_errors_return_400_without_data() {
+    let app = app();
+    let (status, _, response_body) = send(
+        &app,
+        "POST",
+        Some("application/json"),
+        None,
+        json!({ "query": "{" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(response_body.get("data").is_none());
+    assert!(
+        response_body["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn validation_operation_selection_and_variable_errors_return_422() {
+    let app = app();
+    for body in [
+        json!({ "query": "{ missing }" }),
+        json!({ "query": "query A { hello(name: \"Sheri\") } query B { hello(name: \"Sheri\") }" }),
+        json!({ "query": "query A { hello(name: \"Sheri\") }", "operationName": "Missing" }),
+        json!({ "query": "query($name: String!) { hello(name: $name) }", "variables": {} }),
+        json!({ "query": "query($name: String!) { hello(name: $name) }", "variables": { "name": null } }),
+        json!({ "query": "query($name: String!) { hello(name: $name) }", "variables": { "name": 3 } }),
+    ] {
+        let (status, _, response_body) = send(
+            &app,
+            "POST",
+            Some("application/json"),
+            None,
+            body.to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(response_body.get("data").is_none(), "{body}");
+        assert!(
+            response_body["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty()),
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn partial_execution_errors_remain_http_200() {
+    let app = app();
+    // Maintainer decision in #18: execution errors use 200, never 294.
+    let body = json!({
+        "query": "{ ok: hello(name: \"Sheri\") failed: nullableHello(name: \"Unknown\") }"
+    })
+    .to_string();
+    let (status, _, response_body) = send(&app, "POST", Some("application/json"), None, body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response_body["data"],
+        json!({ "ok": "Hello, Sheri", "failed": null })
+    );
+    assert_eq!(response_body["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(response_body["errors"][0]["path"], json!(["failed"]));
+    assert_eq!(
+        response_body["errors"][0]["extensions"]["code"],
+        "USER_NOT_FOUND"
+    );
+}
+
+#[tokio::test]
+async fn negotiates_graphql_response_media_type() {
+    let app = app();
+    for (accept, expected) in [
+        (
+            "application/graphql-response+json",
+            "application/graphql-response+json",
+        ),
+        (
+            "application/json;q=0.5, application/graphql-response+json;q=1",
+            "application/graphql-response+json",
+        ),
+        (
+            "application/graphql-response+json;q=0.5, application/json;q=1",
+            "application/json",
+        ),
+        (
+            "application/graphql-response+json;q=0, application/json",
+            "application/json",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::post("/graphql")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ACCEPT, accept)
+                    .body(Body::from(
+                        json!({ "query": "{ hello(name: \"Sheri\") }" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (status, media_type, response_body) = response_parts(response).await;
+        assert_eq!(status, StatusCode::OK, "{accept}");
+        // An optional charset parameter must not make the media-type check fail.
+        assert_eq!(
+            media_type
+                .as_deref()
+                .and_then(|value| value.split(';').next())
+                .map(str::trim),
+            Some(expected),
+            "{accept}"
+        );
+        assert_eq!(
+            response_body,
+            json!({ "data": { "hello": "Hello, Sheri" } })
+        );
+    }
+}
+
+#[tokio::test]
+async fn malformed_json_returns_400() {
+    let app = app();
+    let (status, _, _) = send(&app, "POST", Some("application/json"), None, "{").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn invalid_request_fields_return_422() {
+    let app = app();
+    for body in [
+        json!({}),
+        json!({ "query": 3 }),
+        json!({ "query": "{ __typename }", "variables": [] }),
+        json!({ "query": "{ __typename }", "operationName": 3 }),
+    ] {
+        let (status, _, _) = send(
+            &app,
+            "POST",
+            Some("application/json"),
+            None,
+            body.to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn unsupported_request_media_type_returns_415() {
+    let app = app();
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        Some("text/plain"),
+        None,
+        json!({ "query": "{ __typename }" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
