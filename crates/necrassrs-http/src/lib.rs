@@ -43,20 +43,11 @@ pub fn response_media_type<'a>(headers: impl IntoIterator<Item = &'a str>) -> Op
             if !supported_parameters {
                 continue;
             }
-            for (index, candidate) in [GRAPHQL_JSON, JSON].iter().enumerate() {
-                let specificity = if range.essence_str() == *candidate {
-                    2
-                } else if range.essence_str() == "application/*" {
-                    1
-                } else if range.essence_str() == "*/*" {
-                    0
-                } else {
-                    continue;
-                };
-                let score = (specificity, parameters, quality);
-                if scores[index].is_none_or(|previous| score > previous) {
-                    scores[index] = Some(score);
-                }
+            for (current, score) in scores
+                .iter_mut()
+                .zip(media_range_scores(&range, parameters, quality))
+            {
+                *current = (*current).max(score);
             }
         }
     }
@@ -70,6 +61,22 @@ pub fn response_media_type<'a>(headers: impl IntoIterator<Item = &'a str>) -> Op
         _ if graphql >= json => Some(GRAPHQL_JSON),
         _ => Some(JSON),
     }
+}
+
+fn media_range_scores(
+    range: &mime::Mime,
+    parameters: usize,
+    quality: u16,
+) -> [Option<(u8, usize, u16)>; 2] {
+    [GRAPHQL_JSON, JSON].map(|candidate| {
+        let specificity = match range.essence_str() {
+            exact if exact == candidate => 2,
+            "application/*" => 1,
+            "*/*" => 0,
+            _ => return None,
+        };
+        Some((specificity, parameters, quality))
+    })
 }
 
 fn split_unquoted(value: &str, separator: char) -> impl Iterator<Item = &str> {
