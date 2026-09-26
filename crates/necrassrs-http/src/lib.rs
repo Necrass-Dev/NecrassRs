@@ -95,6 +95,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn accepts_optional_whitespace_around_parameter_separators() {
+        let headers = [
+            "application/json ; q=1",
+            "application/json;\tq=1",
+            "application/json;charset=utf-8 ;q=1",
+        ];
+        assert_eq!(
+            headers.map(|accept| response_media_type([accept])),
+            [Some(JSON); 3],
+        );
+    }
+
+    #[test]
     fn negotiates_quality_specificity_and_exclusions() {
         assert_eq!(response_media_type([]), Some(JSON));
         for (accept, expected) in [
