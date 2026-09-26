@@ -2,7 +2,8 @@
   <h1>NecrassRs</h1>
   <img src="logo/logo.svg" alt="NecrassRs logo" width="180">
   <p style="font-weight:bold">Your schema leads. Rust delivers.</p>
-  [![Rust CI](https://github.com/Necrass-Dev/NecrassRs/actions/workflows/rust.yml/badge.svg)](https://github.com/Necrass-Dev/NecrassRs/actions/workflows/rust.yml)[![Quality gate status](https://sonarcloud.io/api/project_badges/measure?project=Necrass-Dev_NecrassRs&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Necrass-Dev_NecrassRs)
+  <a href="https://github.com/Necrass-Dev/NecrassRs/actions/workflows/rust.yml"><img src="https://github.com/Necrass-Dev/NecrassRs/actions/workflows/rust.yml/badge.svg" alt="Rust CI"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=Necrass-Dev_NecrassRs"><img src="https://sonarcloud.io/api/project_badges/measure?project=Necrass-Dev_NecrassRs&amp;metric=alert_status" alt="Quality gate status"></a>
 </div>
 
 NecrassRs is an SDL-first GraphQL server framework for Rust. Define your public API in GraphQL SDL, let Cargo generate Rust contracts and resolver scaffolding, and fill in the resolver bodies with your application logic.
