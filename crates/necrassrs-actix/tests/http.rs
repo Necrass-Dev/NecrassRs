@@ -6,7 +6,8 @@ use actix_web::{
     test, web,
 };
 use necrassrs::{
-    Dispatcher, FieldCoordinate, JsonMap, JsonValue, ResolverError, Schema, Valid, execute,
+    Dispatcher, ExecutionOptions, FieldCoordinate, JsonMap, JsonValue, ResolverError, Schema,
+    Valid, execute_with_options,
 };
 use necrassrs_actix::{GraphQLRequest, GraphQLResponse, graphiql_html};
 use serde_json::{Value, json};
@@ -14,9 +15,13 @@ use serde_json::{Value, json};
 struct AppState {
     schema: Valid<Schema>,
     dispatcher: GreetingDispatcher,
+    options: ExecutionOptions,
 }
 
-struct GreetingDispatcher;
+#[derive(Default)]
+struct GreetingDispatcher {
+    barrier: Option<tokio::sync::Barrier>,
+}
 
 struct Context {
     prefix: String,
@@ -31,6 +36,10 @@ impl Dispatcher<Context> for GreetingDispatcher {
     ) -> Result<JsonValue, ResolverError> {
         assert!(matches!(coordinate.field, "hello" | "nullableHello"));
         let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
+
+        if let Some(barrier) = &self.barrier {
+            barrier.wait().await;
+        }
 
         if name == "Unknown" {
             return Err(ResolverError::new("User \"Unknown\" was not found.")
@@ -54,7 +63,16 @@ async fn graphql(
             .unwrap_or("Hello")
             .to_owned(),
     };
-    GraphQLResponse(execute(&state.schema, &request, &state.dispatcher, &context).await)
+    GraphQLResponse(
+        execute_with_options(
+            &state.schema,
+            &request,
+            &state.dispatcher,
+            &context,
+            state.options,
+        )
+        .await,
+    )
 }
 
 // Initialize with `let app = test::init_service(app()).await;` in an
@@ -82,19 +100,24 @@ fn app_at(
         InitError = (),
     >,
 > {
+    // Data supplies shared state to handlers without an additional Arc wrapper.
+    App::new()
+        .app_data(web::Data::new(app_state()))
+        .service(web::resource(endpoint).route(web::post().to(graphql)))
+}
+
+fn app_state() -> AppState {
     let schema = Schema::parse_and_validate(
         "type Query { hello(name: String!): String! nullableHello(name: String!): String }",
         "schema.graphql",
     )
     .unwrap();
 
-    // Data supplies shared state to handlers without an additional Arc wrapper.
-    App::new()
-        .app_data(web::Data::new(AppState {
-            schema,
-            dispatcher: GreetingDispatcher,
-        }))
-        .service(web::resource(endpoint).route(web::post().to(graphql)))
+    AppState {
+        schema,
+        dispatcher: GreetingDispatcher::default(),
+        options: ExecutionOptions::default(),
+    }
 }
 
 // Add any extra headers to this builder, then pass `.to_request()` to
@@ -168,6 +191,78 @@ async fn extracts_operation_variables_and_per_request_context() {
     assert_eq!(
         response_body,
         json!({ "data": { "hello": "Hello, Sheri" } })
+    );
+}
+
+#[actix_web::test]
+async fn overlapping_requests_keep_their_context_values() {
+    let mut state = app_state();
+    state.dispatcher.barrier = Some(tokio::sync::Barrier::new(2));
+    let app = test::init_service(app().app_data(web::Data::new(state))).await;
+    let body = json!({ "query": "{ hello(name: \"Sheri\") }" }).to_string();
+    let first = request("POST", Some("application/json"), Some("Hi"), body.clone()).to_request();
+    let second = request("POST", Some("application/json"), Some("Hello"), body).to_request();
+
+    // Neither resolver can finish until both requests reach execution.
+    let (first, second) = actix_web::rt::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
+            test::call_service(&app, first),
+            test::call_service(&app, second),
+        )
+    })
+    .await
+    .expect("both requests must reach the resolver barrier");
+
+    for (response, greeting) in [(first, "Hi, Sheri"), (second, "Hello, Sheri")] {
+        let (status, _, body) = response_parts(response).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "data": { "hello": greeting } }));
+    }
+}
+
+#[actix_web::test]
+async fn disabled_introspection_preserves_queries_and_typename() {
+    let mut state = app_state();
+    state.options.introspection = false;
+    let app = test::init_service(app().app_data(web::Data::new(state))).await;
+
+    for query in [
+        "{ __schema { queryType { name } } }",
+        "{ __type(name: \"Query\") { name } }",
+    ] {
+        let req = request(
+            "POST",
+            Some("application/json"),
+            None,
+            json!({ "query": query }).to_string(),
+        )
+        .to_request();
+        let (status, media_type, body) = response_parts(test::call_service(&app, req).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            media_type.as_deref(),
+            Some("application/graphql-response+json")
+        );
+        assert!(body.get("data").is_none());
+        assert!(
+            body["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty())
+        );
+    }
+
+    let req = request(
+        "POST",
+        Some("application/json"),
+        None,
+        json!({ "query": "{ hello(name: \"Sheri\") __typename }" }).to_string(),
+    )
+    .to_request();
+    let (status, _, body) = response_parts(test::call_service(&app, req).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({ "data": { "hello": "Hello, Sheri", "__typename": "Query" } })
     );
 }
 
