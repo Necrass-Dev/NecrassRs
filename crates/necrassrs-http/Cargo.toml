@@ -1,0 +1,7 @@
+[package]
+name = "necrassrs-http"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mime = "0.3"

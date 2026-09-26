@@ -1177,6 +1177,7 @@ version = "0.1.0"
 dependencies = [
  "actix-web",
  "necrassrs",
+ "necrassrs-http",
  "serde",
  "serde_json",
  "tokio",
@@ -1189,6 +1190,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "necrassrs",
+ "necrassrs-http",
  "serde",
  "serde_json",
  "tokio",
@@ -1211,6 +1213,13 @@ dependencies = [
 [[package]]
 name = "necrassrs-cli"
 version = "0.1.0"
+
+[[package]]
+name = "necrassrs-http"
+version = "0.1.0"
+dependencies = [
+ "mime",
+]
 
 [[package]]
 name = "num-conv"

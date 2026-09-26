@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 actix-web = "4"
 necrassrs = { path = "../necrassrs", version = "0.1.0" }
+necrassrs-http = { path = "../necrassrs-http", version = "0.1.0" }
 serde.workspace = true
 
 [dev-dependencies]

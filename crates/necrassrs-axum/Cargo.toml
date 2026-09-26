@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 axum = "0.8.9"
 necrassrs = { path = "../necrassrs", version = "0.1.0" }
+necrassrs-http = { path = "../necrassrs-http", version = "0.1.0" }
 serde.workspace = true
 
 [dev-dependencies]
