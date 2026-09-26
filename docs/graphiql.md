@@ -18,15 +18,16 @@ let response = execute_with_options(
 
 The application chooses this server-side setting. A disabled `__schema` or `__type` selection returns a GraphQL request error without invoking application resolvers. Disabling introspection does not replace authentication or field-level authorization.
 
-## Optional Axum page
+## Built-in pages and application-owned routes
 
 Register the page only where it should be available. The application still owns the route, GraphQL handler, and per-request Context:
 
 ```rust
-use axum::{Router, routing::{get, post}};
-use necrassrs_axum::graphiql_html;
+use axum::{Router, middleware, routing::{get, post}};
+use necrassrs_axum::{graphiql_html, negotiate_response};
 
-let app = Router::new().route("/graphql", post(graphql));
+let app = Router::new().route("/graphql",
+    post(graphql).layer(middleware::from_fn(negotiate_response)));
 let app = if development {
     app.route("/graphql", get(|| async { graphiql_html("/graphql") }))
 } else {
@@ -39,3 +40,18 @@ let app = if development {
 The page loads version-pinned GraphiQL, React, and GraphQL modules and the GraphiQL stylesheet from `https://esm.sh`. These assets are not bundled with the Rust crate, so the browser needs access to that CDN. A restrictive Content Security Policy must allow the relevant styles, scripts, and workers. The application may instead serve its own page if offline assets are required.
 
 The basic-server example and projects created by `necrass init` serve GraphiQL on GET `/graphql` by default. The page sends requests to POST `/graphql`. Remove or gate the GET handler before deployment when the UI should be unavailable. This route choice is independent of introspection: the runtime allows introspection by default. An application that wants production introspection disabled must use `execute_with_options` in its GraphQL handler.
+
+
+Actix provides the same built-in page through `necrassrs_actix::graphiql_html`. Register an application-owned UI route separately from its GraphQL endpoint:
+
+```rust
+use actix_web::{App, web};
+use necrassrs_actix::graphiql_html;
+
+// `graphql` is the application's GraphQL handler.
+let app = App::new()
+    .service(web::resource("/api/graphql").route(web::post().to(graphql)))
+    .route("/graphiql", web::get().to(|| async { graphiql_html("/api/graphql") }));
+```
+
+Both helpers use the same pinned browser asset versions and escape the configured endpoint. UI registration does not change the runtime's introspection setting. The Actix consumer example is still pending; its planned default is to register this built-in UI. HTTP content negotiation applies to the GraphQL endpoint, not the HTML page; see [HTTP adapters and response negotiation](http.md).

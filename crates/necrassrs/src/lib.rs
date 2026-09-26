@@ -111,6 +111,8 @@ impl Response {
         matches!(self.0, ResponseKind::RequestError { .. })
     }
 
+    /// Whether request processing failed while parsing the GraphQL document.
+    /// This classification is not serialized into the GraphQL response body.
     pub fn is_syntax_error(&self) -> bool {
         matches!(
             self.0,

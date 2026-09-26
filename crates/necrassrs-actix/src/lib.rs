@@ -1,3 +1,14 @@
+//! Actix extraction and response conversion for application-owned GraphQL handlers.
+//!
+//! JSON syntax errors receive 400, invalid request fields 422, unsupported
+//! content types 415, and oversized bodies 413. Configure body limits through
+//! `web::JsonConfig`. Custom JSON error handlers remain effective.
+//! GraphQL syntax errors receive 400 and other request errors 422. All execution
+//! results use 200, including partial data and root-null results with errors.
+//! Responses negotiate `Accept`; missing headers preserve JSON and unsupported
+//! preferences receive 406 before runtime execution. GraphiQL routes are owned
+//! by the application and remain separate from response negotiation.
+
 use actix_web::{
     FromRequest, HttpRequest, HttpResponse, Responder,
     body::BoxBody,
@@ -8,6 +19,11 @@ use actix_web::{
 use necrassrs::{JsonMap, Request, Response};
 use serde::Deserialize;
 
+/// Returns the built-in GraphiQL page for an application-selected endpoint.
+///
+/// Register this on an application-owned GET route. Assets load from pinned CDN
+/// URLs; the endpoint is escaped for its HTML attribute. This helper neither
+/// registers the GraphQL endpoint nor changes runtime introspection settings.
 pub fn graphiql_html(endpoint_url: &str) -> Html {
     let endpoint_url = endpoint_url
         .replace('&', "&amp;")
@@ -18,7 +34,15 @@ pub fn graphiql_html(endpoint_url: &str) -> Html {
     Html::new(include_str!("graphiql.html").replace("__NECRASSRS_ENDPOINT__", &endpoint_url))
 }
 
+/// A GraphQL request parsed from an Actix JSON request body.
+///
+/// Extracts `query`, optional `variables`, and optional `operationName`.
+/// GraphQL document validation happens during runtime execution, not extraction.
+/// This consumes the request body; other extractors must not consume it again.
+/// Standard JSON extraction errors are mapped to the adapter's HTTP status codes.
+/// Custom `JsonConfig` handlers returning other error types retain their behavior.
 pub struct GraphQLRequest(
+    /// Runtime request to pass to execution.
     pub Request,
 );
 
@@ -73,7 +97,13 @@ impl FromRequest for GraphQLRequest {
     }
 }
 
+/// Converts a runtime response to JSON with HTTP 200 for execution results,
+/// including partial data and root-null results with errors.
+///
+/// GraphQL syntax errors receive 400; other request errors receive 422.
+/// The response media type is selected from the request's `Accept` preferences.
 pub struct GraphQLResponse(
+    /// Completed runtime response.
     pub Response,
 );
 

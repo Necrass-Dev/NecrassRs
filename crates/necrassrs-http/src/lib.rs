@@ -1,6 +1,15 @@
+//! Framework-independent response negotiation shared by the HTTP adapters.
+
+/// The GraphQL response media type.
 pub const GRAPHQL_JSON: &str = "application/graphql-response+json";
+/// The legacy JSON response media type.
 pub const JSON: &str = "application/json";
 
+/// Selects a supported response media type from all `Accept` header values.
+///
+/// Specific ranges override wildcards, including explicit `q=0` exclusions.
+/// Equal quality prefers GraphQL JSON. Missing headers preserve legacy JSON.
+/// Invalid headers and requests accepting neither type return `None`.
 pub fn response_media_type<'a>(headers: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     let mut present = false;
     let mut scores = [None, None];

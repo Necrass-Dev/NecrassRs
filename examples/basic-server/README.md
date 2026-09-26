@@ -25,6 +25,7 @@ Run these commands in a second terminal:
 ```sh
 curl -sS http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"{ hello(name: \"Sheri\") }"}'
 ```
 
@@ -37,6 +38,7 @@ Variables use the same resolver and return the same response:
 ```sh
 curl -sS http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"query($name: String!) { hello(name: $name) }","variables":{"name":"Sheri"}}'
 ```
 
@@ -45,6 +47,7 @@ An unknown name produces an execution error with HTTP 200. For the query below, 
 ```sh
 curl -sS http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"{ hello(name: \"Unknown\") }"}'
 ```
 
@@ -65,6 +68,7 @@ The server continues accepting requests after this error. Missing, null, or inco
 ```sh
 curl -i http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"{ hello(name: null) }"}'
 ```
 
@@ -123,3 +127,5 @@ The workspace test run included all five basic-server tests, the build-library C
 | HTTP methods, extraction, response status, and body limits | `necrassrs-axum` HTTP tests and the basic-server HTTP tests |
 
 Generated consumer contracts currently support `String!` field arguments and results. The list and mutation checks above belong to the runtime component and are not claims that this example can generate those types or roots. CLI initialization and packaged release builds are outside this example's scope.
+
+The GraphQL POST route includes `necrassrs_axum::negotiate_response` middleware. It negotiates `Accept` without applying GraphQL response rules to the HTML page. Syntax errors return 400, other GraphQL request errors 422, and execution results remain 200 even with errors. See the [HTTP adapter contract](../../docs/http.md) for details.

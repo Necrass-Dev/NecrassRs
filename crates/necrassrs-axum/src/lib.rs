@@ -9,7 +9,7 @@
 //! ```
 //! use axum::{Router, extract::State, routing::post};
 //! use necrassrs::{Dispatcher, Schema, Valid};
-//! use necrassrs_axum::{GraphQLRequest, GraphQLResponse};
+//! use necrassrs_axum::{GraphQLRequest, GraphQLResponse, negotiate_response};
 //! use std::sync::Arc;
 //!
 //! struct App<D> { schema: Valid<Schema>, dispatcher: D }
@@ -25,7 +25,7 @@
 //! }
 //!
 //! fn app<D: Dispatcher<()> + Send + Sync + 'static>(state: Arc<App<D>>) -> Router {
-//!     Router::new().route("/graphql", post(graphql::<D>)).with_state(state)
+//!     Router::new().route("/graphql", post(graphql::<D>).layer(axum::middleware::from_fn(negotiate_response))).with_state(state)
 //! }
 //! ```
 //!
@@ -38,10 +38,11 @@
 //!
 //! Malformed JSON receives 400, invalid JSON fields receive 422, unsupported
 //! content types receive 415, and oversized bodies receive 413. Route methods
-//! other than POST receive Axum's 405. GraphQL request errors receive 422;
-//! execution results, including domain errors, receive 200. GraphQL responses
-//! use `application/json` regardless of `Accept`. Extractor failures use
-//! Axum's rejection response.
+//! other than POST receive Axum's 405. GraphQL syntax errors receive 400;
+//! other GraphQL request errors receive 422. Execution results, including
+//! domain errors, receive 200. Mount [`negotiate_response`] on GraphQL routes
+//! to negotiate responses using `Accept`. Extractor failures retain Axum's
+//! rejection response and are not relabeled as GraphQL responses.
 
 use axum::{
     Json,
@@ -56,6 +57,21 @@ use serde::Deserialize;
 #[derive(Clone, Copy)]
 struct RuntimeResponse;
 
+/// Negotiates the response media type for an application-owned GraphQL route.
+///
+/// Missing `Accept` preserves JSON. Unsupported or malformed preferences return
+/// 406 before invoking the handler. Only [`GraphQLResponse`] responses are
+/// relabeled; HTML and framework errors retain their original content type.
+///
+/// ```
+/// use axum::{Router, middleware, routing::post};
+/// use necrassrs_axum::negotiate_response;
+/// let app: Router = Router::new().route(
+///     "/graphql",
+///     post(|| async { "replace with your GraphQL handler" })
+///         .layer(middleware::from_fn(negotiate_response)),
+/// );
+/// ```
 pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumResponse {
     let headers = request
         .headers()
@@ -157,9 +173,11 @@ where
 
 /// Converts a completed runtime response to an HTTP response.
 ///
-/// Request errors receive HTTP 422; execution responses receive HTTP 200,
+/// Syntax errors receive HTTP 400, other request errors HTTP 422;
+/// execution responses receive HTTP 200,
 /// including responses with resolver errors or `data: null`. The content type
-/// is `application/json`. See the [crate documentation](crate) for extraction
+/// is `application/json` unless [`negotiate_response`] selects another type.
+/// See the [crate documentation](crate) for extraction
 /// errors, which follow a separate path.
 pub struct GraphQLResponse(
     /// Completed runtime response.
