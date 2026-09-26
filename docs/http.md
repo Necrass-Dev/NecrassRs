@@ -6,7 +6,7 @@ Applications own routing, middleware, shared state, and per-request Context cons
 
 ## Axum
 
-Attach `negotiate_response` to the GraphQL method router. It keeps the existing `GraphQLRequest(request)` and `GraphQLResponse(response)` handler API:
+Attach `negotiate_response` using the GraphQL method router's `route_layer`. This applies negotiation only to registered methods and preserves 405 responses for unsupported methods regardless of `Accept`. It keeps the existing `GraphQLRequest(request)` and `GraphQLResponse(response)` handler API:
 
 ```rust
 use axum::{Router, middleware, routing::{get, post}};
@@ -14,7 +14,7 @@ use necrassrs_axum::{graphiql_html, negotiate_response};
 
 // `graphql` is the application's existing GraphQL handler.
 let app = Router::new()
-    .route("/graphql", post(graphql).layer(middleware::from_fn(negotiate_response)))
+    .route("/graphql", post(graphql).route_layer(middleware::from_fn(negotiate_response)))
     .route("/graphql", get(|| async { graphiql_html("/graphql") }));
 ```
 

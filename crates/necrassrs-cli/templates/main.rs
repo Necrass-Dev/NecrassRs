@@ -31,7 +31,7 @@ fn app() -> Router {
         dispatcher: generated::dispatch::SchemaDispatcher::new(resolvers::Query),
     });
     Router::new()
-        .route("/graphql", post(graphql).layer(axum::middleware::from_fn(negotiate_response)))
+        .route("/graphql", post(graphql).route_layer(axum::middleware::from_fn(negotiate_response)))
         .route("/graphql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }

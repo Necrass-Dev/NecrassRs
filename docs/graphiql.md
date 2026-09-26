@@ -27,7 +27,7 @@ use axum::{Router, middleware, routing::{get, post}};
 use necrassrs_axum::{graphiql_html, negotiate_response};
 
 let app = Router::new().route("/graphql",
-    post(graphql).layer(middleware::from_fn(negotiate_response)));
+    post(graphql).route_layer(middleware::from_fn(negotiate_response)));
 let app = if development {
     app.route("/graphql", get(|| async { graphiql_html("/graphql") }))
 } else {

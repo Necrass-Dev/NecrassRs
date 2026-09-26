@@ -72,7 +72,7 @@ fn app_at(endpoint: &str) -> Router {
     Router::new()
         .route(
             endpoint,
-            post(graphql).layer(axum::middleware::from_fn(negotiate_response)),
+            post(graphql).route_layer(axum::middleware::from_fn(negotiate_response)),
         )
         .with_state(Arc::new(AppState {
             schema,
@@ -204,12 +204,19 @@ async fn distinguishes_request_and_execution_errors_and_recovers() {
 #[tokio::test]
 async fn route_only_accepts_post() {
     let app = app();
-    let response = app
-        .oneshot(HttpRequest::get("/graphql").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(response.headers().get(header::ALLOW).unwrap(), "POST");
+    for accept in [None, Some("text/html")] {
+        let mut request = HttpRequest::get("/graphql");
+        if let Some(accept) = accept {
+            request = request.header(header::ACCEPT, accept);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(response.headers().get(header::ALLOW).unwrap(), "POST");
+    }
 }
 
 #[tokio::test]

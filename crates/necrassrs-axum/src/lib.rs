@@ -25,7 +25,7 @@
 //! }
 //!
 //! fn app<D: Dispatcher<()> + Send + Sync + 'static>(state: Arc<App<D>>) -> Router {
-//!     Router::new().route("/graphql", post(graphql::<D>).layer(axum::middleware::from_fn(negotiate_response))).with_state(state)
+//!     Router::new().route("/graphql", post(graphql::<D>).route_layer(axum::middleware::from_fn(negotiate_response))).with_state(state)
 //! }
 //! ```
 //!
@@ -62,6 +62,7 @@ struct RuntimeResponse;
 /// Missing `Accept` preserves JSON. Unsupported or malformed preferences return
 /// 406 before invoking the handler. Only [`GraphQLResponse`] responses are
 /// relabeled; HTML and framework errors retain their original content type.
+/// Use `MethodRouter::route_layer` to preserve 405 responses for unsupported methods.
 ///
 /// ```
 /// use axum::{Router, middleware, routing::post};
@@ -69,7 +70,7 @@ struct RuntimeResponse;
 /// let app: Router = Router::new().route(
 ///     "/graphql",
 ///     post(|| async { "replace with your GraphQL handler" })
-///         .layer(middleware::from_fn(negotiate_response)),
+///         .route_layer(middleware::from_fn(negotiate_response)),
 /// );
 /// ```
 pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumResponse {

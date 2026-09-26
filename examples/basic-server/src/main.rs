@@ -33,7 +33,7 @@ fn app() -> Router {
     Router::new()
         .route(
             "/graphql",
-            post(graphql).layer(axum::middleware::from_fn(negotiate_response)),
+            post(graphql).route_layer(axum::middleware::from_fn(negotiate_response)),
         )
         .route("/graphql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
