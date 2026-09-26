@@ -39,7 +39,7 @@ let app = if development {
 
 The page loads version-pinned GraphiQL, React, and GraphQL modules and the GraphiQL stylesheet from `https://esm.sh`. These assets are not bundled with the Rust crate, so the browser needs access to that CDN. A restrictive Content Security Policy must allow the relevant styles, scripts, and workers. The application may instead serve its own page if offline assets are required.
 
-The basic-server example and projects created by `necrass init` serve GraphiQL on GET `/graphql` by default. The page sends requests to POST `/graphql`. Remove or gate the GET handler before deployment when the UI should be unavailable. This route choice is independent of introspection: the runtime allows introspection by default. An application that wants production introspection disabled must use `execute_with_options` in its GraphQL handler.
+The axum-server example and projects created by `necrass init` serve GraphiQL on GET `/graphql` by default. The page sends requests to POST `/graphql`. Remove or gate the GET handler before deployment when the UI should be unavailable. This route choice is independent of introspection: the runtime allows introspection by default. An application that wants production introspection disabled must use `execute_with_options` in its GraphQL handler.
 
 
 Actix provides the same built-in page through `necrassrs_actix::graphiql_html`. Register an application-owned UI route separately from its GraphQL endpoint:

@@ -250,7 +250,7 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 ### 7.1 Initial CLI scope
 
-The first `necrass init` scope, tracked in issue #9 under #1, creates a new, runnable consumer project based on the basic-server example. It supplies a Cargo manifest, build script, SDL, generated-code inclusion, an Axum entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration and additional framework choices are deferred.
+The first `necrass init` scope, tracked in issue #9 under #1, creates a new, runnable consumer project based on the axum-server example. It supplies a Cargo manifest, build script, SDL, generated-code inclusion, an Axum entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration and additional framework choices are deferred.
 
 The intended installation and initialization flow is shown below. These commands describe the planned product, not an available release:
 
@@ -361,7 +361,7 @@ necrassrs/
 │   └── necrassrs-cli/
 │       └── templates/
 ├── examples/
-│   └── basic-server/
+│   └── axum-server/
 ├── tests/
 │   └── integration/
 │       └── Cargo.toml

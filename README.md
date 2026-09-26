@@ -124,7 +124,7 @@ Applications normally depend on their HTTP adapter, which uses `necrassrs-http` 
 
 ## Further reading
 
-- [Basic server example](examples/basic-server/README.md): run a workspace example and explore requests, errors, and manual setup details.
+- [Axum server example](examples/axum-server/README.md): run a workspace example and explore requests, errors, and manual setup details.
 - [Introspection and GraphiQL](docs/graphiql.md): configure the development UI and introspection policy.
 - [HTTP adapters and response negotiation](docs/http.md): shared negotiation, framework integration, and HTTP error behavior.
 - [Architecture and development plan](docs/architecture.md): current implementation boundaries and target design.

@@ -1,11 +1,11 @@
 [package]
-name = "basic-server"
+name = "axum-server"
 version.workspace = true
 edition.workspace = true
 publish = false
 
 [[bin]]
-name = "basic-server"
+name = "axum-server"
 path = "src/main.rs"
 doc = false
 
