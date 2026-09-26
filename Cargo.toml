@@ -1,5 +1,14 @@
 [workspace]
-members = ["crates/necrassrs", "crates/necrassrs-build", "crates/necrassrs-axum", "crates/necrassrs-cli", "examples/basic-server"]
+members = [
+    "crates/necrassrs",
+    "crates/necrassrs-actix",
+    "crates/necrassrs-axum",
+    "crates/necrassrs-build",
+    "crates/necrassrs-cli",
+    "crates/necrassrs-http",
+    "examples/axum-server",
+    "examples/actix-server"
+]
 resolver = "3"
 
 [workspace.package]

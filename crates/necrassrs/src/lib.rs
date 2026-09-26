@@ -95,7 +95,11 @@ pub struct Response(ResponseKind);
 #[derive(Serialize)]
 #[serde(untagged)]
 enum ResponseKind {
-    RequestError { errors: Vec<GraphQLError> },
+    RequestError {
+        errors: Vec<GraphQLError>,
+        #[serde(skip)]
+        syntax_error: bool,
+    },
     Execution(ExecutionResponse),
 }
 
@@ -107,6 +111,18 @@ impl Response {
         matches!(self.0, ResponseKind::RequestError { .. })
     }
 
+    /// Whether request processing failed while parsing the GraphQL document.
+    /// This classification is not serialized into the GraphQL response body.
+    pub fn is_syntax_error(&self) -> bool {
+        matches!(
+            self.0,
+            ResponseKind::RequestError {
+                syntax_error: true,
+                ..
+            }
+        )
+    }
+
     /// Constructs a response for one error that prevented execution.
     pub fn request_error(error: GraphQLError) -> Self {
         Self::request_errors(vec![error])
@@ -116,7 +132,10 @@ impl Response {
     ///
     /// Callers should supply at least one error; this constructor does not validate it.
     pub fn request_errors(errors: Vec<GraphQLError>) -> Self {
-        Self(ResponseKind::RequestError { errors })
+        Self(ResponseKind::RequestError {
+            errors,
+            syntax_error: false,
+        })
     }
 
     /// Constructs an execution response; `None` serializes as `data: null`.
@@ -124,6 +143,15 @@ impl Response {
     /// This constructor does not validate data against a schema.
     pub fn execution(data: Option<JsonMap>, errors: Vec<GraphQLError>) -> Self {
         Self(ResponseKind::Execution(ExecutionResponse { data, errors }))
+    }
+}
+
+impl From<request::RequestError> for Response {
+    fn from(error: request::RequestError) -> Self {
+        Self(ResponseKind::RequestError {
+            errors: error.errors,
+            syntax_error: error.syntax_error,
+        })
     }
 }
 

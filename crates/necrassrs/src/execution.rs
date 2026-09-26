@@ -140,7 +140,7 @@ where
 {
     let prepared = match prepare_request(schema, request) {
         Ok(prepared) => prepared,
-        Err(errors) => return Response::request_errors(errors),
+        Err(error) => return error.into(),
     };
 
     // TODO: Temporary unsupported-feature contract

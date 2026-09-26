@@ -9,7 +9,7 @@
 //! ```
 //! use axum::{Router, extract::State, routing::post};
 //! use necrassrs::{Dispatcher, Schema, Valid};
-//! use necrassrs_axum::{GraphQLRequest, GraphQLResponse};
+//! use necrassrs_axum::{GraphQLRequest, GraphQLResponse, negotiate_response};
 //! use std::sync::Arc;
 //!
 //! struct App<D> { schema: Valid<Schema>, dispatcher: D }
@@ -25,7 +25,7 @@
 //! }
 //!
 //! fn app<D: Dispatcher<()> + Send + Sync + 'static>(state: Arc<App<D>>) -> Router {
-//!     Router::new().route("/graphql", post(graphql::<D>)).with_state(state)
+//!     Router::new().route("/graphql", post(graphql::<D>).route_layer(axum::middleware::from_fn(negotiate_response))).with_state(state)
 //! }
 //! ```
 //!
@@ -38,19 +38,75 @@
 //!
 //! Malformed JSON receives 400, invalid JSON fields receive 422, unsupported
 //! content types receive 415, and oversized bodies receive 413. Route methods
-//! other than POST receive Axum's 405. GraphQL request errors receive 422;
-//! execution results, including domain errors, receive 200. GraphQL responses
-//! use `application/json` regardless of `Accept`. Extractor failures use
-//! Axum's rejection response.
+//! other than POST receive Axum's 405. GraphQL syntax errors receive 400;
+//! other GraphQL request errors receive 422. Execution results, including
+//! domain errors, receive 200. Mount [`negotiate_response`] on GraphQL routes
+//! to negotiate responses using `Accept`. Extractor failures retain Axum's
+//! rejection response and are not relabeled as GraphQL responses.
 
 use axum::{
     Json,
     extract::{FromRequest, Request as AxumRequest, rejection::JsonRejection},
-    http::StatusCode,
+    http::{StatusCode, header},
+    middleware::Next,
     response::{Html, IntoResponse, Response as AxumResponse},
 };
 use necrassrs::{JsonMap, Request, Response};
 use serde::Deserialize;
+
+#[derive(Clone, Copy)]
+struct RuntimeResponse;
+
+/// Negotiates the response media type for an application-owned GraphQL route.
+///
+/// Missing `Accept` preserves JSON. Unsupported or malformed preferences return
+/// 406 before invoking the handler. Only [`GraphQLResponse`] responses are
+/// relabeled; HTML and framework errors retain their original content type.
+/// Use `MethodRouter::route_layer` to preserve 405 responses for unsupported methods.
+///
+/// ```
+/// use axum::{Router, middleware, routing::post};
+/// use necrassrs_axum::negotiate_response;
+/// let app: Router = Router::new().route(
+///     "/graphql",
+///     post(|| async { "replace with your GraphQL handler" })
+///         .route_layer(middleware::from_fn(negotiate_response)),
+/// );
+/// ```
+pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumResponse {
+    let headers = request
+        .headers()
+        .get_all(header::ACCEPT)
+        .iter()
+        .map(|value| value.to_str())
+        .collect::<Result<Vec<_>, _>>();
+    let selected = headers.ok().and_then(necrassrs_http::response_media_type);
+    let mut response = if let Some(media_type) = selected {
+        let mut response = next.run(request).await;
+        if response
+            .extensions_mut()
+            .remove::<RuntimeResponse>()
+            .is_some()
+        {
+            // Keep non-2xx GraphQL results identifiable to legacy clients too.
+            let media_type = if response.status().is_success() {
+                media_type
+            } else {
+                necrassrs_http::GRAPHQL_JSON
+            };
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, media_type.parse().unwrap());
+        }
+        response
+    } else {
+        StatusCode::NOT_ACCEPTABLE.into_response()
+    };
+    response
+        .headers_mut()
+        .append(header::VARY, "Accept".parse().unwrap());
+    response
+}
 
 /// A GraphiQL page configured to send requests to an application-owned endpoint.
 ///
@@ -118,9 +174,11 @@ where
 
 /// Converts a completed runtime response to an HTTP response.
 ///
-/// Request errors receive HTTP 422; execution responses receive HTTP 200,
+/// Syntax errors receive HTTP 400, other request errors HTTP 422;
+/// execution responses receive HTTP 200,
 /// including responses with resolver errors or `data: null`. The content type
-/// is `application/json`. See the [crate documentation](crate) for extraction
+/// is `application/json` unless [`negotiate_response`] selects another type.
+/// See the [crate documentation](crate) for extraction
 /// errors, which follow a separate path.
 pub struct GraphQLResponse(
     /// Completed runtime response.
@@ -129,13 +187,17 @@ pub struct GraphQLResponse(
 
 impl IntoResponse for GraphQLResponse {
     fn into_response(self) -> AxumResponse {
-        let status = if self.0.is_request_error() {
+        let status = if self.0.is_syntax_error() {
+            StatusCode::BAD_REQUEST
+        } else if self.0.is_request_error() {
             StatusCode::UNPROCESSABLE_ENTITY
         } else {
             StatusCode::OK
         };
 
-        (status, Json(self.0)).into_response()
+        let mut response = (status, Json(self.0)).into_response();
+        response.extensions_mut().insert(RuntimeResponse);
+        response
     }
 }
 

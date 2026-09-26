@@ -48,6 +48,7 @@ You can also send the request from another terminal:
 ```sh
 curl -sS http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"{ hello(name: \"Sheri\") }"}'
 ```
 
@@ -115,12 +116,18 @@ The starter configures `panic = "abort"` for development and release builds. Cal
 | `necrassrs` | GraphQL requests, execution, resolver errors, and responses |
 | `necrassrs-build` | SDL validation, Rust generation, and resolver source synchronization |
 | `necrassrs-axum` | Axum request extraction, response conversion, and GraphiQL |
+| `necrassrs-actix` | Actix Web request extraction, response conversion, and GraphiQL; CLI selection remains in development |
+| `necrassrs-http` | Framework-independent response media-type negotiation shared by the Axum and Actix adapters |
 | `necrassrs-cli` | The `necrass init` project initializer |
+
+Applications normally depend on their HTTP adapter, which uses `necrassrs-http` internally. The shared package does not execute GraphQL or run a server. Axum routes use the adapter's `negotiate_response` middleware; Actix integrates negotiation into its extractor and responder. See the [HTTP adapter contract](docs/http.md) for setup, status codes, and current limitations.
 
 ## Further reading
 
-- [Basic server example](examples/basic-server/README.md): run a workspace example and explore requests, errors, and manual setup details.
+- [Axum server example](examples/axum-server/README.md): run a workspace example and explore requests, errors, and manual setup details.
+- [Actix server example](examples/actix-server/README.md): run generated resolvers through Actix Web with built-in GraphiQL.
 - [Introspection and GraphiQL](docs/graphiql.md): configure the development UI and introspection policy.
+- [HTTP adapters and response negotiation](docs/http.md): shared negotiation, framework integration, and HTTP error behavior.
 - [Architecture and development plan](docs/architecture.md): current implementation boundaries and target design.
 
 To browse local API documentation from a checkout of this repository:

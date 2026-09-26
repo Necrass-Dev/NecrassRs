@@ -1,7 +1,7 @@
 # NecrassRs architecture and development plan
 
 Date: 2026-09-17
-Updated: 2026-09-23
+Updated: 2026-09-26
 
 This document defines the target product structure, crate responsibilities, development and release practices, and consumer workflow. It does not describe a completed implementation. Package names and directory layouts are proposed; concrete Rust API signatures remain subject to design.
 
@@ -25,7 +25,7 @@ After initialization, building and running the application does not require an i
 - Use Apollo Compiler's schema models and validation rather than duplicating a GraphQL schema model and validator.
 - Parsing uses `apollo-parser` through Apollo Compiler. Do not add a direct parser dependency unless direct CST access is needed.
 - Implement execution inside `necrassrs`, retaining Apollo's models and validation. Do not require an Apollo executor patch or a separate executor crate.
-- Use four packages in one Cargo workspace: the runtime, build library, Axum adapter, and CLI. Keep code generation and Cargo integration as separate modules within the build library.
+- Use one Cargo workspace for the runtime, build library, Axum and Actix adapters, shared HTTP negotiation, and CLI. Keep code generation and Cargo integration as separate modules within the build library.
 - Axum is the first officially supported HTTP adapter. The execution core does not depend on Axum.
 - Applications own one Context type per schema and construct its values per request. Generate a struct for each field's arguments.
 - Disposable contracts and dispatch code belong in `OUT_DIR`. Editable resolver structs and explicit method implementations belong in `src/resolvers.rs`. Build-time synchronization updates SDL-owned declarations there, preserves bodies of retained methods, adds `unimplemented!()` stubs, and removes methods whose SDL fields were deleted. Unrelated user code must not be overwritten.
@@ -142,7 +142,9 @@ Request errors omit the `data` entry. Execution results contain `data`, which ma
 | --- | --- | --- |
 | `necrassrs` | Public runtime API and integration of request validation, input processing, resolver execution, and response completion | Applications and HTTP adapters |
 | `necrassrs-build` | Discover and validate SDL, generate contracts and dispatch, synchronize editable resolver implementations through Rust ASTs, and manage Cargo rebuilds and output | Consumer `build.rs` |
-| `necrassrs-axum` | GraphQL HTTP extraction, response conversion, and development UI integration | Axum applications |
+| `necrassrs-axum` | GraphQL HTTP extraction, response conversion, negotiation middleware, and development UI integration | Axum applications |
+| `necrassrs-actix` | Native Actix extraction, response conversion, negotiation, and development UI integration | Actix applications |
+| `necrassrs-http` | Framework-independent response media-type negotiation | Axum and Actix adapters |
 | `necrassrs-cli` | The `necrass` binary and new-project scaffolding | Developers |
 
 Within `necrassrs-build`, keep contract generation independent of Cargo environment variables and filesystem operations so it can be tested directly. Cargo integration manages inputs, rebuild instructions, disposable output, and reading/writing the designated implementation source. Source synchronization compares Rust ASTs; it does not duplicate Apollo's schema model. The runtime does not depend on the build library.
@@ -159,7 +161,7 @@ necrassrs-build/src/
 
 The CLI creates a starter Cargo project, including SDL, a build script, generated-code inclusion, an Axum entry point, and an initial resolver implementation. Subsequent SDL-driven resolver synchronization is the build library's responsibility, triggered by Cargo. The CLI does not parse SDL or duplicate generation logic.
 
-Do not create `necrassrs-http` yet. Consider extracting common HTTP behavior when multiple official adapters need it. Do not add a facade that only re-exports the runtime or a generic executor-backend trait without a concrete requirement.
+`necrassrs-http` now shares concrete `Accept` negotiation behavior needed by both adapters. It depends on MIME parsing, not on the runtime or either HTTP framework. Keep framework extraction and response construction in their adapters; do not expand this package into a generic server framework. Do not add a facade that only re-exports the runtime or a generic executor-backend trait without a concrete requirement.
 
 ## 5. Dependencies and data flow
 
@@ -173,9 +175,14 @@ Consumer build.rs
 Consumer server and generated code
   ├─ necrassrs
   │    └─ apollo-compiler
-  └─ necrassrs-axum
+  ├─ necrassrs-axum
+  │    ├─ necrassrs
+  │    ├─ necrassrs-http
+  │    └─ axum
+  └─ necrassrs-actix
        ├─ necrassrs
-       └─ axum
+       ├─ necrassrs-http
+       └─ actix-web
 
 necrassrs-cli
   └─ New-project templates
@@ -221,7 +228,7 @@ The diagrams in this document were drafted with Codex to explain the proposed ar
 
 The execution core accepts GraphQL request information and user Context, not an HTTP request object. Exact signatures remain open, but the API must support query, variables, operationName, and Context.
 
-`necrassrs-axum` provides extraction and response conversion that users can compose in their handlers. It does not require a dedicated server runner, authentication middleware, or Context factory callback.
+`necrassrs-axum` and `necrassrs-actix` provide extraction and response conversion that users can compose in their handlers. Neither adapter requires a dedicated server runner, authentication middleware, or Context factory callback. Axum uses a route middleware for response negotiation while preserving its existing request/response wrappers; Actix handles negotiation through its native extractor and responder. See [HTTP adapters and response negotiation](http.md) for the implemented status policy, the 200-versus-294 decision, and remaining conformance work.
 
 The runtime allows schema introspection by default and offers server-controlled execution options to disable `__schema` and `__type`. Applications may register an optional GraphiQL page with `necrassrs-axum::graphiql_html(endpoint_url)` on a route they own. The page uses the existing GraphQL endpoint and loads version-pinned browser assets from a CDN; see [Introspection and GraphiQL](graphiql.md) for development and production policy.
 
@@ -243,7 +250,7 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 ### 7.1 Initial CLI scope
 
-The first `necrass init` scope, tracked in issue #9 under #1, creates a new, runnable consumer project based on the basic-server example. It supplies a Cargo manifest, build script, SDL, generated-code inclusion, an Axum entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration and additional framework choices are deferred.
+The first `necrass init` scope, tracked in issue #9 under #1, creates a new, runnable consumer project based on the axum-server example. It supplies a Cargo manifest, build script, SDL, generated-code inclusion, an Axum entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration and additional framework choices are deferred.
 
 The intended installation and initialization flow is shown below. These commands describe the planned product, not an available release:
 
@@ -349,10 +356,13 @@ necrassrs/
 │   ├── necrassrs/
 │   ├── necrassrs-build/
 │   ├── necrassrs-axum/
+│   ├── necrassrs-actix/
+│   ├── necrassrs-http/
 │   └── necrassrs-cli/
 │       └── templates/
 ├── examples/
-│   └── basic-server/
+│   ├── axum-server/
+│   └── actix-server/
 ├── tests/
 │   └── integration/
 │       └── Cargo.toml
@@ -375,7 +385,7 @@ Official repository documentation is written in English. Agent workflow and AI-a
 - Consumers resolve dependencies with their own lockfiles. The repository lockfile does not pin consumer dependencies.
 - Use `path + version` for local package dependencies. Publish internal crates required as build or runtime dependencies of public packages.
 - Mark examples and integration packages `publish = false`.
-- Initially version and release all four product packages together, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Release automation remains a separate decision.
+- Initially version and release the product packages together, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Release automation remains a separate decision.
 - Define compatibility between `necrassrs-build` and `necrassrs`, including runtime contracts called by generated code. Publishing matching versions alone does not prevent incompatible consumer combinations. Validate the supported combination with the consumer example and use that combination in CLI templates.
 - Before release, verify packaging and consumer builds without relying on local-only paths.
 

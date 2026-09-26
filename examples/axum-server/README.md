@@ -1,4 +1,4 @@
-# Basic server example
+# Axum server example
 
 This is a Cargo consumer of `necrassrs`, `necrassrs-build`, and `necrassrs-axum`. It exposes the SDL in `schema/schema.graphql` through a user-owned Axum handler. `Query.hello` looks up names in a hardcoded list containing `Sheri` and `Margot`; matching is exact and case-sensitive, with no trimming.
 
@@ -7,7 +7,7 @@ This is a Cargo consumer of `necrassrs`, `necrassrs-build`, and `necrassrs-axum`
 From the repository root:
 
 ```sh
-cargo run -p basic-server --locked
+cargo run -p axum-server --locked
 ```
 
 The server listens on `127.0.0.1:3000` and accepts JSON POST requests at `/graphql`. Cargo runs `build.rs` automatically; no separate generation command or installed CLI is needed.
@@ -25,6 +25,7 @@ Run these commands in a second terminal:
 ```sh
 curl -sS http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"{ hello(name: \"Sheri\") }"}'
 ```
 
@@ -37,6 +38,7 @@ Variables use the same resolver and return the same response:
 ```sh
 curl -sS http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"query($name: String!) { hello(name: $name) }","variables":{"name":"Sheri"}}'
 ```
 
@@ -45,6 +47,7 @@ An unknown name produces an execution error with HTTP 200. For the query below, 
 ```sh
 curl -sS http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"{ hello(name: \"Unknown\") }"}'
 ```
 
@@ -65,6 +68,7 @@ The server continues accepting requests after this error. Missing, null, or inco
 ```sh
 curl -i http://127.0.0.1:3000/graphql \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/graphql-response+json' \
   --data '{"query":"{ hello(name: null) }"}'
 ```
 
@@ -100,26 +104,28 @@ Cargo ignores profile settings in a non-root workspace member, so this setting b
 Checked on 2026-09-23 with macOS arm64 and Rust 1.96.1. The following commands passed from the repository root:
 
 ```sh
-cargo build -p basic-server --locked --offline
+cargo build -p axum-server --locked --offline
 cargo fmt --all -- --check
 cargo test --workspace --locked --offline
 cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 ```
 
-The workspace test run included all five basic-server tests, the build-library Cargo consumer tests, runtime execution tests, and Axum adapter tests. The checks below map [issue #1](https://github.com/Necrass-Dev/NecrassRs/issues/1) and [issue #6](https://github.com/Necrass-Dev/NecrassRs/issues/6) to observed results:
+The workspace test run included all five axum-server tests, the build-library Cargo consumer tests, runtime execution tests, and Axum adapter tests. The checks below map [issue #1](https://github.com/Necrass-Dev/NecrassRs/issues/1) and [issue #6](https://github.com/Necrass-Dev/NecrassRs/issues/6) to observed results:
 
 | Acceptance area | Passing check |
 | --- | --- |
-| Cargo generation and consumer compilation without a separate command | `cargo build -p basic-server`; the example includes generated contracts and its own resolver implementation |
-| Hardcoded exact-name lookup | `basic-server` HTTP tests return exactly `Hello, Sheri` without errors; lowercase and padded names return `USER_NOT_FOUND` |
-| Domain error, response path and location, root null propagation, and server availability | `basic-server::tests::unknown_name_returns_a_field_error_and_server_recovers` checks the exact response, alias path, variable error, and a later successful request |
-| Literal and variable arguments | `basic-server::tests::literal_and_variable_requests_match` checks matching success responses; the error test checks both forms for unknown names |
-| Missing, null, and incompatible arguments before resolver invocation | `basic-server::tests::invalid_inputs_are_request_errors` checks HTTP 422, errors, and omitted `data` for literals and variables; `necrassrs::execution::tests::invalid_variable_inputs_do_not_invoke_dispatcher` checks the invocation boundary directly |
+| Cargo generation and consumer compilation without a separate command | `cargo build -p axum-server`; the example includes generated contracts and its own resolver implementation |
+| Hardcoded exact-name lookup | `axum-server` HTTP tests return exactly `Hello, Sheri` without errors; lowercase and padded names return `USER_NOT_FOUND` |
+| Domain error, response path and location, root null propagation, and server availability | `axum-server::tests::unknown_name_returns_a_field_error_and_server_recovers` checks the exact response, alias path, variable error, and a later successful request |
+| Literal and variable arguments | `axum-server::tests::literal_and_variable_requests_match` checks matching success responses; the error test checks both forms for unknown names |
+| Missing, null, and incompatible arguments before resolver invocation | `axum-server::tests::invalid_inputs_are_request_errors` checks HTTP 422, errors, and omitted `data` for literals and variables; `necrassrs::execution::tests::invalid_variable_inputs_do_not_invoke_dispatcher` checks the invocation boundary directly |
 | SDL additions, deletions, renames, and retained business logic | `necrassrs-build/tests/cargo_build.rs` builds disposable consumers from SDL and checks synchronization and unchanged method bodies; no duplicate synchronization test is added to this example |
 | Borrowed Context and complete `Send` execution future | `necrassrs-build::codegen::test::generated_resolver_accepts_borrowed_context_and_returns_send_future` and `necrassrs::execution::tests::handwritten_dispatch_receives_coerced_arguments_and_borrowed_context` |
 | Request Context isolation | `necrassrs::execution::tests::overlapping_requests_keep_their_context_values` and `necrassrs-axum/tests/http.rs::extracts_operation_variables_and_per_request_context`; this greeting example uses `()` per request |
 | Unselected fields and selected unimplemented resolver termination | `necrassrs-build::codegen::test::selected_unimplemented_field_aborts_dev_and_release_consumers` checks a partial consumer in separate dev and release processes |
 | Nullable list-item null propagation and other execution behavior | `necrassrs::execution::tests::null_non_null_item_nullifies_nullable_list` and related list, selection, and mutation tests |
-| HTTP methods, extraction, response status, and body limits | `necrassrs-axum` HTTP tests and the basic-server HTTP tests |
+| HTTP methods, extraction, response status, and body limits | `necrassrs-axum` HTTP tests and the axum-server HTTP tests |
 
 Generated consumer contracts currently support `String!` field arguments and results. The list and mutation checks above belong to the runtime component and are not claims that this example can generate those types or roots. CLI initialization and packaged release builds are outside this example's scope.
+
+The GraphQL POST route includes `necrassrs_axum::negotiate_response` middleware. It negotiates `Accept` without applying GraphQL response rules to the HTML page. Syntax errors return 400, other GraphQL request errors 422, and execution results remain 200 even with errors. See the [HTTP adapter contract](../../docs/http.md) for details.
