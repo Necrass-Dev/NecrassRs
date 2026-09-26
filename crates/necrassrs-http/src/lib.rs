@@ -15,20 +15,14 @@ pub fn response_media_type<'a>(headers: impl IntoIterator<Item = &'a str>) -> Op
     let mut scores = [None, None];
     for header in headers {
         present = true;
-        let mut quoted = false;
-        let mut escaped = false;
-        let ranges = header.split(|character| {
-            if escaped {
-                escaped = false;
-            } else if quoted && character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                quoted = !quoted;
-            }
-            character == ',' && !quoted
-        });
+        let ranges = split_unquoted(header, ',');
         for range in ranges.filter(|range| !range.trim().is_empty()) {
-            let range = range.trim().parse::<mime::Mime>().ok()?;
+            // MIME parsing rejects HTTP optional whitespace around semicolons.
+            let normalized = split_unquoted(range, ';')
+                .map(|part| part.trim_matches([' ', '\t']))
+                .collect::<Vec<_>>()
+                .join(";");
+            let range = normalized.parse::<mime::Mime>().ok()?;
             let mut quality = 1000;
             let mut has_quality = false;
             let mut parameters = 0;
@@ -76,6 +70,21 @@ pub fn response_media_type<'a>(headers: impl IntoIterator<Item = &'a str>) -> Op
         _ if graphql >= json => Some(GRAPHQL_JSON),
         _ => Some(JSON),
     }
+}
+
+fn split_unquoted(value: &str, separator: char) -> impl Iterator<Item = &str> {
+    let mut quoted = false;
+    let mut escaped = false;
+    value.split(move |character| {
+        if escaped {
+            escaped = false;
+        } else if quoted && character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+        }
+        character == separator && !quoted
+    })
 }
 
 fn parse_quality(value: &str) -> Option<u16> {
@@ -130,6 +139,12 @@ mod tests {
             ),
             ("application/json;charset=utf-8", Some(JSON)),
             ("application/json;charset=ascii", None),
+            ("application/json ; charset=\"utf-8\" ; q=1", Some(JSON)),
+            ("application/json;charset=\" utf-8 \"", None),
+            ("application/json;charset=\"utf-8 ;\"", None),
+            ("application /json;q=1", None),
+            ("application/json;q =1", None),
+            ("application/json;q= 1", None),
             ("text/html;example=\"a,b\", application/json", Some(JSON)),
             ("text/html", None),
             ("", None),
