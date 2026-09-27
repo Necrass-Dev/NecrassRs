@@ -1,0 +1,6 @@
+{
+  "git": {
+    "sha1": "5ebcc40bdf6919843c122e9a76b241689edcd6ef"
+  },
+  "path_in_vcs": "crates/apollo-compiler"
+}

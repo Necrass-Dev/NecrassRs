@@ -627,6 +627,10 @@ mod test {
                 .as_nanos(),
         ));
         fs::create_dir(&directory).unwrap();
+        let apollo = workspace
+            .join("vendor/apollo-compiler")
+            .canonicalize()
+            .unwrap();
         let runtime = workspace.join("crates/necrassrs").canonicalize().unwrap();
         fs::write(
             directory.join("Cargo.toml"),
@@ -644,6 +648,8 @@ mod test {
                     necrassrs = {{ path = {runtime:?} }}
                     futures = "0.3"
                     serde_json = "1.0"
+                    [patch.crates-io]
+                    apollo-compiler = {{ path = {apollo:?} }}
                     [profile.dev]
                     panic = "abort"
                     [profile.release]

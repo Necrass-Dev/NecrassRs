@@ -1,0 +1,254 @@
+--- a/src/resolvers/input_coercion.rs
++++ b/src/resolvers/input_coercion.rs
+@@ -46,11 +46,19 @@
+                 &format_args!("variable {name}"),
+                 &variable_def.ty,
+                 value,
++                false,
+             )?;
+             coerced_values.insert(key.clone(), value);
+         } else if let Some(default) = &variable_def.default_value {
+             let value =
+                 graphql_value_to_json(&format_args!("default value of variable {name}"), default)?;
++            let value = coerce_variable_value(
++                schema,
++                &format_args!("default value of variable {name}"),
++                &variable_def.ty,
++                &value,
++                true,
++            )?;
+             coerced_values.insert(name, value);
+         } else if variable_def.ty.is_non_null() {
+             return Err(InputCoercionError::ValueError {
+@@ -73,6 +81,7 @@
+     description: &std::fmt::Arguments<'_>,
+     ty: &Type,
+     value: &JsonValue,
++    is_default: bool,
+ ) -> Result<JsonValue, InputCoercionError> {
+     if value.is_null() {
+         if ty.is_non_null() {
+@@ -93,7 +102,7 @@
+                 // If not an array, treat the value as an array of size one:
+                 .unwrap_or(std::slice::from_ref(value))
+                 .iter()
+-                .map(|item| coerce_variable_value(schema, description, inner, item))
++                .map(|item| coerce_variable_value(schema, description, inner, item, is_default))
+                 .collect();
+         }
+         Type::Named(ty_name) | Type::NonNullNamed(ty_name) => ty_name,
+@@ -111,6 +120,9 @@
+                 location: ty_name.location(),
+             })?
+         }
++        // Default literals have already passed schema/document validation. Preserve
++        // their scalar representation instead of imposing JSON variable limits.
++        ExtendedType::Scalar(_) if is_default => return Ok(value.clone()),
+         ExtendedType::Scalar(_) => match ty_name.as_str() {
+             "Int" => {
+                 // https://spec.graphql.org/October2021/#sec-Int.Input-Coercion
+@@ -186,11 +198,19 @@
+                             &format_args!("input field {ty_name}.{field_name}"),
+                             &field_def.ty,
+                             field_value,
++                            is_default,
+                         )?
+                     } else if let Some(default) = &field_def.default_value {
+                         let default = graphql_value_to_json(
+                             &format_args!("input field {ty_name}.{field_name}"),
+                             default,
++                        )?;
++                        let default = coerce_variable_value(
++                            schema,
++                            &format_args!("input field {ty_name}.{field_name}"),
++                            &field_def.ty,
++                            &default,
++                            true,
+                         )?;
+                         object.insert(field_name.as_str(), default);
+                     } else if field_def.ty.is_non_null() {
+--- a/src/schema/validation.rs
++++ b/src/schema/validation.rs
+@@ -39,6 +39,7 @@
+             }
+         }
+     }
++    crate::validation::input_default::validate_input_defaults(errors, schema);
+     // Remove definitions of unused built-in scalars
+     if !builtin_scalars.all_used() {
+         schema.types.retain(|name, def| {
+--- /dev/null
++++ b/src/validation/input_default.rs
+@@ -0,0 +1,111 @@
++//! InputObjectDefaultValueHasCycle, GraphQL September 2025.
++use crate::ast::{InputValueDefinition, Value};
++use crate::collections::HashMap;
++use crate::schema::ExtendedType;
++use crate::validation::diagnostics::DiagnosticData;
++use crate::validation::DiagnosticList;
++use crate::{Name, Node, Schema};
++
++pub(crate) fn validate_input_defaults(diagnostics: &mut DiagnosticList, schema: &Schema) {
++    // Nodes identify defaults, not types: explicit values can terminate recursion.
++    let nodes: Vec<(Name, &Node<InputValueDefinition>)> = schema
++        .types
++        .values()
++        .filter_map(|ty| match ty {
++            ExtendedType::InputObject(input) => Some(input),
++            _ => None,
++        })
++        .flat_map(|input| {
++            input.fields.values().filter_map(|field| {
++                if field.default_value.is_some()
++                    && schema
++                        .get_input_object(field.ty.inner_named_type())
++                        .is_some()
++                {
++                    Some((input.name.clone(), &field.node))
++                } else {
++                    None
++                }
++            })
++        })
++        .collect();
++    let indices: HashMap<_, _> = nodes
++        .iter()
++        .enumerate()
++        .map(|(i, (ty, field))| ((ty.clone(), field.name.clone()), i))
++        .collect();
++    let mut edges = vec![Vec::new(); nodes.len()];
++    for (i, (_, field)) in nodes.iter().enumerate() {
++        let Some(default) = &field.default_value else {
++            continue;
++        };
++        let mut pending = vec![(field.ty.inner_named_type(), default.as_ref())];
++        while let Some((ty, value)) = pending.pop() {
++            match value {
++                Value::List(items) => {
++                    pending.extend(items.iter().rev().map(|item| (ty, item.as_ref())));
++                }
++                Value::Object(fields) => {
++                    let Some(input) = schema.get_input_object(ty) else {
++                        continue;
++                    };
++                    let supplied: HashMap<_, _> = fields.iter().map(|(k, v)| (k, v)).collect();
++                    for (name, field) in &input.fields {
++                        let target = field.ty.inner_named_type();
++                        if schema.get_input_object(target).is_none() {
++                            continue;
++                        }
++                        if let Some(&value) = supplied.get(name) {
++                            pending.push((target, value.as_ref()));
++                        } else if let Some(&j) = indices.get(&(input.name.clone(), name.clone())) {
++                            edges[i].push(j);
++                        }
++                    }
++                }
++                _ => {}
++            }
++        }
++    }
++
++    // Iterative three-state DFS avoids call-stack growth on long default chains.
++    // Repeated edge occurrences are harmless and retain O(V + E) traversal.
++    let mut state = vec![0u8; nodes.len()];
++    for root in 0..nodes.len() {
++        if state[root] != 0 {
++            continue;
++        }
++        state[root] = 1;
++        let mut path = vec![(root, 0usize)];
++        while let Some((node, next_edge)) = path.last_mut() {
++            let Some(&next) = edges[*node].get(*next_edge) else {
++                state[*node] = 2;
++                path.pop();
++                continue;
++            };
++            *next_edge += 1;
++            match state[next] {
++                0 => {
++                    state[next] = 1;
++                    path.push((next, 0));
++                }
++                1 => {
++                    let trace = path
++                        .iter()
++                        .skip_while(|(i, _)| *i != next)
++                        .map(|(i, _)| (nodes[*i].0.clone(), nodes[*i].1.clone()))
++                        .collect();
++                    diagnostics.push(
++                        nodes[next]
++                            .1
++                            .default_value
++                            .as_ref()
++                            .and_then(|value| value.location()),
++                        DiagnosticData::RecursiveInputDefault { trace },
++                    );
++                    return;
++                }
++                _ => {}
++            }
++        }
++    }
++}
+--- a/src/validation/diagnostics.rs
++++ b/src/validation/diagnostics.rs
+@@ -318,6 +318,10 @@
+         name: Name,
+         trace: Vec<Node<ast::InputValueDefinition>>,
+     },
++    #[error("input object defaults contain a cycle")]
++    RecursiveInputDefault {
++        trace: Vec<(Name, Node<ast::InputValueDefinition>)>,
++    },
+     #[error("`{name}` fragment cannot reference itself")]
+     RecursiveFragmentDefinition {
+         /// Source location of just the "fragment FragName" part.
+@@ -498,6 +502,20 @@
+             DiagnosticData::RecursiveInputObjectDefinition { name, trace } => {
+                 report.with_label_opt(main_location, "cyclical input object definition");
+                 label_recursive_trace(report, trace, name, |reference| &reference.name);
++            }
++            DiagnosticData::RecursiveInputDefault { trace } => {
++                for (ty, field) in trace {
++                    report.with_label_opt(
++                        field
++                            .default_value
++                            .as_ref()
++                            .and_then(|value| value.location()),
++                        format_args!(
++                            "default for `{ty}.{}` participates in this cycle",
++                            field.name
++                        ),
++                    );
++                }
+             }
+             DiagnosticData::RecursiveFragmentDefinition {
+                 head_location,
+--- a/src/validation/mod.rs
++++ b/src/validation/mod.rs
+@@ -7,6 +7,7 @@
+ pub(crate) mod enum_;
+ pub(crate) mod field;
+ pub(crate) mod fragment;
++pub(crate) mod input_default;
+ pub(crate) mod input_object;
+ pub(crate) mod interface;
+ pub(crate) mod object;
+@@ -308,6 +309,7 @@
+                     RecursiveDirectiveDefinition { .. } => "RecursiveDirectiveDefinition",
+                     RecursiveInterfaceDefinition { .. } => "RecursiveInterfaceDefinition",
+                     RecursiveInputObjectDefinition { .. } => "RecursiveInputObjectDefinition",
++                    RecursiveInputDefault { .. } => "RecursiveInputDefault",
+                     RecursiveFragmentDefinition { .. } => "RecursiveFragmentDefinition",
+                     DeeplyNestedType { .. } => "DeeplyNestedType",
+                     EmptyFieldSet { .. } => "EmptyFieldSet",
+@@ -376,7 +378,7 @@
+             Details::CompilerDiagnostic(diagnostic) => {
+                 use diagnostics::DiagnosticData::*;
+                 match diagnostic {
+-                    RecursionError { .. } => None,
++                    RecursionError { .. } | RecursiveInputDefault { .. } => None,
+                     UniqueVariable { name, .. } => Some(format!(
+                         r#"There can be only one variable named "${name}"."#
+                     )),

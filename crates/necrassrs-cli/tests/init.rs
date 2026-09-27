@@ -73,7 +73,7 @@ fn generated_consumer_builds_and_rebuilds_without_the_cli() {
     let mut source = fs::read_to_string(&manifest).unwrap();
     for package in ["necrassrs", "necrassrs-axum", "necrassrs-build"] {
         let git = format!(
-            "{package} = {{ git = \"https://github.com/Necrass-Dev/NecrassRs.git\", version = \"0.1.0\" }}"
+            "{package} = {{ git = \"https://github.com/Necrass-Dev/NecrassRs.git\", rev = \"ffd953c8c56496677f62583f96794396b5f126c9\", version = \"0.1.0\" }}"
         );
         let path = workspace
             .join("crates")
@@ -87,6 +87,13 @@ fn generated_consumer_builds_and_rebuilds_without_the_cli() {
         );
         source = source.replace(&git, &local);
     }
+    let apollo = workspace
+        .join("vendor/apollo-compiler")
+        .canonicalize()
+        .unwrap();
+    let patch = r#"apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", rev = "ffd953c8c56496677f62583f96794396b5f126c9", version = "1.33.0" }"#;
+    assert!(source.contains(patch));
+    source = source.replace(patch, &format!("apollo-compiler = {{ path = {apollo:?} }}"));
     fs::write(manifest, source).unwrap();
 
     let build = || {

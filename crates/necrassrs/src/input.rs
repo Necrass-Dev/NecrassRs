@@ -11,13 +11,6 @@ pub(crate) struct InputCoercionError {
 }
 
 impl InputCoercionError {
-    pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            location: None,
-        }
-    }
-
     pub(crate) fn at(message: impl Into<String>, location: Option<SourceSpan>) -> Self {
         Self {
             message: message.into(),
