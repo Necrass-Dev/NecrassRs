@@ -87,6 +87,13 @@ fn generated_consumer_builds_and_rebuilds_without_the_cli() {
         );
         source = source.replace(&git, &local);
     }
+    let apollo = workspace
+        .join("vendor/apollo-compiler")
+        .canonicalize()
+        .unwrap();
+    let patch = r#"apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", version = "1.33.0" }"#;
+    assert!(source.contains(patch));
+    source = source.replace(patch, &format!("apollo-compiler = {{ path = {apollo:?} }}"));
     fs::write(manifest, source).unwrap();
 
     let build = || {

@@ -413,6 +413,10 @@ impl Consumer {
         let consumer = Self { directory };
         fs::create_dir(consumer.directory.join("src")).unwrap();
         fs::create_dir(consumer.directory.join("schema")).unwrap();
+        let apollo = workspace
+            .join("vendor/apollo-compiler")
+            .canonicalize()
+            .unwrap();
         let runtime = workspace.join("crates/necrassrs").canonicalize().unwrap();
         let build_library = Path::new(env!("CARGO_MANIFEST_DIR"))
             .canonicalize()
@@ -431,6 +435,8 @@ impl Consumer {
             necrassrs = {{ path = {runtime:?} }}
             futures = "0.3"
             serde_json = "1.0"
+            [patch.crates-io]
+            apollo-compiler = {{ path = {apollo:?} }}
             [build-dependencies]
             necrassrs-build = {{ path = {build_library:?} }}
             miette = "7.6.0"
@@ -531,4 +537,116 @@ impl Drop for Consumer {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.directory);
     }
+}
+
+#[test]
+fn consumer_root_resolves_patched_apollo_for_build_and_runtime() {
+    let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
+    let rustc = Command::new("rustc").arg("-vV").output().unwrap();
+    assert_success(&rustc);
+    let version = String::from_utf8(rustc.stdout).unwrap();
+    let host = version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .unwrap();
+    let metadata = Command::new(env!("CARGO"))
+        .current_dir(&consumer.directory)
+        .args([
+            "metadata",
+            "--offline",
+            "--format-version",
+            "1",
+            "--filter-platform",
+            host,
+        ])
+        .output()
+        .unwrap();
+    assert_success(&metadata);
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
+    let apollo: Vec<_> = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["name"] == "apollo-compiler")
+        .collect();
+    assert_eq!(apollo.len(), 1);
+    assert!(apollo[0]["source"].is_null());
+    let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../vendor/apollo-compiler/Cargo.toml")
+        .canonicalize()
+        .unwrap();
+    assert_eq!(
+        Path::new(apollo[0]["manifest_path"].as_str().unwrap()),
+        expected
+    );
+    for package in ["necrassrs", "necrassrs-build"] {
+        let id = &metadata["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == package)
+            .unwrap()["id"];
+        let node = metadata["resolve"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| &n["id"] == id)
+            .unwrap();
+        assert!(
+            node["deps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["name"] == "apollo_compiler" && d["pkg"] == apollo[0]["id"])
+        );
+    }
+    let main = consumer.directory.join("src/main.rs");
+    let source = fs::read_to_string(&main).unwrap().replace(
+        "fn main() {",
+        r#"fn main() {
+        assert!(necrassrs::Schema::parse_and_validate(
+            "input R { next: R = {} } type Query { hello: String }", "cycle.graphql"
+        ).is_err());
+    "#,
+    );
+    fs::write(main, source).unwrap();
+    consumer.bootstrap();
+    consumer.implement("hello", "patched consumer");
+    let build = Command::new(env!("CARGO"))
+        .current_dir(&consumer.directory)
+        .args([
+            "build",
+            "--offline",
+            "--locked",
+            "--message-format=json",
+            "--target-dir",
+        ])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/cargo-consumer"))
+        .output()
+        .unwrap();
+    assert_success(&build);
+    let executable = messages(&build)
+        .find_map(|m| m["executable"].as_str().map(PathBuf::from))
+        .unwrap();
+    let run = Command::new(executable)
+        .arg("{ hello(name: \"Sheri\") }")
+        .output()
+        .unwrap();
+    assert_success(&run);
+    let response: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(
+        response,
+        serde_json::json!({"data": {"hello": "patched consumer"}})
+    );
+}
+
+#[test]
+fn cyclic_defaults_fail_before_consumer_generation() {
+    let consumer = Consumer::new("input R { next: R = {} } type Query { hello: String! }");
+    let result = consumer.build();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("input object defaults contain a cycle")
+    );
+    assert!(!consumer.resolvers().exists());
 }

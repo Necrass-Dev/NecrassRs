@@ -1,16 +1,11 @@
-use std::collections::HashSet;
-
 use apollo_compiler::{
-    ExecutableDocument, Name, Node, Schema,
-    ast::{Document, Type},
+    ExecutableDocument, Node,
+    ast::Document,
     executable::Operation,
     request::coerce_variable_values,
-    response::{GraphQLError, JsonMap, JsonValue},
-    schema::ExtendedType,
+    response::{GraphQLError, JsonMap},
     validation::Valid,
 };
-
-use crate::input::{InputCoercionError, literal_to_json as default_value_to_json};
 
 /// An owned GraphQL document, optional operation name, and variable values.
 ///
@@ -111,30 +106,6 @@ pub(crate) fn prepare_request(
 
     let variables = coerce_variable_values(schema, operation, &request.variables)
         .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
-    let mut variables = variables.into_inner();
-
-    for definition in &operation.variables {
-        let name = definition.name.as_str();
-
-        let Some(value) = variables.remove(name) else {
-            continue;
-        };
-
-        let value = coerce_json_input_value(schema, &definition.ty, value, &mut HashSet::new())
-            .map_err(|error| {
-                vec![GraphQLError::new(
-                    error.message,
-                    error.location.or_else(|| definition.location()),
-                    &document.sources,
-                )]
-            })?;
-
-        variables.insert(name, value);
-    }
-
-    // Apollo already validated these values before normalization.
-    let variables = Valid::assume_valid(variables);
-
     let operation = operation.clone();
 
     Ok(PreparedRequest {
@@ -142,101 +113,6 @@ pub(crate) fn prepare_request(
         operation,
         variables,
     })
-}
-
-fn coerce_json_input_value(
-    schema: &Valid<Schema>,
-    ty: &Type,
-    value: JsonValue,
-    active_defaults: &mut HashSet<(Name, Name)>,
-) -> Result<JsonValue, InputCoercionError> {
-    if value.is_null() {
-        return if ty.is_non_null() {
-            Err(InputCoercionError::new(format!(
-                "null value for non-null type '{ty}'"
-            )))
-        } else {
-            Ok(JsonValue::Null)
-        };
-    }
-
-    match ty {
-        Type::List(inner) | Type::NonNullList(inner) => {
-            coerce_json_list(schema, inner, value, active_defaults)
-        }
-        Type::Named(name) | Type::NonNullNamed(name) => {
-            coerce_json_named_value(schema, name, value, active_defaults)
-        }
-    }
-}
-
-fn coerce_json_list(
-    schema: &Valid<Schema>,
-    item_type: &Type,
-    value: JsonValue,
-    active_defaults: &mut HashSet<(Name, Name)>,
-) -> Result<JsonValue, InputCoercionError> {
-    let values = match value {
-        JsonValue::Array(values) => values,
-        value => vec![value],
-    };
-
-    values
-        .into_iter()
-        .map(|value| coerce_json_input_value(schema, item_type, value, active_defaults))
-        .collect::<Result<Vec<_>, _>>()
-        .map(JsonValue::Array)
-}
-
-fn coerce_json_named_value(
-    schema: &Valid<Schema>,
-    type_name: &Name,
-    value: JsonValue,
-    active_defaults: &mut HashSet<(Name, Name)>,
-) -> Result<JsonValue, InputCoercionError> {
-    let Some(ExtendedType::InputObject(input)) = schema.types.get(type_name) else {
-        // Scalar와 Enum은 Apollo가 이미 검증하고 coercion했습니다.
-        return Ok(value);
-    };
-
-    let JsonValue::Object(mut object) = value else {
-        return Err(InputCoercionError::new(format!(
-            "could not coerce value to input object '{type_name}'"
-        )));
-    };
-
-    for (field_name, field_definition) in &input.fields {
-        let value = match object.remove(field_name.as_str()) {
-            Some(value) => {
-                coerce_json_input_value(schema, &field_definition.ty, value, active_defaults)?
-            }
-            None => {
-                let Some(default) = &field_definition.default_value else {
-                    continue;
-                };
-
-                let coordinate = (type_name.clone(), field_name.clone());
-                if !active_defaults.insert(coordinate.clone()) {
-                    return Err(InputCoercionError::at(
-                        format!("cyclic default value for input field '{type_name}.{field_name}'"),
-                        default.location(),
-                    ));
-                }
-
-                let result = default_value_to_json(default).and_then(|value| {
-                    coerce_json_input_value(schema, &field_definition.ty, value, active_defaults)
-                });
-
-                active_defaults.remove(&coordinate);
-
-                result?
-            }
-        };
-
-        object.insert(field_name.as_str(), value);
-    }
-
-    Ok(JsonValue::Object(object))
 }
 
 #[cfg(test)]

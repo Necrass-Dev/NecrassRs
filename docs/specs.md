@@ -178,11 +178,32 @@ Acceptance and test migration:
 - Preserve legitimate argument-error path and null-propagation coverage using valid schemas and applicable execution errors; do not keep an invalid schema valid merely to retain the old assertions. References: [Coercing Field Arguments](https://spec.graphql.org/September2025/#sec-Coercing-Field-Arguments), [Handling Execution Errors](https://spec.graphql.org/September2025/#sec-Handling-Execution-Errors).
 - Remove superseded `active_defaults` cycle guards only after the patched dependency is used by build/runtime/consumer paths and direct validation regressions pass. Retain NecrassRs' required field-argument coercion.
 
-TDD Red checkpoint for #23: `cargo test -p necrassrs --locked cyclic_` fails both tests against unpatched Apollo 1.33.0. All six isolated reproductions fail the schema-rejection assertion without aborting. This records the validation gap, not completed conformance. The dependency patch and wrapper removal remain pending; candidate specification revisions and accepted decisions above are unchanged.
+Historical TDD Red checkpoint for #23: `cargo test -p necrassrs --locked cyclic_` fails both tests against unpatched Apollo 1.33.0. All six isolated reproductions fail the schema-rejection assertion without aborting. This records the validation gap, not completed conformance. That checkpoint preceded the local patch below; candidate specification revisions and accepted decisions above remain unchanged.
 
-The [default-cycle algorithm comparison](experiments/default-cycle-comparison.md) retains executable path-DFS and dependency-graph candidates, measured results, and the rationale for reusing completed field-default dependency analysis. It is experimental evidence, not an integrated Apollo patch or completed acceptance.
+The [default-cycle algorithm comparison](experiments/default-cycle-comparison.md) retains executable path-DFS and dependency-graph candidates, measured results, and the rationale for reusing completed field-default dependency analysis. Its timings remain experimental evidence; the integrated patch uses the selected graph design with iterative traversal.
 
 Nested variable-default normalization is a separate defect within the parent issue's Apollo deliverable, not implied by fixing schema cycles. Reuse `variable_list_default_is_coerced_to_a_list`, `variable_object_default_applies_input_field_defaults`, and `nested_list_default_is_coerced_to_a_list` from [execution.rs](../crates/necrassrs/src/execution.rs), adding direct dependency-level assertions that pass without post-coercion wrapper repair. Its references remain [Input Coercion](https://spec.graphql.org/September2025/#sec-Input-Objects.Input-Coercion), [List Input Coercion](https://spec.graphql.org/September2025/#sec-List.Input-Coercion), and [Coercing Variable Values](https://spec.graphql.org/September2025/#sec-Coercing-Variable-Values).
+
+### Local Apollo patch verification
+
+The [maintained local Apollo patch](apollo-compiler.md) now supplies
+schema default-cycle validation and nested variable-default coercion. Superseded
+NecrassRs variable normalization and active-default guards are removed. Legitimate
+executor argument coercion remains. These checks cover the released clauses below;
+immutable Working Draft/transport selection and the parent reference gate remain
+pending. No complete G08/G09/G11 or next-edition conformance is claimed.
+
+| Clause / level | Applicability and implementation | Executable evidence | Status |
+| --- | --- | --- | --- |
+| September 2025 §3.10 Type Validation, default-cycle prohibition (required) | Apollo field-default graph; distinct from type cycles | Existing request cyclic subprocess tests; `graph_validation_distinguishes_defaults_from_type_recursion`; `graph_validation_handles_shared_and_long_default_chains` | Passed locally; includes diagnostics, extensions, finite recursion and shared/long chains |
+| September 2025 §3.10 Input Coercion and §6.1.2 (required) | Apollo variable and nested input-field defaults | `variable_defaults_are_coerced_by_apollo`; `supplied_objects_apply_nested_defaults_without_replacing_null_or_values` | Passed directly through Apollo without wrapper repair |
+| September 2025 §3.11 List Input Coercion (required) | Singleton and nested-list defaults in the public variable API | The same direct API tests and retained execution default regressions | Passed locally |
+| September 2025 §6.4.1 (required; preserved boundary) | NecrassRs executor field-argument coercion | `input_object_defaults_and_single_value_list_coercion_are_applied`; finite-default reuse and existing alias/error/null propagation tests | Passed after removing only superseded guards |
+| Cargo source selection (project integration requirement) | Workspace and external consumer roots, including CLI starter | `consumer_root_resolves_patched_apollo_for_build_and_runtime`; `cyclic_defaults_fail_before_consumer_generation`; CLI generated-consumer check | Passed for local paths; remote Git publication is not established |
+
+Validation: `cargo test --workspace --locked`, workspace all-target Clippy with
+warnings denied, and formatting pass. The root lockfile resolves Apollo from the
+local maintained Apollo source. No protocol implementation changes are part of this patch.
 
 ## Working Draft differences to reconcile
 
@@ -267,7 +288,7 @@ These observations locate work; they are not a fresh exhaustive conformance audi
 | --- | --- | --- |
 | Generated contracts | [codegen.rs](../crates/necrassrs-build/src/codegen.rs) restricts generated argument/result types to String! and generated dispatch to query roots. | G03–G09 and G13–G21 through compiling generated consumers. |
 | Execution | [execution.rs](../crates/necrassrs/src/execution.rs) completes String/list/nullability cases, lacks general scalar/object completion, and rejects subscriptions. | G03–G05 and G12–G21; reuse existing checks for supported paths. |
-| Defaults/coercion | [request.rs](../crates/necrassrs/src/request.rs) and [execution.rs](../crates/necrassrs/src/execution.rs) contain wrapper-level default/cycle workarounds; [Cargo.toml](../Cargo.toml) declares Apollo Compiler 1.33.0 without the required local patch. | G08/G09/G11 at the dependency boundary and through consumers. |
+| Defaults/coercion | [request.rs](../crates/necrassrs/src/request.rs) and [execution.rs](../crates/necrassrs/src/execution.rs) now use the local Apollo patch for variable defaults and schema default cycles; [Cargo.toml](../Cargo.toml) overrides Apollo Compiler 1.33.0 with the maintained local source. Executor field-argument coercion remains local. | G08/G09/G11 at the dependency boundary and through consumers. |
 | HTTP and streaming | [shared HTTP](../crates/necrassrs-http/src/lib.rs), [Axum](../crates/necrassrs-axum/src/lib.rs), and [Actix](../crates/necrassrs-actix/src/lib.rs) need the selected request/response matrix and WS/SSE exchanges. | H01–H06, W01–W06, S01–S05; inspect each case before assigning pass/fail. |
 
 ## Remaining conformance work

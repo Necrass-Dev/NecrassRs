@@ -10,6 +10,7 @@ members = [
     "examples/actix-server"
 ]
 resolver = "3"
+exclude = ["vendor/apollo-compiler"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,3 +19,6 @@ edition = "2024"
 [workspace.dependencies]
 apollo-compiler = "1.33.0"
 serde = { version = "1.0.229", features = ["derive"] }
+
+[patch.crates-io]
+apollo-compiler = { path = "vendor/apollo-compiler" }

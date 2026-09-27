@@ -1,0 +1,72 @@
+# Build-only manifest derived from the crates.io 1.33.0 distribution.
+# Upstream development targets/dependencies are intentionally omitted.
+
+[package]
+edition = "2021"
+name = "apollo-compiler"
+version = "1.33.0"
+authors = ["Irina Shestak <shestak.irina@gmail.com>"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "A compiler for the GraphQL query language."
+documentation = "https://docs.rs/apollo-compiler"
+readme = "README.md"
+keywords = [
+    "graphql",
+    "parser",
+    "graphql-tooling",
+    "apollographql",
+]
+categories = [
+    "compilers",
+    "development-tools",
+    "parser-implementations",
+    "parsing",
+    "web-programming",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/apollographql/apollo-rs"
+
+[lib]
+name = "apollo_compiler"
+path = "src/lib.rs"
+
+[dependencies.ahash]
+version = "0.8.11"
+
+[dependencies.apollo-parser]
+version = "0.8.0"
+
+[dependencies.ariadne]
+version = "0.6.0"
+features = ["auto-color"]
+
+[dependencies.futures]
+version = "0.3"
+
+[dependencies.indexmap]
+version = "2.0.0"
+
+[dependencies.rowan]
+version = "0.16.0"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json_bytes]
+version = "0.2.2"
+features = ["preserve_order"]
+
+[dependencies.thiserror]
+version = "2.0.0"
+
+[dependencies.triomphe]
+version = "0.1.13"
+
+[dependencies.typed-arena]
+version = "2.0"
