@@ -1,4 +1,6 @@
-# Input-default cycle validation: implementation comparison
+---
+title: "Input-default cycle validation: implementation comparison"
+---
 
 Date: 2026-09-27. Issue: [#23](https://github.com/Necrass-Dev/NecrassRs/issues/23).
 
@@ -11,12 +13,12 @@ work. The explicit graph prototype demonstrates the benefit, but its eager graph
 construction and edge storage have measurable costs. These results do not select
 an unmeasured lazy or compressed implementation.
 
-Both candidates remain in a standalone [Rust example](../../crates/necrassrs/examples/default_cycle_comparison.rs).
+Both candidates remain in a standalone [Rust example](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/examples/default_cycle_comparison.rs).
 They are not wired into NecrassRs or Apollo validation. Existing #23 Red tests
 remain failing. Variable-default coercion, dependency source overrides, Apollo
 error diagnostics, and removal of wrapper workarounds are separate pending work.
 No accepted representation or transport decision is changed. Working Draft and
-transport revision candidates remain unconfirmed as documented in [specs.md](../specs.md).
+transport revision candidates remain unconfirmed as documented in [specs.md](/docs/specs/).
 
 ## Algorithms
 
@@ -91,20 +93,20 @@ run in a fixed order, without process isolation or CPU pinning. Tiny timings are
 especially noisy; counts and scaling are more useful evidence than speed ratios.
 This is a schema-validation microbenchmark, not request throughput measurement.
 
-[Raw results](default-cycle-results.csv) include SDL fragment bytes, default-node
+[Raw results](/docs/experiments/default-cycle-results.csv) include SDL fragment bytes, default-node
 count, median nanoseconds, field inspections, default expansions, stored edge
 occurrences, and maximum active default depth. SDL byte counts exclude the common
 query root appended by the harness. Depth does not count explicit literal nesting.
 
-| Case | Path median | Graph median, including construction | Path / graph default expansions | Stored graph edges |
-| --- | ---: | ---: | ---: | ---: |
-| Self-cycle | 0.375 us | 0.459 us | 1 / 1 | 1 |
-| Finite recursive default | 0.416 us | 0.416 us | 1 / 1 | 0 |
-| Branching depth 12 | 3.095 ms | 4.792 us | 16,356 / 24 | 44 |
-| Branching depth 20 | 438.094 ms | 5.250 us | 4,194,260 / 40 | 76 |
-| Chain depth 256 | 3.387 ms | 23.916 us | 32,896 / 256 | 255 |
-| Dense width 256 | 5.843 ms | 1.850 ms | 66,048 / 512 | 65,536 |
-| Immediate cycle followed by dense width 256 | 0.125 us | 1.753 ms | 1 / 513 | 65,537 |
+| Case                                        | Path median | Graph median, including construction | Path / graph default expansions | Stored graph edges |
+| ------------------------------------------- | ----------: | -----------------------------------: | ------------------------------: | -----------------: |
+| Self-cycle                                  |    0.375 us |                             0.459 us |                           1 / 1 |                  1 |
+| Finite recursive default                    |    0.416 us |                             0.416 us |                           1 / 1 |                  0 |
+| Branching depth 12                          |    3.095 ms |                             4.792 us |                     16,356 / 24 |                 44 |
+| Branching depth 20                          |  438.094 ms |                             5.250 us |                  4,194,260 / 40 |                 76 |
+| Chain depth 256                             |    3.387 ms |                            23.916 us |                    32,896 / 256 |                255 |
+| Dense width 256                             |    5.843 ms |                             1.850 ms |                    66,048 / 512 |             65,536 |
+| Immediate cycle followed by dense width 256 |    0.125 us |                             1.753 ms |                         1 / 513 |             65,537 |
 
 The branching family has two defaults at each level referencing the next level.
 Its finite expansion is exponential in depth, although validation need not build

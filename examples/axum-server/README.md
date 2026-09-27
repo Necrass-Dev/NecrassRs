@@ -16,7 +16,7 @@ The example's `[dependencies]` contain the runtime, Axum adapter, Axum, and Toki
 
 ## Development UI
 
-The example serves GraphiQL on GET `/graphql` by default. Open `http://127.0.0.1:3000/graphql`; the page sends requests to POST `/graphql`. The browser loads version-pinned assets from `esm.sh` and needs network access. Remove or gate the GET handler when deploying an application that should not expose the UI. See [Introspection and GraphiQL](../../docs/graphiql.md) for endpoint configuration and production introspection policy.
+The example serves GraphiQL on GET `/graphql` by default. Open `http://127.0.0.1:3000/graphql`; the page sends requests to POST `/graphql`. The browser loads version-pinned assets from `esm.sh` and needs network access. Remove or gate the GET handler when deploying an application that should not expose the UI. See [Introspection and GraphiQL](../../docs/src/content/docs/docs/graphiql.md) for endpoint configuration and production introspection policy.
 
 ## Requests
 
@@ -128,4 +128,4 @@ The workspace test run included all five axum-server tests, the build-library Ca
 
 Generated consumer contracts currently support `String!` field arguments and results. The list and mutation checks above belong to the runtime component and are not claims that this example can generate those types or roots. CLI initialization and packaged release builds are outside this example's scope.
 
-The GraphQL POST route includes `necrassrs_axum::negotiate_response` middleware. It negotiates `Accept` without applying GraphQL response rules to the HTML page. Syntax errors return 400, other GraphQL request errors 422, and execution results remain 200 even with errors. See the [HTTP adapter contract](../../docs/http.md) for details.
+The GraphQL POST route includes `necrassrs_axum::negotiate_response` middleware. It negotiates `Accept` without applying GraphQL response rules to the HTML page. Syntax errors return 400, other GraphQL request errors 422, and execution results remain 200 even with errors. See the [HTTP adapter contract](../../docs/src/content/docs/docs/http.md) for details.

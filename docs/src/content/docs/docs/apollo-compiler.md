@@ -1,4 +1,6 @@
-# Local Apollo correction and upstream work
+---
+title: "Local Apollo correction and upstream work"
+---
 
 NecrassRs maintains its own Apollo Compiler patch for
 [#23](https://github.com/Necrass-Dev/NecrassRs/issues/23). The separate
@@ -8,14 +10,14 @@ path dependency of NecrassRs. The two repositories have different change scopes.
 
 ## NecrassRs-owned artifacts
 
-- [Source patch](../patches/apollo-compiler-1.33.0.patch), relative to the compiler
+- [Source patch](https://github.com/Necrass-Dev/NecrassRs/blob/main/patches/apollo-compiler-1.33.0.patch), relative to the compiler
   crate root, records the five validation/coercion source changes.
 - `vendor/apollo-compiler` is a minimal buildable copy of the crates.io 1.33.0
   package with that patch applied. It contains library source, licenses, provenance,
   README, and the single example embedded by the library's rustdoc. Upstream test
   fixtures, benches, other examples, and development dependencies are omitted.
   The build-only manifest is a packaging adaptation, not an upstream change.
-- [Algorithm experiments](experiments/default-cycle-comparison.md) and their raw
+- [Algorithm experiments](/docs/experiments/default-cycle-comparison/) and their raw
   results remain in NecrassRs as the implementation decision record.
 - Direct dependency regressions, subprocess checks, executor cases, external
   consumer tests, and Cargo/CLI wiring remain NecrassRs integration work.
@@ -153,6 +155,6 @@ cargo test -p apollo-compiler
 
 Remove the local patch/source override only after an upstream release passes the
 portable regressions and external consumer checks. Update the root lockfile and
-all root/template overrides together. The #23 pinned specification comparison is recorded in [specs.md](specs.md).
+all root/template overrides together. The #23 pinned specification comparison is recorded in [specs.md](/docs/specs/).
 Transport reference candidates and the complete parent difference inventory remain
 separate work; local patch verification is not full conformance.

@@ -2,7 +2,7 @@
 
 NecrassRs permits AI assistance with code, tests, design, reviews, and documentation. Contributors remain responsible for understanding and validating their submissions. The same quality standards apply with or without AI assistance.
 
-See [AGENTS.md](AGENTS.md) for agent workflow and [docs/architecture.md](docs/architecture.md) for product design. Official repository documentation, including AI disclosures in repository documents, must be written in English.
+See [AGENTS.md](AGENTS.md) for agent workflow and [docs/src/content/docs/docs/architecture.md](docs/src/content/docs/docs/architecture.md) for product design. Official repository documentation, including AI disclosures in repository documents, must be written in English.
 
 ## 1. Human responsibility and review
 

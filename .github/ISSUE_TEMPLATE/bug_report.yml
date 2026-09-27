@@ -57,7 +57,7 @@ body:
     attributes:
       label: Affected area
       description: Name the crate, command, API contract, or design section involved.
-      placeholder: SDL generation, resolver execution, Axum integration, docs/architecture.md
+      placeholder: SDL generation, resolver execution, Axum integration, docs/src/content/docs/docs/architecture.md
     validations:
       required: true
 
