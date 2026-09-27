@@ -268,18 +268,12 @@ mod tests {
         const CHILD_ENV: &str = "NECRASSRS_CYCLIC_DEFAULT_TEST_CHILD";
 
         if std::env::var_os(CHILD_ENV).is_some() {
-            let Ok(schema) = Schema::parse_and_validate(
+            let errors = Schema::parse_and_validate(
                 "input Recursive { next: Recursive = {} } \
                  type Query { hello(input: Recursive): String }",
                 "schema.graphql",
-            ) else {
-                // Rejecting the cycle during schema validation is also safe.
-                return;
-            };
-            let request = Request::new("query($input: Recursive = {}) { hello(input: $input) }");
-
-            let errors = prepare_request(&schema, &request)
-                .expect_err("cyclic defaults must be rejected before execution");
+            )
+            .expect_err("cyclic input defaults must be rejected during schema validation");
             assert!(!errors.errors.is_empty());
             return;
         }
@@ -302,6 +296,75 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
+    }
+
+    #[test]
+    fn cyclic_argument_defaults_are_rejected_before_execution() {
+        const CHILD_ENV: &str = "NECRASSRS_CYCLIC_EXECUTION_TEST_CASE";
+        let cases = [
+            (
+                "literal input",
+                "input R { next: R = {} } type Query { hello(input: R): String }",
+                "{ greeting: hello(input: {}) }",
+            ),
+            (
+                "omitted argument",
+                "input R { next: R = {} } type Query { hello(input: R = {}): String }",
+                "{ greeting: hello }",
+            ),
+            (
+                "missing argument variable",
+                "input R { next: R = {} } type Query { hello(input: R = {}): String }",
+                "query($input: R) { greeting: hello(input: $input) }",
+            ),
+            (
+                "missing input field variable",
+                "input R { next: R = {} } type Query { hello(input: R): String }",
+                "query($next: R) { greeting: hello(input: {next: $next}) }",
+            ),
+            (
+                "mutual cycle through a list",
+                "input A { bs: [B] = [{}] } input B { a: A = {} } \
+                 type Query { hello(input: A): String }",
+                "{ greeting: hello(input: {}) }",
+            ),
+        ];
+
+        if let Ok(index) = std::env::var(CHILD_ENV) {
+            let (case, source, document) = cases[index.parse::<usize>().unwrap()];
+            // Reject the schema without preparing the request or invoking a dispatcher.
+            let errors = Schema::parse_and_validate(source, "schema.graphql")
+                .err()
+                .unwrap_or_else(|| {
+                    panic!("{case}: schema must be rejected before executing {document}")
+                });
+            assert!(!errors.errors.is_empty(), "{case}");
+            return;
+        }
+
+        // Isolate each case so a regression causing stack overflow cannot abort the suite.
+        let mut failures = Vec::new();
+        for (index, (case, _, _)) in cases.iter().enumerate() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "request::tests::cyclic_argument_defaults_are_rejected_before_execution",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, index.to_string())
+                .output()
+                .unwrap();
+
+            if !output.status.success() {
+                failures.push(format!(
+                    "{case}: {}\nstdout:\n{}\nstderr:\n{}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
