@@ -35,6 +35,68 @@ fn variable_defaults_are_coerced_by_apollo() {
 }
 
 #[test]
+fn numeric_literal_defaults_preserve_validated_values() {
+    let mut failures = Vec::new();
+    for (scalar, literal, number) in [
+        ("Float", "9007199254740991", json!(9_007_199_254_740_991u64)),
+        (
+            "ID",
+            "9223372036854775808",
+            json!(9_223_372_036_854_775_808u64),
+        ),
+    ] {
+        for (ty, expected) in [
+            (scalar.to_owned(), number.clone()),
+            (format!("[{scalar}]"), json!([number.clone()])),
+            (format!("[[{scalar}]]"), json!([[number]])),
+        ] {
+            for (case, sdl, query, variables, expected) in [
+                (
+                    "variable default",
+                    format!("type Query {{ hello(value: {ty}): String }}"),
+                    format!("query($value: {ty} = {literal}) {{ hello(value: $value) }}"),
+                    JsonMap::new(),
+                    expected.clone(),
+                ),
+                (
+                    "field default in supplied object",
+                    format!(
+                        "input I {{ value: {ty} = {literal} }} type Query {{ hello(value: I): String }}"
+                    ),
+                    "query($value: I) { hello(value: $value) }".to_owned(),
+                    [("value".into(), json!({}))].into_iter().collect(),
+                    json!({"value": expected.clone()}),
+                ),
+                (
+                    "field default in variable default",
+                    format!(
+                        "input I {{ value: {ty} = {literal} }} type Query {{ hello(value: I): String }}"
+                    ),
+                    "query($value: I = {}) { hello(value: $value) }".to_owned(),
+                    JsonMap::new(),
+                    json!({"value": expected.clone()}),
+                ),
+            ] {
+                let schema = Schema::parse_and_validate(sdl, "schema.graphql").unwrap();
+                let document =
+                    ExecutableDocument::parse_and_validate(&schema, query, "query.graphql")
+                        .unwrap();
+                let result = coerce_variable_values(
+                    &schema,
+                    document.operations.get(None).unwrap(),
+                    &variables,
+                );
+                match result {
+                    Ok(values) => assert_eq!(values.get("value"), Some(&expected), "{case}: {ty}"),
+                    Err(error) => failures.push(format!("{case}: {ty}: {error:?}")),
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn supplied_objects_apply_nested_defaults_without_replacing_null_or_values() {
     let schema = Schema::parse_and_validate(
         "input Inner { names: [[String!]] = \"Sheri\" } \
