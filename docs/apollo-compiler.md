@@ -63,17 +63,19 @@ apollo-compiler = { path = "../NecrassRs/vendor/apollo-compiler" }
 ```
 
 Adjust the path for the checkout. The CLI starter pins all three NecrassRs packages and the Apollo override to
-`cc3a3b2a77f42b91d3fe417c48e346682f26dc7c`, which is available in the remote
-NecrassRs repository. The Apollo override is:
+`ffd953c8c56496677f62583f96794396b5f126c9`, containing the numeric default regression fix.
+This revision must be published before remote consumers can fetch it. The Apollo override is:
 
 ```toml
 [patch.crates-io]
-apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", rev = "cc3a3b2a77f42b91d3fe417c48e346682f26dc7c", version = "1.33.0" }
+apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", rev = "ffd953c8c56496677f62583f96794396b5f126c9", version = "1.33.0" }
 ```
 
 Local automated CLI tests substitute the maintained local source. A separate
 remote-consumer check on 2026-09-27 used the generated manifest unchanged for its
-initial build, fetched this Git revision, and compiled successfully. Cargo metadata
+initial build, fetched the earlier Git revision `cc3a3b2a77f42b91d3fe417c48e346682f26dc7c`,
+and compiled successfully. This is historical evidence, not verification of the
+new numeric-fix pin. Cargo metadata
 showed exactly one Apollo Compiler package at that Git source/revision, shared by
 `necrassrs` and `necrassrs-build`; no sibling checkout or local path override was
 used.
@@ -107,10 +109,10 @@ It also rejects invalid explicitly supplied values on each path. The TDD Red
 checkpoint is commit `57308d8`; the local fix preserves validated scalar literals
 instead of applying JSON variable numeric restrictions to them.
 
-The published consumer pin above predates this follow-up. Its recorded remote
-checks remain historical evidence for the original patch. After publishing the
-numeric fix, update every CLI source pin to the corrected commit and repeat the
-remote consumer checks; do not claim that the current pin includes this fix.
+The CLI source pins now select the numeric fix. The recorded remote checks above
+remain historical evidence for the original patch; repeat them after publishing
+the new pinned commit. Local CLI checks validate the updated manifest and build
+against the corrected maintained source.
 
 ## Upstream PR scope
 
