@@ -180,6 +180,8 @@ Acceptance and test migration:
 
 TDD Red checkpoint for #23: `cargo test -p necrassrs --locked cyclic_` fails both tests against unpatched Apollo 1.33.0. All six isolated reproductions fail the schema-rejection assertion without aborting. This records the validation gap, not completed conformance. The dependency patch and wrapper removal remain pending; candidate specification revisions and accepted decisions above are unchanged.
 
+The [default-cycle algorithm comparison](experiments/default-cycle-comparison.md) retains executable path-DFS and dependency-graph candidates, measured results, and the rationale for reusing completed field-default dependency analysis. It is experimental evidence, not an integrated Apollo patch or completed acceptance.
+
 Nested variable-default normalization is a separate defect within the parent issue's Apollo deliverable, not implied by fixing schema cycles. Reuse `variable_list_default_is_coerced_to_a_list`, `variable_object_default_applies_input_field_defaults`, and `nested_list_default_is_coerced_to_a_list` from [execution.rs](../crates/necrassrs/src/execution.rs), adding direct dependency-level assertions that pass without post-coercion wrapper repair. Its references remain [Input Coercion](https://spec.graphql.org/September2025/#sec-Input-Objects.Input-Coercion), [List Input Coercion](https://spec.graphql.org/September2025/#sec-List.Input-Coercion), and [Coercing Variable Values](https://spec.graphql.org/September2025/#sec-Coercing-Variable-Values).
 
 ## Working Draft differences to reconcile
