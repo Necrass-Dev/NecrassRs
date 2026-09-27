@@ -38,7 +38,9 @@ Keep the vendored source and this patch synchronized. The source diff excludes
 NecrassRs packaging changes and can be reviewed independently. The corrected
 schema validator builds a field-default dependency graph and traverses it
 iteratively. Variable-default and input-field-default branches reuse Apollo's
-existing coercion. The first cycle diagnostic includes available field locations.
+existing coercion while preserving validated scalar literal representations.
+Supplied JSON values retain scalar validation; recursive list/object processing
+keeps the distinction between supplied values and validated defaults. The first cycle diagnostic includes available field locations.
 Type recursion and the draft unbreakable-cycle rule remain separate checks.
 
 ## Cargo and consumers
@@ -95,6 +97,20 @@ Use a fresh destination. Inspect `source` for Apollo and dependency edges from
 both runtime and build packages. Keep the generated consumer's lockfile when
 repeating the check. A future source update must update the pins and repeat these
 checks; the selected commit is not a moving branch.
+
+### Numeric default regression follow-up
+
+The regression `numeric_literal_defaults_preserve_validated_values` covers Float
+`9007199254740991` and ID `9223372036854775808` as variable and input-field
+defaults, with scalar, singleton-list, and nested-list types (18 combinations).
+It also rejects invalid explicitly supplied values on each path. The TDD Red
+checkpoint is commit `57308d8`; the local fix preserves validated scalar literals
+instead of applying JSON variable numeric restrictions to them.
+
+The published consumer pin above predates this follow-up. Its recorded remote
+checks remain historical evidence for the original patch. After publishing the
+numeric fix, update every CLI source pin to the corrected commit and repeat the
+remote consumer checks; do not claim that the current pin includes this fix.
 
 ## Upstream PR scope
 

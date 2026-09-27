@@ -1,6 +1,12 @@
 --- a/src/resolvers/input_coercion.rs
 +++ b/src/resolvers/input_coercion.rs
-@@ -51,6 +51,12 @@
+@@ -46,11 +46,19 @@
+                 &format_args!("variable {name}"),
+                 &variable_def.ty,
+                 value,
++                false,
+             )?;
+             coerced_values.insert(key.clone(), value);
          } else if let Some(default) = &variable_def.default_value {
              let value =
                  graphql_value_to_json(&format_args!("default value of variable {name}"), default)?;
@@ -9,11 +15,45 @@
 +                &format_args!("default value of variable {name}"),
 +                &variable_def.ty,
 +                &value,
++                true,
 +            )?;
              coerced_values.insert(name, value);
          } else if variable_def.ty.is_non_null() {
              return Err(InputCoercionError::ValueError {
-@@ -191,6 +197,12 @@
+@@ -73,6 +81,7 @@
+     description: &std::fmt::Arguments<'_>,
+     ty: &Type,
+     value: &JsonValue,
++    is_default: bool,
+ ) -> Result<JsonValue, InputCoercionError> {
+     if value.is_null() {
+         if ty.is_non_null() {
+@@ -93,7 +102,7 @@
+                 // If not an array, treat the value as an array of size one:
+                 .unwrap_or(std::slice::from_ref(value))
+                 .iter()
+-                .map(|item| coerce_variable_value(schema, description, inner, item))
++                .map(|item| coerce_variable_value(schema, description, inner, item, is_default))
+                 .collect();
+         }
+         Type::Named(ty_name) | Type::NonNullNamed(ty_name) => ty_name,
+@@ -111,6 +120,9 @@
+                 location: ty_name.location(),
+             })?
+         }
++        // Default literals have already passed schema/document validation. Preserve
++        // their scalar representation instead of imposing JSON variable limits.
++        ExtendedType::Scalar(_) if is_default => return Ok(value.clone()),
+         ExtendedType::Scalar(_) => match ty_name.as_str() {
+             "Int" => {
+                 // https://spec.graphql.org/October2021/#sec-Int.Input-Coercion
+@@ -186,11 +198,19 @@
+                             &format_args!("input field {ty_name}.{field_name}"),
+                             &field_def.ty,
+                             field_value,
++                            is_default,
+                         )?
+                     } else if let Some(default) = &field_def.default_value {
                          let default = graphql_value_to_json(
                              &format_args!("input field {ty_name}.{field_name}"),
                              default,
@@ -23,6 +63,7 @@
 +                            &format_args!("input field {ty_name}.{field_name}"),
 +                            &field_def.ty,
 +                            &default,
++                            true,
                          )?;
                          object.insert(field_name.as_str(), default);
                      } else if field_def.ty.is_non_null() {

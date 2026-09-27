@@ -90,6 +90,25 @@ fn numeric_literal_defaults_preserve_validated_values() {
                     Ok(values) => assert_eq!(values.get("value"), Some(&expected), "{case}: {ty}"),
                     Err(error) => failures.push(format!("{case}: {ty}: {error:?}")),
                 }
+                // Supplied values must still take the untrusted JSON coercion path.
+                let mut supplied = JsonMap::new();
+                supplied.insert(
+                    "value",
+                    if expected.is_object() {
+                        json!({"value": true})
+                    } else {
+                        json!(true)
+                    },
+                );
+                assert!(
+                    coerce_variable_values(
+                        &schema,
+                        document.operations.get(None).unwrap(),
+                        &supplied,
+                    )
+                    .is_err(),
+                    "{case}: {ty}: invalid supplied value was accepted"
+                );
             }
         }
     }
