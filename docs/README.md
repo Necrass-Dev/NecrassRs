@@ -29,7 +29,7 @@ mise exec -- pnpm test
 ```
 
 The browser check starts its own preview server on port 4322. It checks the
-scroll sequence in both directions, manual controls, mobile layout, reduced
+scroll sequence in both directions, progress indicators, mobile layout, reduced
 motion, no-JavaScript content, documentation navigation, and local links. Browser
 screenshots are written to the ignored `test-results/` directory.
 
@@ -52,8 +52,10 @@ The initial demo imports the real CLI starter's SDL and resolver source. Adding
 pretending to generate business logic. This is a visual demonstration, not a Rust
 compiler running in the browser.
 
-Wide, tall screens get the pinned scroll sequence. Smaller viewports and readers
-who request reduced motion use the same explicit step controls without pinning.
+The scene advances only with scrolling; the three labels are progress indicators,
+not buttons. Wide, tall screens get a pinned sequence. Smaller viewports and readers
+who request reduced motion get an unpinned sequence as the scene enters the viewport.
+There is no timer or automatic playback.
 Without JavaScript, both before/after examples remain readable in document order.
 
 Use `/docs/page-name/` links between published pages and GitHub source links for

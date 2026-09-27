@@ -12,7 +12,6 @@ export default function Workflow(props: Props) {
   const [phase, setPhase] = createSignal<Phase>("initial");
   const [enhanced, setEnhanced] = createSignal(false);
   let story!: HTMLElement;
-  let scrollToPhase: ((phase: Phase) => void) | undefined;
   const steps: { phase: Phase; label: string }[] = [
     { phase: "initial", label: "Define" },
     { phase: "schema", label: "Evolve" },
@@ -26,10 +25,11 @@ export default function Workflow(props: Props) {
     const update = () => {
       const top = story.getBoundingClientRect().top;
       document.body.dataset.tone = top < window.innerHeight * 0.55 ? "dark" : "light";
-      if (pinned.matches && !reduced.matches) {
-        const progress = -top / (story.offsetHeight - window.innerHeight);
-        setPhase(progress >= 0.68 ? "synced" : progress >= 0.36 ? "schema" : "initial");
-      }
+      const progress =
+        pinned.matches && !reduced.matches
+          ? -top / (story.offsetHeight - window.innerHeight)
+          : (window.innerHeight - top) / Math.min(window.innerHeight, story.offsetHeight);
+      setPhase(progress >= 0.68 ? "synced" : progress >= 0.36 ? "schema" : "initial");
     };
     const schedule = () => {
       if (frame) return;
@@ -37,19 +37,6 @@ export default function Workflow(props: Props) {
         frame = 0;
         update();
       });
-    };
-    scrollToPhase = (next) => {
-      if (pinned.matches && !reduced.matches) {
-        const progress = next === "initial" ? 0 : next === "schema" ? 0.45 : 0.8;
-        window.scrollTo({
-          top:
-            window.scrollY +
-            story.getBoundingClientRect().top +
-            progress * (story.offsetHeight - window.innerHeight),
-          behavior: "instant",
-        });
-      }
-      setPhase(next);
     };
     setEnhanced(true);
     update();
@@ -197,19 +184,15 @@ export default function Workflow(props: Props) {
                 ? "One new field in SDL. Build to update the Rust contract."
                 : "Add a field. Watch Rust follow."}
           </p>
-          <div class="phase-controls" role="group" aria-label="Schema evolution steps">
+          <ol class="phase-indicators" aria-label="Schema evolution steps">
             <For each={steps}>
               {(step, index) => (
-                <button
-                  type="button"
-                  aria-pressed={phase() === step.phase}
-                  onClick={() => scrollToPhase?.(step.phase)}
-                >
+                <li aria-current={phase() === step.phase ? "step" : undefined}>
                   0{index() + 1} <span>{step.label}</span>
-                </button>
+                </li>
               )}
             </For>
-          </div>
+          </ol>
         </div>
       </div>
     </section>

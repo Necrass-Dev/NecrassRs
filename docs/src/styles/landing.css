@@ -50,7 +50,7 @@ pre:focus-visible {
 .mono,
 .eyebrow,
 .editor,
-.phase-controls,
+.phase-indicators,
 .scroll-cue {
   font-family: "IBM Plex Mono", monospace;
 }
@@ -86,8 +86,7 @@ pre:focus-visible {
 .site-header nav span {
   margin-left: 6px;
 }
-.site-header nav a:hover,
-.text-link:hover {
+.site-header nav a:hover {
   color: var(--purple);
 }
 .skip-link {
@@ -403,71 +402,34 @@ h2 {
   font-size: 11px;
   color: var(--muted);
 }
-.phase-controls {
+.phase-indicators {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: none;
   gap: 5px;
   flex-shrink: 0;
 }
-.enhanced .phase-controls {
+.enhanced .phase-indicators {
   display: flex;
 }
-.phase-controls button {
+.phase-indicators li {
   border: 1px solid transparent;
   border-radius: 4px;
   padding: 8px 10px;
   color: var(--muted);
   background: transparent;
-  cursor: pointer;
   font-size: 10px;
 }
-.phase-controls button span {
+.phase-indicators li span {
   margin-left: 5px;
 }
-.phase-controls button[aria-pressed="true"] {
+.phase-indicators li[aria-current="step"] {
   color: var(--paper);
   border-color: #685386;
   background: #2a203a;
 }
-.phase-controls button:hover {
-  color: white;
-}
-.closing {
-  padding: 150px 5% 125px;
-  text-align: center;
-  background: var(--night);
-  color: var(--paper);
-}
-.closing .eyebrow {
-  color: var(--lavender);
-  margin-bottom: 30px;
-}
-.closing h2 {
-  font-size: clamp(56px, 7vw, 104px);
-}
-.closing h2 span {
-  color: var(--lavender);
-}
-.closing > p:not(.eyebrow) {
-  margin: 28px 0 32px;
-  color: var(--muted);
-  line-height: 1.9;
-  font-size: 14px;
-}
-.closing .button {
-  background: var(--paper);
-  border-color: var(--paper);
-  color: var(--ink);
-}
-.closing .text-link {
-  display: block;
-  font-size: 11px;
-  margin: 25px auto 0;
-  color: var(--muted);
-  width: fit-content;
-}
-.closing .text-link:hover {
-  color: white;
-}
+
 .site-footer {
   display: flex;
   align-items: center;
@@ -578,10 +540,10 @@ h2 {
     flex-direction: column-reverse;
     gap: 18px;
   }
-  .phase-controls {
+  .phase-indicators {
     width: 100%;
   }
-  .phase-controls button {
+  .phase-indicators li {
     flex: 1;
     padding: 13px 8px;
   }
@@ -596,9 +558,6 @@ h2 {
   }
   .hero-domain {
     display: none;
-  }
-  .closing {
-    padding: 95px 5%;
   }
 }
 @media (max-width: 480px) {
@@ -646,10 +605,7 @@ h2 {
   .story h2 {
     font-size: 31px;
   }
-  .closing .eyebrow {
-    font-size: 9px;
-    letter-spacing: 1px;
-  }
+
   .site-footer {
     flex-wrap: wrap;
     gap: 15px;

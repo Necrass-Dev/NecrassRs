@@ -64,6 +64,8 @@ try {
   await page.waitForSelector(".story.enhanced");
   await page.evaluate(() => document.fonts.ready);
   assert.match(await page.locator("h1").innerText(), /Your schema leads\.\s*Rust delivers\./);
+  assert.equal(await page.locator(".closing").count(), 0);
+  assert.equal(await page.locator(".phase-indicators button").count(), 0);
   await page.screenshot({ path: "test-results/hero.png" });
   const scrollToProgress = async (progress, phase) => {
     await page
@@ -88,7 +90,9 @@ try {
   await scrollToProgress(0.1, "initial");
   assert.equal(await page.locator("body").getAttribute("data-tone"), "dark");
   await page.screenshot({ path: "test-results/schema.png" });
+  assert.match(await page.locator('[aria-current="step"]').innerText(), /Define/);
   await scrollToProgress(0.45, "schema");
+  assert.match(await page.locator('[aria-current="step"]').innerText(), /Evolve/);
   assert.match(await page.locator('[data-code="schema-after"]').innerText(), /version: String!/);
   assert.equal(
     await page.locator('[data-code="resolver-after"]').count(),
@@ -96,6 +100,7 @@ try {
     "Resolver changes only after the build step.",
   );
   await scrollToProgress(0.8, "synced");
+  assert.match(await page.locator('[aria-current="step"]').innerText(), /Build/);
   await page.evaluate(() =>
     Promise.all(document.getAnimations().map((animation) => animation.finished)),
   );
@@ -112,6 +117,7 @@ try {
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await scrollToProgress(0.8, "synced");
+  assert.match(await page.locator('[aria-current="step"]').innerText(), /Build/);
   assert(
     await page.locator(".story-stage").evaluate((element) => element.offsetHeight <= innerHeight),
     "Pinned scene must fit a laptop viewport.",
@@ -125,7 +131,8 @@ try {
     "Mobile page must not overflow horizontally.",
   );
   await page.screenshot({ path: "test-results/mobile-hero.png" });
-  await page.getByRole("button", { name: "03 Build" }).click();
+  await page.locator(".story").evaluate((element) => element.scrollIntoView());
+  await page.waitForFunction(() => document.querySelector(".story").dataset.phase === "synced");
   assert.match(await page.locator('[data-code="resolver-after"]').innerText(), /async fn version/);
   await page.screenshot({ path: "test-results/mobile-evolved.png", fullPage: true });
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -136,7 +143,8 @@ try {
     await page.locator(".story-stage").evaluate((element) => getComputedStyle(element).position),
     "static",
   );
-  await page.getByRole("button", { name: "03 Build" }).click();
+  await page.locator(".story").evaluate((element) => element.scrollIntoView());
+  await page.waitForFunction(() => document.querySelector(".story").dataset.phase === "synced");
   assert.equal(await page.locator(".story").getAttribute("data-phase"), "synced");
 
   await page.goto(`${origin}/docs/`);
@@ -147,7 +155,7 @@ try {
   const noJS = await browser.newPage({ javaScriptEnabled: false });
   await noJS.goto(origin);
   assert.equal(await noJS.locator(".code-version:visible").count(), 4);
-  assert.equal(await noJS.locator(".phase-controls:visible").count(), 0);
+  assert.equal(await noJS.locator(".phase-indicators:visible").count(), 0);
   assert.deepEqual(errors, [], "No browser runtime errors.");
   console.log(
     `Checked ${files.length} HTML pages and local links; scroll, reverse scroll, mobile, reduced motion, no-JS, and documentation passed.`,
