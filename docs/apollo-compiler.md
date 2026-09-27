@@ -60,11 +60,41 @@ does not inherit one from a dependency manifest:
 apollo-compiler = { path = "../NecrassRs/vendor/apollo-compiler" }
 ```
 
-Adjust the path for the checkout. The CLI starter's intended Git override points
-to the NecrassRs repository, where this maintained source lives, not the upstream
-PR branch. Local tests substitute the local source. Remote use requires this work
-to be published first; no published revision containing the patch is claimed.
-After publication, pin an immutable revision and verify the consumer lockfile.
+Adjust the path for the checkout. The CLI starter pins all three NecrassRs packages and the Apollo override to
+`cc3a3b2a77f42b91d3fe417c48e346682f26dc7c`, which is available in the remote
+NecrassRs repository. The Apollo override is:
+
+```toml
+[patch.crates-io]
+apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", rev = "cc3a3b2a77f42b91d3fe417c48e346682f26dc7c", version = "1.33.0" }
+```
+
+Local automated CLI tests substitute the maintained local source. A separate
+remote-consumer check on 2026-09-27 used the generated manifest unchanged for its
+initial build, fetched this Git revision, and compiled successfully. Cargo metadata
+showed exactly one Apollo Compiler package at that Git source/revision, shared by
+`necrassrs` and `necrassrs-build`; no sibling checkout or local path override was
+used.
+
+The generated consumer then passed the four portable `apollo_defaults` tests
+(copied into its `tests/` directory with `apollo-compiler = "1.33.0"` as a dev
+dependency) and a generated-dispatch execution test. The latter rejected a cyclic
+schema and returned `Hello, Sheri` from the generated greeting resolver. These
+five tests passed using the remote dependencies. The test-only additions also
+included `serde_json = "1.0"`; production dependencies were unchanged.
+
+Reproduce the remote build from this repository:
+
+```sh
+cargo run -p necrassrs-cli --locked -- init /tmp/apollo-patch-consumer
+cargo build --manifest-path /tmp/apollo-patch-consumer/Cargo.toml
+cargo metadata --manifest-path /tmp/apollo-patch-consumer/Cargo.toml --locked --format-version 1
+```
+
+Use a fresh destination. Inspect `source` for Apollo and dependency edges from
+both runtime and build packages. Keep the generated consumer's lockfile when
+repeating the check. A future source update must update the pins and repeat these
+checks; the selected commit is not a moving branch.
 
 ## Upstream PR scope
 
@@ -77,8 +107,9 @@ whether to include them in the upstream PR remains open. It does not carry
 NecrassRs manifests or source packaging. Its diff is independently reviewable and
 may evolve differently during upstream review.
 
-No upstream issue/PR or push has been made for this correction. Publication is
-pending maintainer discussion. Upstream's existing compatibility discussion is
+The maintainer handles the Apollo fork separately. This record makes no claim
+about its current publication or review status; NecrassRs acceptance does not
+require an upstream merge. Upstream's existing compatibility discussion is
 [#928](https://github.com/apollographql/apollo-rs/issues/928); stricter default-cycle
 validation rejects schemas previously accepted by 1.33.0.
 
@@ -104,5 +135,6 @@ cargo test -p apollo-compiler
 
 Remove the local patch/source override only after an upstream release passes the
 portable regressions and external consumer checks. Update the root lockfile and
-all root/template overrides together. Parent specification-revision candidates
-remain unconfirmed; local patch verification is not full conformance.
+all root/template overrides together. The #23 pinned specification comparison is recorded in [specs.md](specs.md).
+Transport reference candidates and the complete parent difference inventory remain
+separate work; local patch verification is not full conformance.

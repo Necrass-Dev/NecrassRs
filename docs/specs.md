@@ -11,13 +11,13 @@ The previous agreements about generated output storage structs, receiver-based p
 | Reference | Role and status |
 | --- | --- |
 | [GraphQL September 2025](https://spec.graphql.org/September2025/) | Released baseline required by #18. Its [conformance rules](https://spec.graphql.org/September2025/#sec-Appendix-Conformance) define how normative requirements and algorithms are interpreted. |
-| [GraphQL Working Draft](https://spec.graphql.org/draft/) | Next-edition requirements. The proposed immutable target remains [`59bc70ac974b0d5d1e00869f41c06bb3bfc756da`](https://github.com/graphql/graphql-spec/tree/59bc70ac974b0d5d1e00869f41c06bb3bfc756da); final selection and the baseline diff remain pending. |
+| [GraphQL Working Draft](https://spec.graphql.org/draft/) | Next-edition requirements. The selected immutable target is [`59bc70ac974b0d5d1e00869f41c06bb3bfc756da`](https://github.com/graphql/graphql-spec/tree/59bc70ac974b0d5d1e00869f41c06bb3bfc756da); #23 clauses have been compared with the released baseline below. The complete difference inventory remains owned by #28. |
 | [GraphQL over HTTP draft](https://http-spec.graphql.org/draft/) | Separate HTTP adapter requirements. Candidate source: [`3903e68045982cb6710880bf03527aa0e9331667`](https://github.com/graphql/graphql-over-http/blob/3903e68045982cb6710880bf03527aa0e9331667/spec/GraphQLOverHTTP.md). It is not yet the accepted complete baseline. |
 | [GraphQL over WebSocket](https://github.com/enisdenjo/graphql-ws/blob/master/PROTOCOL.md) | Selected wire protocol: `graphql-transport-ws`. An immutable protocol revision remains to be selected. |
 | [GraphQL over SSE](https://github.com/enisdenjo/graphql-sse/blob/master/PROTOCOL.md#distinct-connections-mode) | Selected mode: distinct connections with GET and POST. An immutable protocol revision remains to be selected. |
 | [RFC 6455 §4.2.2](https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.2), [HTML EventSource processing](https://html.spec.whatwg.org/multipage/server-sent-events.html#sse-processing-model) and [event interpretation](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation) | Underlying WebSocket handshake and SSE framing requirements; not GraphQL execution rules. |
 
-Retain one execution behavior: the selected Working Draft overrides the released baseline where they differ. This is a project baseline decision, not a requirement to support multiple GraphQL modes. Do not follow moving references silently or claim a finalized next edition before its release. Working Draft and transport links on moving branches are reading references until immutable revisions are selected.
+Retain one execution behavior: the selected Working Draft overrides the released baseline where they differ. This is a project baseline decision, not a requirement to support multiple GraphQL modes. Do not follow moving references silently or claim a finalized next edition before its release. Moving links are reading aids; the pinned Working Draft controls acceptance. HTTP/WS/SSE targets remain pending and do not change the #23 default-coercion clauses.
 
 The selected transport scope remains POST queries/mutations, GET queries, subscriptions, modern WebSocket, and distinct-mode SSE. Legacy WebSocket, SSE single connection mode, and Apollo multipart subscriptions are not selected. Core GraphQL does not prescribe a network transport: see [subscription delivery agnosticism](https://spec.graphql.org/September2025/#sec-Subscription.Delivery-Agnostic).
 
@@ -189,9 +189,10 @@ Nested variable-default normalization is a separate defect within the parent iss
 The [maintained local Apollo patch](apollo-compiler.md) now supplies
 schema default-cycle validation and nested variable-default coercion. Superseded
 NecrassRs variable normalization and active-default guards are removed. Legitimate
-executor argument coercion remains. These checks cover the released clauses below;
-immutable Working Draft/transport selection and the parent reference gate remain
-pending. No complete G08/G09/G11 or next-edition conformance is claimed.
+executor argument coercion remains. These checks cover the released clauses below and their unchanged counterparts
+in the selected Working Draft. The #23 reference comparison is recorded below;
+transport reference selection and the complete parent difference inventory remain
+separate work. No complete G08/G09/G11 or next-edition conformance is claimed.
 
 | Clause / level | Applicability and implementation | Executable evidence | Status |
 | --- | --- | --- | --- |
@@ -199,15 +200,47 @@ pending. No complete G08/G09/G11 or next-edition conformance is claimed.
 | September 2025 §3.10 Input Coercion and §6.1.2 (required) | Apollo variable and nested input-field defaults | `variable_defaults_are_coerced_by_apollo`; `supplied_objects_apply_nested_defaults_without_replacing_null_or_values` | Passed directly through Apollo without wrapper repair |
 | September 2025 §3.11 List Input Coercion (required) | Singleton and nested-list defaults in the public variable API | The same direct API tests and retained execution default regressions | Passed locally |
 | September 2025 §6.4.1 (required; preserved boundary) | NecrassRs executor field-argument coercion | `input_object_defaults_and_single_value_list_coercion_are_applied`; finite-default reuse and existing alias/error/null propagation tests | Passed after removing only superseded guards |
-| Cargo source selection (project integration requirement) | Workspace and external consumer roots, including CLI starter | `consumer_root_resolves_patched_apollo_for_build_and_runtime`; `cyclic_defaults_fail_before_consumer_generation`; CLI generated-consumer check | Passed for local paths; remote Git publication is not established |
+| Cargo source selection (project integration requirement) | Workspace and external consumer roots, including CLI starter | `consumer_root_resolves_patched_apollo_for_build_and_runtime`; `cyclic_defaults_fail_before_consumer_generation`; CLI generated-consumer check | Passed for local paths; pinned remote Git verification is recorded in [the patch record](apollo-compiler.md) |
 
 Validation: `cargo test --workspace --locked`, workspace all-target Clippy with
 warnings denied, and formatting pass. The root lockfile resolves Apollo from the
 local maintained Apollo source. No protocol implementation changes are part of this patch.
 
+### Immutable reference comparison for #23
+
+The released source is graphql/graphql-spec commit
+[`89d93ebbe05db06787646d76a696ead8de117b2b`](https://github.com/graphql/graphql-spec/tree/89d93ebbe05db06787646d76a696ead8de117b2b)
+(the September2025 tag). The selected Working Draft is
+[`59bc70ac974b0d5d1e00869f41c06bb3bfc756da`](https://github.com/graphql/graphql-spec/tree/59bc70ac974b0d5d1e00869f41c06bb3bfc756da).
+This fixes the acceptance source; it does not claim complete draft support.
+
+Comparison of the pinned [Type System](https://github.com/graphql/graphql-spec/blob/59bc70ac974b0d5d1e00869f41c06bb3bfc756da/spec/Section%203%20--%20Type%20System.md)
+and [Execution](https://github.com/graphql/graphql-spec/blob/59bc70ac974b0d5d1e00869f41c06bb3bfc756da/spec/Section%206%20--%20Execution.md)
+against the released source found:
+
+- The default-cycle prohibition and both default-cycle algorithms are unchanged.
+  The field-default dependency graph implements that rule without expanding
+  shared defaults repeatedly. Null and empty lists terminate dependency paths;
+  explicit objects can still require omitted fields' defaults.
+- Input-object input coercion, list input coercion, and the
+  `CoerceVariableValues` algorithm are unchanged. The surrounding draft wording
+  clarifies that coercion failures precede operation execution.
+- `CoerceArgumentValues` is unchanged; its surrounding note clarifies the same
+  execution boundary. Legitimate executor argument coercion remains in place.
+- The new `InputObjectHasUnbreakableCycle` rule concerns inhabitable input types,
+  including OneOf, and is distinct from default cycles. #28 owns its validation;
+  #24 owns recursive Rust input layout. It is not implemented by this patch.
+
+The checks in the preceding matrix therefore apply to both pinned sources for
+#23's clauses. Empty selections and directive changes remain with #28;
+subscription source creation remains with #29; unique response error paths belong
+to #27 with #28's draft inventory. No previously accepted representation or
+transport behavior is reopened. HTTP/WS/SSE reference selection does not establish
+or invalidate these core default-coercion checks.
+
 ## Working Draft differences to reconcile
 
-The following topics need a released-versus-selected-draft comparison and separate acceptance cases. The links point to the inspected moving draft, not proof that an immutable target has been selected.
+The following topics remain outside #23 and require separate acceptance cases against the pinned Working Draft. Moving links below are reading aids; #28 owns the complete difference inventory.
 
 | Topic | Reference and required comparison |
 | --- | --- |
@@ -293,8 +326,8 @@ These observations locate work; they are not a fresh exhaustive conformance audi
 
 ## Remaining conformance work
 
-1. Select immutable GraphQL/HTTP/WS/SSE revisions and reconcile the draft differences above. Until then, do not claim the moving reference links define a fixed passing target.
-2. Assign G01–G21 to implementation sub-issues, including the required Apollo patch. Expand each section into checks for its normative clauses.
+1. Complete the pinned Working Draft difference inventory and select immutable HTTP/WS/SSE revisions. The #23 clause comparison above is complete; it is not full parent conformance.
+2. Expand G01–G21 into checks for their normative clauses under the ownership recorded in #18; retain the #23 evidence above.
 3. Establish H01–H06 in both adapters, preserving the documented 200 deviation and accepted 406 subscription rejection. Implement and verify the accepted legacy media-labeling recommendation against the selected transport baseline.
 4. Implement and verify W01–W06 and S01–S05, including the accepted SSE pre-execution error mapping and terminal source-failure policy.
 5. Record each case's source revision/section, requirement level, applicability, implementation location, executable check, and actual verification status. Use [GraphQL Conformance](https://spec.graphql.org/September2025/#sec-Appendix-Conformance) to distinguish mandated behavior from equivalent implementation algorithms.
