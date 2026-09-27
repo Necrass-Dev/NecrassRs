@@ -3,3 +3,10 @@
 /target
 
 rust-loc-history.zsh
+
+# Documentation build and tooling outputs
+node_modules/
+.pnpm-store/
+/docs/dist/
+/docs/.astro/
+/docs/test-results/
