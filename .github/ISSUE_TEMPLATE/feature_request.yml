@@ -57,7 +57,7 @@ body:
       label: Related design and behavior documents
       description: Link the relevant files and note whether they already define the change.
       placeholder: |
-        - `docs/architecture.md`: defines crate boundaries and code ownership.
+        - `docs/src/content/docs/docs/architecture.md`: defines crate boundaries and code ownership.
         - Related issue: defines the expected consumer behavior.
     validations:
       required: true

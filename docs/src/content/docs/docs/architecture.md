@@ -1,4 +1,6 @@
-# NecrassRs architecture and development plan
+---
+title: "NecrassRs architecture and development plan"
+---
 
 Date: 2026-09-17
 Updated: 2026-09-26
@@ -11,11 +13,11 @@ NecrassRs is a server framework that treats GraphQL SDL as the public API contra
 
 The product has three entry points:
 
-| Entry point | When used | Responsibility |
-| --- | --- | --- |
-| `necrass init` | Project initialization | Create a runnable consumer project from a starter template |
-| `necrassrs-build` | Consumer builds | Validate SDL, generate contracts in `OUT_DIR`, and create/synchronize editable resolver implementations in `src` |
-| `necrassrs` and an HTTP adapter | Server execution | Validate requests, invoke user resolvers, and construct responses |
+| Entry point                     | When used              | Responsibility                                                                                                   |
+| ------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `necrass init`                  | Project initialization | Create a runnable consumer project from a starter template                                                       |
+| `necrassrs-build`               | Consumer builds        | Validate SDL, generate contracts in `OUT_DIR`, and create/synchronize editable resolver implementations in `src` |
+| `necrassrs` and an HTTP adapter | Server execution       | Validate requests, invoke user resolvers, and construct responses                                                |
 
 After initialization, building and running the application does not require an installed CLI. The build script calls a Rust library, not a CLI subprocess. Separate `necrass compile` and watch commands are out of scope.
 
@@ -40,13 +42,13 @@ After initialization, building and running the application does not require an i
 
 At build time, use SDL parsing, schema validation, and the `Schema` model. At runtime, parse and validate request documents against the schema and use `ExecutableDocument`.
 
-| Area | Apollo Compiler contribution | NecrassRs responsibility |
-| --- | --- | --- |
-| SDL | Parsing, semantic validation, type and field lookup | Supported-feature restrictions and Rust generation checks |
-| Code generation and synchronization | Validated schema model | Rust naming and type mapping, traits, wrappers, dispatch, and AST-based reconciliation of editable resolver declarations |
-| Request documents | Parsing, schema-aware document validation, and operation selection | Execution entry points and error-response integration |
-| Input processing | Public variable-value coercion API | Field-argument processing, generated argument conversion, and custom scalar integration when supported |
-| Execution | Validated schema and executable-document models | Field collection, resolver dispatch, Context propagation, result coercion, errors, and null propagation |
+| Area                                | Apollo Compiler contribution                                       | NecrassRs responsibility                                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| SDL                                 | Parsing, semantic validation, type and field lookup                | Supported-feature restrictions and Rust generation checks                                                                |
+| Code generation and synchronization | Validated schema model                                             | Rust naming and type mapping, traits, wrappers, dispatch, and AST-based reconciliation of editable resolver declarations |
+| Request documents                   | Parsing, schema-aware document validation, and operation selection | Execution entry points and error-response integration                                                                    |
+| Input processing                    | Public variable-value coercion API                                 | Field-argument processing, generated argument conversion, and custom scalar integration when supported                   |
+| Execution                           | Validated schema and executable-document models                    | Field collection, resolver dispatch, Context propagation, result coercion, errors, and null propagation                  |
 
 Static request validation does not establish that runtime variable coercion or custom scalar input validation has completed. Reuse `request::coerce_variable_values` for variables. Apollo Compiler 1.32.0's field-argument coercion implementation is crate-private; do not rely on it as a consumer API.
 
@@ -115,14 +117,14 @@ The prototype's Apollo Compiler 1.32.0 execution path exhibited incorrect nullab
 
 A disposable experiment using unmodified Apollo Compiler 1.32.0 executed the greeting example without calling Apollo's executor. It reused document validation, operation selection, public variable coercion, and response error types. The caller parsed the fixed schema once and borrowed it during execution.
 
-| Verified in the experiment | Evidence |
-| --- | --- |
-| Complete execution future is `Send` | Compile-time bound on the future, including a resolver suspension point |
-| Resolver and Context borrowing | Borrowed request-local values survive the await; overlapping requests use distinct Context values |
-| Greeting inputs | Literal and variable strings, a variable default, and named operation selection |
-| Invalid inputs | Missing, null, and incompatible inputs are rejected before resolver invocation; request-error responses omit `data` |
-| Domain error response | Exact message and application code, alias-aware path, source location, and `data: null` for the non-null root field |
-| Execution after a domain error | A later successful request completes |
+| Verified in the experiment          | Evidence                                                                                                            |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Complete execution future is `Send` | Compile-time bound on the future, including a resolver suspension point                                             |
+| Resolver and Context borrowing      | Borrowed request-local values survive the await; overlapping requests use distinct Context values                   |
+| Greeting inputs                     | Literal and variable strings, a variable default, and named operation selection                                     |
+| Invalid inputs                      | Missing, null, and incompatible inputs are rejected before resolver invocation; request-error responses omit `data` |
+| Domain error response               | Exact message and application code, alias-aware path, source location, and `data: null` for the non-null root field |
+| Execution after a domain error      | A later successful request completes                                                                                |
 
 The focused check, formatting, and Clippy passed. The observation suite passed three tests and one compile-fail doctest with an explicitly excluded, unchanged Apollo error-code regression. This is feasibility evidence, not product validation or a passing unfiltered prototype suite.
 
@@ -138,14 +140,14 @@ Request errors omit the `data` entry. Execution results contain `data`, which ma
 
 ## 4. Crates
 
-| Package | Responsibility | Direct consumers |
-| --- | --- | --- |
-| `necrassrs` | Public runtime API and integration of request validation, input processing, resolver execution, and response completion | Applications and HTTP adapters |
-| `necrassrs-build` | Discover and validate SDL, generate contracts and dispatch, synchronize editable resolver implementations through Rust ASTs, and manage Cargo rebuilds and output | Consumer `build.rs` |
-| `necrassrs-axum` | GraphQL HTTP extraction, response conversion, negotiation middleware, and development UI integration | Axum applications |
-| `necrassrs-actix` | Native Actix extraction, response conversion, negotiation, and development UI integration | Actix applications |
-| `necrassrs-http` | Framework-independent response media-type negotiation | Axum and Actix adapters |
-| `necrassrs-cli` | The `necrass` binary and new-project scaffolding | Developers |
+| Package           | Responsibility                                                                                                                                                    | Direct consumers               |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `necrassrs`       | Public runtime API and integration of request validation, input processing, resolver execution, and response completion                                           | Applications and HTTP adapters |
+| `necrassrs-build` | Discover and validate SDL, generate contracts and dispatch, synchronize editable resolver implementations through Rust ASTs, and manage Cargo rebuilds and output | Consumer `build.rs`            |
+| `necrassrs-axum`  | GraphQL HTTP extraction, response conversion, negotiation middleware, and development UI integration                                                              | Axum applications              |
+| `necrassrs-actix` | Native Actix extraction, response conversion, negotiation, and development UI integration                                                                         | Actix applications             |
+| `necrassrs-http`  | Framework-independent response media-type negotiation                                                                                                             | Axum and Actix adapters        |
+| `necrassrs-cli`   | The `necrass` binary and new-project scaffolding                                                                                                                  | Developers                     |
 
 Within `necrassrs-build`, keep contract generation independent of Cargo environment variables and filesystem operations so it can be tested directly. Cargo integration manages inputs, rebuild instructions, disposable output, and reading/writing the designated implementation source. Source synchronization compares Rust ASTs; it does not duplicate Apollo's schema model. The runtime does not depend on the build library.
 
@@ -228,17 +230,17 @@ The diagrams in this document were drafted with Codex to explain the proposed ar
 
 The execution core accepts GraphQL request information and user Context, not an HTTP request object. Exact signatures remain open, but the API must support query, variables, operationName, and Context.
 
-`necrassrs-axum` and `necrassrs-actix` provide extraction and response conversion that users can compose in their handlers. Neither adapter requires a dedicated server runner, authentication middleware, or Context factory callback. Axum uses a route middleware for response negotiation while preserving its existing request/response wrappers; Actix handles negotiation through its native extractor and responder. See [HTTP adapters and response negotiation](http.md) for the implemented status policy, the 200-versus-294 decision, and remaining conformance work.
+`necrassrs-axum` and `necrassrs-actix` provide extraction and response conversion that users can compose in their handlers. Neither adapter requires a dedicated server runner, authentication middleware, or Context factory callback. Axum uses a route middleware for response negotiation while preserving its existing request/response wrappers; Actix handles negotiation through its native extractor and responder. See [HTTP adapters and response negotiation](/docs/http/) for the implemented status policy, the 200-versus-294 decision, and remaining conformance work.
 
-The runtime allows schema introspection by default and offers server-controlled execution options to disable `__schema` and `__type`. Applications may register an optional GraphiQL page with `necrassrs-axum::graphiql_html(endpoint_url)` on a route they own. The page uses the existing GraphQL endpoint and loads version-pinned browser assets from a CDN; see [Introspection and GraphiQL](graphiql.md) for development and production policy.
+The runtime allows schema introspection by default and offers server-controlled execution options to disable `__schema` and `__type`. Applications may register an optional GraphiQL page with `necrassrs-axum::graphiql_html(endpoint_url)` on a route they own. The page uses the existing GraphQL endpoint and loads version-pinned browser assets from a CDN; see [Introspection and GraphiQL](/docs/graphiql/) for development and production policy.
 
-| Application responsibility | NecrassRs responsibility |
-| --- | --- |
-| Routing, middleware, and server lifecycle | GraphQL execution entry point |
-| Authentication and header/State extraction | Passing Context to resolvers |
-| Context type and per-request construction | Keeping request contexts isolated |
-| Database, ORM, and service selection | Connecting SDL contracts to user implementations |
-| Operational configuration and deployment | Documented type, execution, and error contracts |
+| Application responsibility                 | NecrassRs responsibility                         |
+| ------------------------------------------ | ------------------------------------------------ |
+| Routing, middleware, and server lifecycle  | GraphQL execution entry point                    |
+| Authentication and header/State extraction | Passing Context to resolvers                     |
+| Context type and per-request construction  | Keeping request contexts isolated                |
+| Database, ORM, and service selection       | Connecting SDL contracts to user implementations |
+| Operational configuration and deployment   | Documented type, execution, and error contracts  |
 
 Context may contain authenticated identity and shared resources such as database pools, or use the unit type when no data is needed. Applications choose how shared state and request-specific data are combined.
 
@@ -283,25 +285,25 @@ my-api/
     └── resolvers.rs
 ```
 
-| File | Ownership and purpose |
-| --- | --- |
-| `README.md` | Starter setup, build, and sample-query instructions |
-| `schema/**/*.graphql` | User-written public GraphQL contract, discovered recursively |
-| `build.rs` | Build-library invocation and input configuration |
-| `main.rs` | User routing, handlers, and server configuration |
-| `context.rs` | User Context definition |
-| `resolvers.rs` | Build-created resolver structs and explicit methods; SDL owns mapped declarations, users own retained method bodies and unrelated state/helpers |
-| `generated.rs` | Module that includes generated code from `OUT_DIR` |
-| Rust files in `OUT_DIR` | Automatically generated; not edited manually |
+| File                    | Ownership and purpose                                                                                                                           |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `README.md`             | Starter setup, build, and sample-query instructions                                                                                             |
+| `schema/**/*.graphql`   | User-written public GraphQL contract, discovered recursively                                                                                    |
+| `build.rs`              | Build-library invocation and input configuration                                                                                                |
+| `main.rs`               | User routing, handlers, and server configuration                                                                                                |
+| `context.rs`            | User Context definition                                                                                                                         |
+| `resolvers.rs`          | Build-created resolver structs and explicit methods; SDL owns mapped declarations, users own retained method bodies and unrelated state/helpers |
+| `generated.rs`          | Module that includes generated code from `OUT_DIR`                                                                                              |
+| Rust files in `OUT_DIR` | Automatically generated; not edited manually                                                                                                    |
 
 The initializer writes the application dependencies into its new manifest. Before registry publication, its NecrassRs dependencies use the same Git repository so a Git-installed CLI can create a buildable project. Cargo locks those dependencies to a commit when the consumer first builds. Manual integration of an existing project uses the following dependency locations:
 
-| Installation or manifest location | Contents |
-| --- | --- |
-| `cargo install` | `necrassrs-cli`, providing the `necrass` executable |
-| `[dependencies]` | `necrassrs`, `necrassrs-axum`, Axum, the async runtime, and other libraries directly used by the application |
-| `[build-dependencies]` | `necrassrs-build`, called by `build.rs`, plus any build-script diagnostic-rendering dependency used by the chosen template |
-| `[dev-dependencies]` | Test and example dependencies only when needed; not the CLI |
+| Installation or manifest location | Contents                                                                                                                   |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `cargo install`                   | `necrassrs-cli`, providing the `necrass` executable                                                                        |
+| `[dependencies]`                  | `necrassrs`, `necrassrs-axum`, Axum, the async runtime, and other libraries directly used by the application               |
+| `[build-dependencies]`            | `necrassrs-build`, called by `build.rs`, plus any build-script diagnostic-rendering dependency used by the chosen template |
+| `[dev-dependencies]`              | Test and example dependencies only when needed; not the CLI                                                                |
 
 Ordinary consumers should not need a direct Apollo Compiler dependency. Once initialized, the application builds and runs with Cargo without an installed CLI.
 
@@ -326,13 +328,13 @@ For the first query-only consumer, `build("schema")` creates `src/resolvers.rs` 
 
 Use the injective naming rules in section 3.2 to compare the desired SDL-derived declarations with the existing Rust AST:
 
-| SDL change | Required source synchronization |
-| --- | --- |
-| No contract change | Preserve existing implementation content; repeated builds must be idempotent |
-| Add a field | Add its explicit method with an `unimplemented!()` body |
-| Change a retained field's contract | Refresh its Rust declaration and generated Args/type mapping, preserving its method body |
-| Delete a field | Remove its method, including any body previously written for that deleted field |
-| Rename a field | Delete the old method and add a fresh stub under the new mapped name; never migrate the old body |
+| SDL change                         | Required source synchronization                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------ |
+| No contract change                 | Preserve existing implementation content; repeated builds must be idempotent                     |
+| Add a field                        | Add its explicit method with an `unimplemented!()` body                                          |
+| Change a retained field's contract | Refresh its Rust declaration and generated Args/type mapping, preserving its method body         |
+| Delete a field                     | Remove its method, including any body previously written for that deleted field                  |
+| Rename a field                     | Delete the old method and add a fresh stub under the new mapped name; never migrate the old body |
 
 Do not infer renames or use fuzzy matching. Preserve application state and unrelated items outside SDL-owned declarations. Parse and validate inputs before destructive synchronization; invalid SDL or an unreadable/unparseable implementation must fail without replacing existing user code. Symlink destinations must not be followed or overwritten.
 
@@ -367,7 +369,9 @@ necrassrs/
 │   └── integration/
 │       └── Cargo.toml
 ├── docs/
-│   └── architecture.md
+│   ├── package.json
+│   └── src/content/docs/docs/
+│       └── architecture.md
 └── .github/
     └── workflows/
 ```
@@ -376,7 +380,7 @@ Use a virtual workspace at the root. Keep unit tests with their crates and cross
 
 Manage edition, MSRV, license, shared dependency declarations, and lint policy at the workspace root. Select the MSRV alongside dependency requirements. Keep build-tool and CLI dependencies out of the runtime.
 
-Official repository documentation is written in English. Agent workflow and AI-assisted contribution requirements are defined in [AGENTS.md](../AGENTS.md) and [AI_POLICY.md](../AI_POLICY.md).
+Official repository documentation is written in English. Agent workflow and AI-assisted contribution requirements are defined in [AGENTS.md](https://github.com/Necrass-Dev/NecrassRs/blob/main/AGENTS.md) and [AI_POLICY.md](https://github.com/Necrass-Dev/NecrassRs/blob/main/AI_POLICY.md).
 
 ## 9. Dependencies, versions, and releases
 
@@ -393,16 +397,16 @@ Apollo Compiler documents testing on the latest stable Rust. Check the NecrassRs
 
 ## 10. Validation and acceptance criteria
 
-| Area | Main criteria |
-| --- | --- |
-| Schema and generation | Reject invalid SDL, diagnose unsupported features, detect Rust naming collisions |
+| Area                                  | Main criteria                                                                                                                                                                            |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Schema and generation                 | Reject invalid SDL, diagnose unsupported features, detect Rust naming collisions                                                                                                         |
 | Cargo integration and synchronization | Bootstrap from SDL without a supplied resolver implementation; synchronize added/modified/deleted methods; treat renames as delete+add; preserve retained bodies and unrelated user code |
-| Public contracts | Compile consumer implementations, diagnose contract changes, allow request borrowing, ensure the entire execution future is `Send` |
-| Partial implementation | Do not call unselected fields; execute implemented fields; terminate separate dev and release executables on unimplemented calls |
-| GraphQL execution | Preserve input states, variables, defaults, coercion, selection rules, error paths, null propagation, and mutation order |
-| Known regression | Nullable list-item conversion errors stop at the correct nullable boundary |
-| HTTP | Convert requests/responses, limit bodies, isolate Context, distinguish request and execution errors |
-| Initialization and release | Build/run initialized projects, refuse file/symlink overwrites, support packaged dependencies |
+| Public contracts                      | Compile consumer implementations, diagnose contract changes, allow request borrowing, ensure the entire execution future is `Send`                                                       |
+| Partial implementation                | Do not call unselected fields; execute implemented fields; terminate separate dev and release executables on unimplemented calls                                                         |
+| GraphQL execution                     | Preserve input states, variables, defaults, coercion, selection rules, error paths, null propagation, and mutation order                                                                 |
+| Known regression                      | Nullable list-item conversion errors stop at the correct nullable boundary                                                                                                               |
+| HTTP                                  | Convert requests/responses, limit bodies, isolate Context, distinguish request and execution errors                                                                                      |
+| Initialization and release            | Build/run initialized projects, refuse file/symlink overwrites, support packaged dependencies                                                                                            |
 
 Test process termination with separate executable processes, not by catching a panic inside the test runner. When providing GraphiQL, define development introspection settings and UI asset delivery as well.
 
@@ -412,14 +416,14 @@ This table describes target-product validation, not exhaustive GraphQL conforman
 
 The executor direction is recorded in this document; it does not need a separate design-only issue. Register concrete implementation tasks as GitHub sub-issues of #1. The labels below describe proposed tasks, not assigned issue numbers.
 
-| Task | Deliverable and acceptance boundary | Dependencies |
-| --- | --- | --- |
-| Implement the MVP runtime and execution core | `necrassrs` request, resolver, Context, error, and response contracts plus execution over Apollo models. Verify the greeting behavior with a handwritten test adapter, full-future `Send`, request borrowing, invalid inputs, error paths, and specification-based completion regressions. No production greeting-specific dispatch or hardcoded root-null handling. Establish the workspace as needed. | None |
-| Generate resolver contracts and dispatch from SDL | `necrassrs-build` codegen module producing argument structs, resolver contracts, wrappers/dispatch as needed, and embedded SDL. Compile generated code with user implementations; diagnose invalid/unsupported schemas and Rust naming collisions. Verify partial-implementation behavior with the runtime, including subprocess termination checks. | Runtime contracts |
-| Integrate generation with Cargo builds | Build-library entry point, SDL discovery, rebuild tracking, `OUT_DIR` contracts, editable resolver scaffolding and AST synchronization, and runtime schema initialization wiring. Test the complete generate/edit/rebuild flow without supplying initial resolver implementations. | Code generation |
-| Implement the Axum adapter | `necrassrs-axum` extraction and response conversion with documented methods, media types, status codes, and body limits. Verify user-owned handlers and per-request Context construction through HTTP checks. | Runtime request/response API |
-| Deliver the greeting example and integration checks | Real consumer example with hardcoded names, Cargo generation, user resolvers, Axum handler, and runnable instructions. Verify the integrated runtime, build library, and adapter against #1. | Runtime, code generation, Cargo integration, and Axum adapter |
-| Create the CLI project initializer | `necrass init [PATH] [--name NAME]` creates a runnable starter without overwriting existing content. Later resolver synchronization remains in the build library. | Build API and Axum example |
+| Task                                                | Deliverable and acceptance boundary                                                                                                                                                                                                                                                                                                                                                                     | Dependencies                                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Implement the MVP runtime and execution core        | `necrassrs` request, resolver, Context, error, and response contracts plus execution over Apollo models. Verify the greeting behavior with a handwritten test adapter, full-future `Send`, request borrowing, invalid inputs, error paths, and specification-based completion regressions. No production greeting-specific dispatch or hardcoded root-null handling. Establish the workspace as needed. | None                                                          |
+| Generate resolver contracts and dispatch from SDL   | `necrassrs-build` codegen module producing argument structs, resolver contracts, wrappers/dispatch as needed, and embedded SDL. Compile generated code with user implementations; diagnose invalid/unsupported schemas and Rust naming collisions. Verify partial-implementation behavior with the runtime, including subprocess termination checks.                                                    | Runtime contracts                                             |
+| Integrate generation with Cargo builds              | Build-library entry point, SDL discovery, rebuild tracking, `OUT_DIR` contracts, editable resolver scaffolding and AST synchronization, and runtime schema initialization wiring. Test the complete generate/edit/rebuild flow without supplying initial resolver implementations.                                                                                                                      | Code generation                                               |
+| Implement the Axum adapter                          | `necrassrs-axum` extraction and response conversion with documented methods, media types, status codes, and body limits. Verify user-owned handlers and per-request Context construction through HTTP checks.                                                                                                                                                                                           | Runtime request/response API                                  |
+| Deliver the greeting example and integration checks | Real consumer example with hardcoded names, Cargo generation, user resolvers, Axum handler, and runnable instructions. Verify the integrated runtime, build library, and adapter against #1.                                                                                                                                                                                                            | Runtime, code generation, Cargo integration, and Axum adapter |
+| Create the CLI project initializer                  | `necrass init [PATH] [--name NAME]` creates a runnable starter without overwriting existing content. Later resolver synchronization remains in the build library.                                                                                                                                                                                                                                       | Build API and Axum example                                    |
 
 Each task includes its own relevant checks. The example verifies integration rather than postponing component testing, and the CLI uses it as a starter reference. Code generation and Axum work can proceed independently once their runtime contracts are stable. New-project initialization is tracked under #1; existing-project integration, development UI, and release automation remain deferred.
 
@@ -440,7 +444,7 @@ Existing runtime coverage beyond the generated MVP remains in place. Each expans
 2. **Execution details:** Field scheduling, recursive completion representation, and generated-dispatch handoff. Ownership of execution and reuse of Apollo validation are established.
 3. **Source synchronization implementation:** AST editing and diagnostics that realize section 7.3. Explicit stubs, identity-based updates, retained-body preservation, deletion, and rename-as-delete-plus-add are established requirements, not open product decisions.
 4. **Coverage beyond the greeting MVP:** Additional supported types/features, explicit rejection diagnostics, and custom scalar conversion. Do not reopen #1's agreed behavior as an executor-selection task.
-5. **Further HTTP adapters:** Support and shared behavior beyond the current Axum adapter. The current introspection and GraphiQL policy is documented in [Introspection and GraphiQL](graphiql.md).
+5. **Further HTTP adapters:** Support and shared behavior beyond the current Axum adapter. The current introspection and GraphiQL policy is documented in [Introspection and GraphiQL](/docs/graphiql/).
 6. **Release contract:** MSRV, default features, generator/runtime compatibility, and CLI initialization details.
 
 SQL generation, ORM integration, automatic batching, a separate non-`Send` mode, standalone watch, and performance optimization are not prerequisites for this architecture.

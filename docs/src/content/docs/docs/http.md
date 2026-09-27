@@ -1,4 +1,6 @@
-# HTTP adapters and response negotiation
+---
+title: "HTTP adapters and response negotiation"
+---
 
 Applications own routing, middleware, shared state, and per-request Context construction. `necrassrs-axum` and `necrassrs-actix` extract GraphQL requests and convert runtime responses. The execution core does not depend on either framework or on `necrassrs-http`.
 
@@ -28,7 +30,7 @@ Without this middleware, `GraphQLResponse` preserves the existing `application/j
 
 Use `web::Data` for application state and construct Context inside the handler. Configure JSON limits with `web::JsonConfig::limit`. Standard JSON extraction errors are mapped to the status codes below; custom JSON error handlers returning other error types retain their own responses.
 
-The [Actix consumer example](../examples/actix-server/README.md) connects Cargo generation and user resolvers to an application-owned server. CLI framework selection remains follow-up work.
+The [Actix consumer example](https://github.com/Necrass-Dev/NecrassRs/blob/main/examples/actix-server/README.md) connects Cargo generation and user resolvers to an application-owned server. CLI framework selection remains follow-up work.
 
 ## Media types
 
@@ -50,18 +52,18 @@ curl -i http://127.0.0.1:3000/graphql \
 
 ## Status and error contract
 
-| Condition | HTTP status | Response behavior |
-| --- | --- | --- |
-| Successful execution | 200 | GraphQL `data` |
-| Execution errors, including partial data or `data: null` | 200 | GraphQL `data` and `errors` |
-| GraphQL document syntax error | 400 | GraphQL `errors`, no `data` |
-| GraphQL validation, operation selection, or variable coercion failure | 422 | GraphQL `errors`, no `data` |
-| Malformed JSON body | 400 | Framework extraction error |
-| Missing or incorrectly typed request fields | 422 | Framework extraction error |
-| Missing or unsupported request Content-Type | 415 | Framework extraction error |
-| Body exceeds configured JSON limit | 413 | Framework extraction error |
-| No acceptable response media type or invalid Accept | 406 | Empty HTTP error response |
-| Unsupported method on a POST-only resource | 405 | Framework route response, with `Allow: POST` |
+| Condition                                                             | HTTP status | Response behavior                            |
+| --------------------------------------------------------------------- | ----------- | -------------------------------------------- |
+| Successful execution                                                  | 200         | GraphQL `data`                               |
+| Execution errors, including partial data or `data: null`              | 200         | GraphQL `data` and `errors`                  |
+| GraphQL document syntax error                                         | 400         | GraphQL `errors`, no `data`                  |
+| GraphQL validation, operation selection, or variable coercion failure | 422         | GraphQL `errors`, no `data`                  |
+| Malformed JSON body                                                   | 400         | Framework extraction error                   |
+| Missing or incorrectly typed request fields                           | 422         | Framework extraction error                   |
+| Missing or unsupported request Content-Type                           | 415         | Framework extraction error                   |
+| Body exceeds configured JSON limit                                    | 413         | Framework extraction error                   |
+| No acceptable response media type or invalid Accept                   | 406         | Empty HTTP error response                    |
+| Unsupported method on a POST-only resource                            | 405         | Framework route response, with `Allow: POST` |
 
 The runtime distinguishes Apollo AST parsing failures from validation failures without interpreting diagnostic messages. `Response::is_syntax_error()` exposes that distinction to adapters; the classification is not serialized into GraphQL responses. Manually constructed `Response::request_error(s)` values remain general request errors.
 

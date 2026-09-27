@@ -1,4 +1,6 @@
-# Introspection and GraphiQL
+---
+title: "Introspection and GraphiQL"
+---
 
 GraphQL schema introspection is enabled by default in `necrassrs::execute`. It returns metadata from the validated Apollo schema through `__schema` and `__type`, including the supported generated schema's fields, arguments, and type references. `__typename` remains available as part of ordinary GraphQL execution.
 
@@ -41,7 +43,6 @@ The page loads version-pinned GraphiQL, React, and GraphQL modules and the Graph
 
 The axum-server example and projects created by `necrass init` serve GraphiQL on GET `/graphql` by default. The page sends requests to POST `/graphql`. Remove or gate the GET handler before deployment when the UI should be unavailable. This route choice is independent of introspection: the runtime allows introspection by default. An application that wants production introspection disabled must use `execute_with_options` in its GraphQL handler.
 
-
 Actix provides the same built-in page through `necrassrs_actix::graphiql_html`. Register an application-owned UI route separately from its GraphQL endpoint:
 
 ```rust
@@ -54,4 +55,4 @@ let app = App::new()
     .route("/graphiql", web::get().to(|| async { graphiql_html("/api/graphql") }));
 ```
 
-Both helpers use the same pinned browser asset versions and escape the configured endpoint. UI registration does not change the runtime's introspection setting. The [Actix consumer example](../examples/actix-server/README.md) serves the built-in UI on GET `/graphql` by default, with execution on POST `/graphql`. HTTP content negotiation applies to the GraphQL endpoint, not the HTML page; see [HTTP adapters and response negotiation](http.md).
+Both helpers use the same pinned browser asset versions and escape the configured endpoint. UI registration does not change the runtime's introspection setting. The [Actix consumer example](https://github.com/Necrass-Dev/NecrassRs/blob/main/examples/actix-server/README.md) serves the built-in UI on GET `/graphql` by default, with execution on POST `/graphql`. HTTP content negotiation applies to the GraphQL endpoint, not the HTML page; see [HTTP adapters and response negotiation](/docs/http/).

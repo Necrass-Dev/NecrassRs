@@ -1,0 +1,75 @@
+---
+import Workflow from "../components/Workflow";
+import { codeToHtml } from "shiki";
+import logo from "../../../logo/logo.svg";
+import "@fontsource-variable/manrope";
+import "@fontsource/ibm-plex-mono/400.css";
+import "../styles/landing.css";
+import { initialSchema, initialResolver, evolvedSchema, evolvedResolver } from "../data/demo";
+
+const [schemaBefore, schemaAfter, resolverBefore, resolverAfter] = await Promise.all([
+  codeToHtml(initialSchema, { lang: "graphql", theme: "vesper" }),
+  codeToHtml(evolvedSchema, { lang: "graphql", theme: "vesper" }),
+  codeToHtml(initialResolver, { lang: "rust", theme: "vesper" }),
+  codeToHtml(evolvedResolver, { lang: "rust", theme: "vesper" }),
+]);
+const repository = "https://github.com/Necrass-Dev/NecrassRs";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f3ff" />
+    <meta
+      name="description"
+      content="An SDL-first GraphQL server framework for Rust. Define your schema. Build your contracts. Make it yours."
+    />
+    <meta property="og:title" content="NecrassRs — Your schema leads. Rust delivers." />
+    <meta property="og:description" content="An SDL-first GraphQL server framework for Rust." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://necrass.rs/" />
+    <link rel="canonical" href="https://necrass.rs/" />
+    <link rel="icon" type="image/svg+xml" href={logo.src} />
+    <title>NecrassRs — Your schema leads. Rust delivers.</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-label="NecrassRs home">
+        <img src={logo.src} width="32" height="32" alt="" />Necrass<span>Rs</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="/docs/">Documentation <span aria-hidden="true">↗</span></a>
+        <a href={repository}>GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-content">
+          <div class="hero-identity">
+            <img class="hero-logo" src={logo.src} width="132" height="132" alt="NecrassRs logo" />
+            <p class="eyebrow">NecrassRS</p>
+          </div>
+          <h1 id="hero-title">Your schema leads.<br /><span>Rust delivers.</span></h1>
+          <p class="hero-description">Start with the API you mean.<br />Let Rust carry it through.</p>
+          <a class="button" href="/docs/">Meet NecrassRs <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="hero-bottom">
+          <span class="mono">SDL-first. Built for Rust.</span>
+          <a class="scroll-cue" href="#workflow">Scroll to see it happen <span aria-hidden="true">↓</span></a>
+          <span class="mono hero-domain">necrass.rs</span>
+        </div>
+      </section>
+
+      <Workflow client:load {schemaBefore} {schemaAfter} {resolverBefore} {resolverAfter} />
+    </main>
+    <footer class="site-footer">
+      <a class="wordmark" href="/">Necrass<span>Rs</span></a>
+      <p>Your schema leads. Rust delivers.</p>
+      <a href={repository}>Open source on GitHub <span aria-hidden="true">↗</span></a>
+    </footer>
+  </body>
+</html>
