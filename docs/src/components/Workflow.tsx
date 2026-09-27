@@ -1,4 +1,6 @@
-import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createSignal, For, onCleanup, onMount } from "solid-js";
+import { gsap } from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
 
 type Phase = "initial" | "schema" | "synced";
 type Props = {
@@ -11,6 +13,9 @@ type Props = {
 export default function Workflow(props: Props) {
   const [phase, setPhase] = createSignal<Phase>("initial");
   const [enhanced, setEnhanced] = createSignal(false);
+  const [progress, setProgress] = createSignal(0);
+  const [reducedMotion, setReducedMotion] = createSignal(false);
+  let selectPhase: (phase: Phase) => void = () => {};
   let story!: HTMLElement;
   const steps: { phase: Phase; label: string }[] = [
     { phase: "initial", label: "Define" },
@@ -19,35 +24,93 @@ export default function Workflow(props: Props) {
   ];
 
   onMount(() => {
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const pinned = window.matchMedia("(min-width: 901px) and (min-height: 780px)");
-    let frame = 0;
-    const update = () => {
-      const top = story.getBoundingClientRect().top;
-      document.body.dataset.tone = top < window.innerHeight * 0.55 ? "dark" : "light";
-      const progress =
-        pinned.matches && !reduced.matches
-          ? -top / (story.offsetHeight - window.innerHeight)
-          : (window.innerHeight - top) / Math.min(window.innerHeight, story.offsetHeight);
-      setPhase(progress >= 0.68 ? "synced" : progress >= 0.36 ? "schema" : "initial");
-    };
-    const schedule = () => {
-      if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        update();
-      });
-    };
-    setEnhanced(true);
-    update();
-    window.addEventListener("scroll", schedule, { passive: true });
-    window.addEventListener("resize", schedule);
-    reduced.addEventListener("change", schedule);
+    gsap.registerPlugin(ScrollTrigger);
+    const media = gsap.matchMedia();
+    const tone = ScrollTrigger.create({
+      trigger: story,
+      start: "top 55%",
+      onEnter: () => {
+        document.body.dataset.tone = "dark";
+      },
+      onLeaveBack: () => {
+        document.body.dataset.tone = "light";
+      },
+    });
+    media.add(
+      {
+        desktop: "(min-width: 901px)",
+        reduced: "(prefers-reduced-motion: reduce)",
+        motion: "(prefers-reduced-motion: no-preference)",
+      },
+      (context) => {
+        setEnhanced(true);
+        setReducedMotion(Boolean(context.conditions?.reduced));
+        const select = gsap.utils.selector(story);
+        const position = { value: 0 };
+        if (context.conditions?.reduced) {
+          selectPhase = (next) => {
+            setPhase(next);
+            setProgress(next === "initial" ? 0 : next === "schema" ? 0.5 : 1);
+          };
+        } else {
+          gsap.set(select('[data-code$="after"]'), { autoAlpha: 0 });
+          const timeline = gsap.timeline({
+            defaults: { ease: "none" },
+            scrollTrigger: {
+              trigger: story,
+              start: "top top",
+              end: context.conditions?.desktop
+                ? () => `+=${window.innerHeight * 1.6}`
+                : "bottom bottom",
+              pin: Boolean(context.conditions?.desktop),
+              scrub: 0.35,
+              invalidateOnRefresh: true,
+            },
+          });
+          timeline
+            .to(
+              position,
+              {
+                value: 1,
+                duration: 1,
+                onUpdate: () => {
+                  setProgress(position.value);
+                  setPhase(
+                    position.value < 0.36 ? "initial" : position.value < 0.72 ? "schema" : "synced",
+                  );
+                },
+              },
+              0,
+            )
+            .to(select('[data-code="schema-before"]'), { autoAlpha: 0, duration: 0.16 }, 0.28)
+            .to(select('[data-code="schema-after"]'), { autoAlpha: 1, duration: 0.16 }, 0.28)
+            .to(select('[data-code="resolver-before"]'), { autoAlpha: 0, duration: 0.16 }, 0.64)
+            .to(select('[data-code="resolver-after"]'), { autoAlpha: 1, duration: 0.16 }, 0.64);
+          selectPhase = (next) => {
+            const trigger = timeline.scrollTrigger!;
+            const target = next === "initial" ? 0.1 : next === "schema" ? 0.52 : 0.9;
+            window.scrollTo({
+              top: trigger.start + (trigger.end - trigger.start) * target,
+              behavior: "smooth",
+            });
+          };
+        }
+        return () => {
+          setEnhanced(false);
+          setPhase("initial");
+          setProgress(0);
+        };
+      },
+      story,
+    );
+    let active = true;
+    void document.fonts.ready.then(() => {
+      if (active) ScrollTrigger.refresh();
+    });
     onCleanup(() => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("scroll", schedule);
-      window.removeEventListener("resize", schedule);
-      reduced.removeEventListener("change", schedule);
+      active = false;
+      media.revert();
+      tone.kill();
       delete document.body.dataset.tone;
     });
   });
@@ -58,7 +121,7 @@ export default function Workflow(props: Props) {
         story = element;
       }}
       class="story"
-      classList={{ enhanced: enhanced() }}
+      classList={{ enhanced: enhanced(), "reduced-motion": reducedMotion() }}
       id="workflow"
       aria-labelledby="workflow-title"
       data-phase={phase()}
@@ -93,18 +156,24 @@ export default function Workflow(props: Props) {
               <span class="file-language">GraphQL SDL</span>
             </header>
             <div class="code-versions">
-              <Show when={!enhanced() || phase() === "initial"}>
-                <div class="code-version" data-code="schema-before">
-                  <span class="fallback-label">Initial schema</span>
-                  <div innerHTML={props.schemaBefore} />
-                </div>
-              </Show>
-              <Show when={!enhanced() || phase() !== "initial"}>
-                <div class="code-version added-schema" data-code="schema-after">
-                  <span class="fallback-label">Add a field</span>
-                  <div innerHTML={props.schemaAfter} />
-                </div>
-              </Show>
+              <div
+                class="code-version"
+                data-code="schema-before"
+                aria-hidden={enhanced() && phase() !== "initial"}
+                inert={enhanced() && phase() !== "initial"}
+              >
+                <span class="fallback-label">Initial schema</span>
+                <div innerHTML={props.schemaBefore} />
+              </div>
+              <div
+                class="code-version added-schema"
+                data-code="schema-after"
+                aria-hidden={enhanced() && phase() === "initial"}
+                inert={enhanced() && phase() === "initial"}
+              >
+                <span class="fallback-label">Add a field</span>
+                <div innerHTML={props.schemaAfter} />
+              </div>
             </div>
             <div class="schema-note">
               <span class="schema-symbol" aria-hidden="true">
@@ -135,20 +204,26 @@ export default function Workflow(props: Props) {
               <span class="file-language">Rust</span>
             </header>
             <div class="code-versions">
-              <Show when={!enhanced() || phase() !== "synced"}>
-                <div class="code-version" data-code="resolver-before">
-                  <span class="fallback-label">Existing implementation</span>
-                  <div innerHTML={props.resolverBefore} />
-                </div>
-              </Show>
-              <Show when={!enhanced() || phase() === "synced"}>
-                <div class="code-version added-resolver" data-code="resolver-after">
-                  <span class="fallback-label">
-                    After cargo build: a new stub, existing body preserved
-                  </span>
-                  <div innerHTML={props.resolverAfter} />
-                </div>
-              </Show>
+              <div
+                class="code-version"
+                data-code="resolver-before"
+                aria-hidden={enhanced() && phase() === "synced"}
+                inert={enhanced() && phase() === "synced"}
+              >
+                <span class="fallback-label">Existing implementation</span>
+                <div innerHTML={props.resolverBefore} />
+              </div>
+              <div
+                class="code-version added-resolver"
+                data-code="resolver-after"
+                aria-hidden={enhanced() && phase() !== "synced"}
+                inert={enhanced() && phase() !== "synced"}
+              >
+                <span class="fallback-label">
+                  After cargo build: a new stub, existing body preserved
+                </span>
+                <div innerHTML={props.resolverAfter} />
+              </div>
             </div>
             <footer class="editor-footer">
               <span class="status-dot" aria-hidden="true" />
@@ -181,14 +256,24 @@ export default function Workflow(props: Props) {
             {phase() === "synced"
               ? "The new stub is yours to implement. Your hello body stays intact."
               : phase() === "schema"
-                ? "One new field in SDL. Build to update the Rust contract."
-                : "Add a field. Watch Rust follow."}
+                ? "One new field in SDL. Keep scrolling to build."
+                : "Keep scrolling to evolve your schema."}
           </p>
-          <ol class="phase-indicators" aria-label="Schema evolution steps">
+          <ol
+            class="phase-indicators"
+            aria-label="Schema evolution steps"
+            style={{ "--progress": progress() }}
+          >
             <For each={steps}>
               {(step, index) => (
-                <li aria-current={phase() === step.phase ? "step" : undefined}>
-                  0{index() + 1} <span>{step.label}</span>
+                <li>
+                  <button
+                    type="button"
+                    aria-current={phase() === step.phase ? "step" : undefined}
+                    onClick={() => selectPhase(step.phase)}
+                  >
+                    0{index() + 1} <span>{step.label}</span>
+                  </button>
                 </li>
               )}
             </For>

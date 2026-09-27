@@ -64,88 +64,177 @@ try {
   await page.waitForSelector(".story.enhanced");
   await page.evaluate(() => document.fonts.ready);
   assert.match(await page.locator("h1").innerText(), /Your schema leads\.\s*Rust delivers\./);
+  await page.keyboard.press("Tab");
+  assert.equal(await page.locator(":focus").innerText(), "Skip to content");
   assert.equal(await page.locator(".closing").count(), 0);
-  assert.equal(await page.locator(".phase-indicators button").count(), 0);
+  assert.equal(await page.locator(".phase-indicators button").count(), 3);
   await page.screenshot({ path: "test-results/hero.png" });
-  const scrollToProgress = async (progress, phase) => {
-    await page
-      .locator(".story")
-      .evaluate(
-        (element, p) =>
-          window.scrollTo(
-            0,
-            window.scrollY +
-              element.getBoundingClientRect().top +
-              p * (element.offsetHeight - window.innerHeight),
-          ),
-        progress,
-      );
+  const expectPhase = async (phase) => {
     await page.waitForFunction(
-      (expected) =>
-        document.querySelector(".story").dataset.phase === expected &&
-        document.body.dataset.tone === "dark",
+      (expected) => document.querySelector(".story").dataset.phase === expected,
       phase,
     );
   };
-  await scrollToProgress(0.1, "initial");
-  assert.equal(await page.locator("body").getAttribute("data-tone"), "dark");
+  const scrollTimeline = async (progress) => {
+    await page.locator(".pin-spacer").evaluate((spacer, value) => {
+      const story = spacer.querySelector(".story");
+      const start = scrollY + spacer.getBoundingClientRect().top;
+      scrollTo(0, start + value * (spacer.offsetHeight - story.offsetHeight));
+    }, progress);
+  };
+  const expectOpacity = async (code, opacity) => {
+    await page.waitForFunction(
+      ([name, expected]) =>
+        Math.abs(
+          Number(getComputedStyle(document.querySelector(`[data-code="${name}"]`)).opacity) -
+            expected,
+        ) < 0.04,
+      [code, opacity],
+    );
+  };
+  await page.waitForSelector(".pin-spacer");
+  await page
+    .locator(".pin-spacer")
+    .evaluate((element) => scrollTo(0, scrollY + element.getBoundingClientRect().top - 200));
+  await expectPhase("initial");
+  await expectOpacity("schema-after", 0);
+  await scrollTimeline(0.1);
+  await expectPhase("initial");
+  await page.waitForFunction(() => document.body.dataset.tone === "dark");
   await page.screenshot({ path: "test-results/schema.png" });
-  assert.match(await page.locator('[aria-current="step"]').innerText(), /Define/);
-  await scrollToProgress(0.45, "schema");
+  const pinnedTop = await page
+    .locator(".story")
+    .evaluate((element) => element.getBoundingClientRect().top);
+  const oldScroll = await page.evaluate(() => scrollY);
+  await page.mouse.move(720, 500);
+  await page.mouse.wheel(0, 80);
+  await page.waitForFunction((y) => scrollY > y, oldScroll);
+  assert(
+    Math.abs(
+      (await page.locator(".story").evaluate((element) => element.getBoundingClientRect().top)) -
+        pinnedTop,
+    ) < 2,
+    "Native scrolling must keep the scene pinned.",
+  );
+  // A halfway fade demonstrates continuous scrubbing instead of discrete DOM swaps.
+  await scrollTimeline(0.36);
+  await expectOpacity("schema-after", 0.5);
+  await page.screenshot({ path: "test-results/transition.png" });
+  await scrollTimeline(0.52);
+  await expectPhase("schema");
+  await expectOpacity("schema-after", 1);
   assert.match(await page.locator('[aria-current="step"]').innerText(), /Evolve/);
   assert.match(await page.locator('[data-code="schema-after"]').innerText(), /version: String!/);
-  assert.equal(
-    await page.locator('[data-code="resolver-after"]').count(),
-    0,
-    "Resolver changes only after the build step.",
-  );
-  await scrollToProgress(0.8, "synced");
+  await expectOpacity("resolver-after", 0);
+  await scrollTimeline(0.9);
+  await expectPhase("synced");
+  await expectOpacity("resolver-after", 1);
   assert.match(await page.locator('[aria-current="step"]').innerText(), /Build/);
-  await page.evaluate(() =>
-    Promise.all(document.getAnimations().map((animation) => animation.finished)),
-  );
   const resolver = await page.locator('[data-code="resolver-after"]').innerText();
   assert.match(resolver, /async fn version/);
   assert.match(resolver, /unimplemented!\(\)/);
   assert.match(resolver, /Ok\(format!\("Hello, \{\}", args.name\)\)/);
+  assert(
+    Math.abs(
+      (await page.locator(".story").evaluate((element) => element.getBoundingClientRect().top)) -
+        pinnedTop,
+    ) < 2,
+  );
   await page.screenshot({ path: "test-results/evolved.png" });
-  await scrollToProgress(0.1, "initial");
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.getByRole("button", { name: "02 Evolve" }).click();
+  await expectPhase("schema");
+  await expectOpacity("resolver-after", 0);
+  await page.getByRole("button", { name: "01 Define" }).click();
+  await expectPhase("initial");
+  await expectOpacity("schema-after", 0);
+  await page.getByRole("button", { name: "03 Build" }).click();
+  await expectPhase("synced");
+  await expectOpacity("resolver-after", 1);
+  await scrollTimeline(0.52);
+  await expectPhase("schema");
+  await expectOpacity("resolver-after", 0);
+  await scrollTimeline(0.1);
+  await expectPhase("initial");
+  await expectOpacity("schema-after", 0);
+  await page.evaluate(() => scrollTo(0, 0));
   await page.waitForFunction(() => document.body.dataset.tone === "light");
-  await page.keyboard.press("Tab");
-  assert.equal(await page.locator(":focus").innerText(), "Skip to content");
 
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await scrollToProgress(0.8, "synced");
-  assert.match(await page.locator('[aria-current="step"]').innerText(), /Build/);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(origin);
+  await page.waitForSelector(".pin-spacer");
+  await page
+    .locator(".pin-spacer")
+    .evaluate((element) => scrollTo(0, scrollY + element.getBoundingClientRect().top - 80));
+  await delay(500);
+  assert.equal(
+    await page.locator(".story").getAttribute("data-phase"),
+    "initial",
+    "Short desktop screens must wait until the scene fully enters.",
+  );
+  assert.equal(
+    await page
+      .locator('[data-code="schema-after"]')
+      .evaluate((element) => Number(getComputedStyle(element).opacity)),
+    0,
+  );
+  await scrollTimeline(0.9);
+  await expectPhase("synced");
   assert(
     await page.locator(".story-stage").evaluate((element) => element.offsetHeight <= innerHeight),
-    "Pinned scene must fit a laptop viewport.",
+    "The pinned scene must fit a laptop viewport.",
   );
+  assert.equal(await page.locator(".pin-spacer").count(), 1);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(origin);
   await page.waitForSelector(".story.enhanced");
+  assert.equal(await page.locator(".pin-spacer").count(), 0);
   assert(
     await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
     "Mobile page must not overflow horizontally.",
   );
   await page.screenshot({ path: "test-results/mobile-hero.png" });
-  await page.locator(".story").evaluate((element) => element.scrollIntoView());
-  await page.waitForFunction(() => document.querySelector(".story").dataset.phase === "synced");
-  assert.match(await page.locator('[data-code="resolver-after"]').innerText(), /async fn version/);
+  await page
+    .locator(".story")
+    .evaluate((element) => scrollTo(0, scrollY + element.getBoundingClientRect().top - 80));
+  await delay(500);
+  assert.equal(
+    await page.locator(".story").getAttribute("data-phase"),
+    "initial",
+    "Mobile screens must wait until the scene fully enters.",
+  );
+  assert.equal(
+    await page
+      .locator('[data-code="schema-after"]')
+      .evaluate((element) => Number(getComputedStyle(element).opacity)),
+    0,
+  );
+  await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
+  await expectPhase("synced");
+  await expectOpacity("resolver-after", 1);
   await page.screenshot({ path: "test-results/mobile-evolved.png", fullPage: true });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(origin);
-  await page.waitForSelector(".story.enhanced");
-  assert.equal(
-    await page.locator(".story-stage").evaluate((element) => getComputedStyle(element).position),
-    "static",
+  await page.waitForFunction(
+    () =>
+      document.querySelector("astro-island") &&
+      !document.querySelector("astro-island").hasAttribute("ssr"),
   );
-  await page.locator(".story").evaluate((element) => element.scrollIntoView());
-  await page.waitForFunction(() => document.querySelector(".story").dataset.phase === "synced");
-  assert.equal(await page.locator(".story").getAttribute("data-phase"), "synced");
+  assert.equal(await page.locator(".pin-spacer").count(), 0);
+  assert.equal(await page.locator(".code-version:visible").count(), 2);
+  await page.getByRole("button", { name: "03 Build" }).click();
+  await expectPhase("synced");
+  assert.equal(await page.locator('[data-code="resolver-after"]').isVisible(), true);
+  await page.getByRole("button", { name: "01 Define" }).click();
+  await expectPhase("initial");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.waitForSelector(".pin-spacer");
+  assert.equal(
+    await page.locator(".pin-spacer").count(),
+    1,
+    "Changing motion preferences should rebuild one timeline.",
+  );
 
   await page.goto(`${origin}/docs/`);
   assert.equal(await page.locator("h1").innerText(), "Introduction");
