@@ -974,6 +974,41 @@ mod test {
     }
 
     #[test]
+    fn generated_dispatch_converts_non_null_leaf_arguments() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            ("", "Int!", &["as_i64", "i32"]),
+            ("", "Float!", &["as_f64"]),
+            ("", "String!", &["as_str"]),
+            ("", "Boolean!", &["as_bool"]),
+            ("", "ID!", &["necrassrs :: Id", "as_i64"]),
+            (
+                "enum Status { OPEN CLOSED }",
+                "Status!",
+                &["r#OPEN", "r#CLOSED"],
+            ),
+        ];
+
+        for (definition, argument_type, expected) in cases {
+            let schema = Schema::parse_and_validate(
+                format!("{definition}\ntype Query {{ inspect(value: {argument_type}): String! }}"),
+                "schema.graphql",
+            )
+            .unwrap_or_else(|error| panic!("{argument_type}: {error}"));
+            let generated = super::generate_dispatch(&schema)
+                .unwrap_or_else(|error| panic!("{argument_type}: {error}"))
+                .to_token_stream()
+                .to_string();
+
+            for token in *expected {
+                assert!(
+                    generated.contains(token),
+                    "{argument_type}: missing `{token}` in {generated}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn generated_paths_preserve_case_boundaries_and_escape_rust_names() {
         let schema = Schema::parse_and_validate(
             r#"
