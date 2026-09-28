@@ -323,6 +323,7 @@ impl std::error::Error for CodegenError {}
 mod test {
     use apollo_compiler::Schema;
     use miette::Diagnostic;
+    use quote::{ToTokens, quote};
 
     #[test]
     fn codegen_error_preserves_argument_type_source_and_span() {
@@ -715,6 +716,116 @@ mod test {
             );
         }
         fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn resolver_return_types_follow_graphql_wrappers() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                enum Status { OPEN CLOSED }
+                type Query {
+                    intResult: Int!
+                    floatResult: Float!
+                    stringResult: String!
+                    booleanResult: Boolean!
+                    idResult: ID!
+                    statusResult: Status!
+                    nullableStatusResult: Status
+                    nullableListResult: [Int]
+                    requiredListResult: [Int]!
+                    nullableNonNullItemsResult: [Int!]
+                    requiredNonNullItemsResult: [Int!]!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let query = schema.get_object("Query").unwrap();
+        let cases = [
+            ("intResult", quote! { i32 }),
+            ("floatResult", quote! { f64 }),
+            ("stringResult", quote! { ::std::string::String }),
+            ("booleanResult", quote! { bool }),
+            ("idResult", quote! { ::necrassrs::Id }),
+            ("statusResult", quote! { super::types::Status }),
+            (
+                "nullableStatusResult",
+                quote! { ::core::option::Option<super::types::Status> },
+            ),
+            (
+                "nullableListResult",
+                quote! { ::core::option::Option<::std::vec::Vec<::core::option::Option<i32>>> },
+            ),
+            (
+                "requiredListResult",
+                quote! { ::std::vec::Vec<::core::option::Option<i32>> },
+            ),
+            (
+                "nullableNonNullItemsResult",
+                quote! { ::core::option::Option<::std::vec::Vec<i32>> },
+            ),
+            (
+                "requiredNonNullItemsResult",
+                quote! { ::std::vec::Vec<i32> },
+            ),
+        ];
+
+        for (field_name, expected) in cases {
+            let field = &query.fields[field_name];
+            let actual =
+                super::resolver_return_type(&schema, query.name.as_str(), field_name, &field.ty)
+                    .unwrap_or_else(|error| panic!("{field_name}: {error}"));
+            assert_eq!(actual.to_string(), expected.to_string(), "{field_name}");
+        }
+    }
+
+    #[test]
+    fn generated_types_include_enum_input_and_argument_contracts() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                enum Status { OPEN CLOSED }
+                input Filter {
+                    required: Boolean!
+                    optionalId: ID
+                    statuses: [Status]
+                }
+                type Query {
+                    inspect(
+                        status: Status!
+                        optionalString: String
+                        nullableList: [Int]
+                        requiredList: [Int]!
+                        filter: Filter
+                    ): String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate_types(&schema)
+            .expect("supported input contracts must be generated")
+            .to_token_stream()
+            .to_string();
+
+        for expected in [
+            "pub enum r#Status",
+            "r#OPEN",
+            "r#CLOSED",
+            "pub struct r#Filter",
+            "pub r#required : bool",
+            "pub r#optionalId : :: necrassrs :: GraphQLInput < :: necrassrs :: Id >",
+            "pub r#statuses : :: necrassrs :: GraphQLInput",
+            "pub r#status : super :: super :: Status",
+            "pub r#optionalString : :: necrassrs :: GraphQLInput",
+            "pub r#nullableList : :: necrassrs :: GraphQLInput",
+            "pub r#requiredList : :: std :: vec :: Vec",
+            "pub r#filter : :: necrassrs :: GraphQLInput < super :: super :: Filter >",
+        ] {
+            assert!(
+                generated.contains(expected),
+                "missing `{expected}` in {generated}"
+            );
+        }
     }
 
     #[test]

@@ -158,3 +158,30 @@ impl From<request::RequestError> for Response {
 mod request;
 
 pub use request::Request;
+
+#[cfg(test)]
+mod input_type_tests {
+    use super::{GraphQLInput, Id};
+
+    #[test]
+    fn graphql_input_distinguishes_undefined_null_and_value() {
+        assert!(matches!(
+            GraphQLInput::<i32>::Undefined,
+            GraphQLInput::Undefined
+        ));
+        assert!(matches!(GraphQLInput::<i32>::Null, GraphQLInput::Null));
+
+        let input = GraphQLInput::Value(String::from("Sheri"));
+        let GraphQLInput::Value(value) = input else {
+            panic!("value input must preserve its payload");
+        };
+        assert_eq!(value, "Sheri");
+    }
+
+    #[test]
+    fn id_preserves_supplied_string_contents() {
+        let id = Id::from(String::from("001"));
+
+        assert_eq!(id.as_str(), "001");
+    }
+}
