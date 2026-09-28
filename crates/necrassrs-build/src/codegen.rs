@@ -251,17 +251,33 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
     for (field_name, field) in &query.fields {
         let field_name = field_name.as_str();
         let method_name = format_ident!("r#{}", rust_name(field_name));
-        let arguments = field.arguments.iter().map(|argument| {
-            let name = argument.name.as_str();
-            let member = format_ident!("r#{}", rust_name(name));
-            let message = format!("Expected a String argument at {type_name}.{field_name}({name})");
-            quote! {
-                #member: _arguments.get(#name)
-                    .and_then(::necrassrs::JsonValue::as_str)
-                    .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
-                    .to_owned(),
-            }
-        });
+        let arguments = field
+            .arguments
+            .iter()
+            .map(|argument| {
+                let name = argument.name.as_str();
+                let member = format_ident!("r#{}", rust_name(name));
+                let coordinate = format!("{type_name}.{field_name}({name})");
+                let value = argument_value(
+                    schema,
+                    argument.ty.as_ref(),
+                    name,
+                    &coordinate,
+                    &quote! { super::types },
+                )
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        format!("Unsupported argument type at {coordinate}: {}", argument.ty),
+                        schema,
+                        argument.ty.location(),
+                    )
+                })?;
+
+                Ok(quote! {
+                    #member: #value,
+                })
+            })
+            .collect::<Result<Vec<_>, CodegenError>>()?;
         branches.push(quote! {
             (#type_name, #field_name) => {
                 let args = super::types::#object_name::#method_name::Args {
@@ -433,6 +449,92 @@ fn input_list_item_type(
                 ::core::option::Option<::std::vec::Vec<#item>>
             })
         }
+    }
+}
+
+fn argument_value(
+    schema: &Schema,
+    ty: &Type,
+    name: &str,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(type_name) => match type_name.as_str() {
+            "Int" => {
+                let message = format!("Expected an Int argument at {coordinate}");
+                Some(quote! {
+                    _arguments.get(#name)
+                        .and_then(::necrassrs::JsonValue::as_i64)
+                        .and_then(|value| {
+                            <i32 as ::core::convert::TryFrom<i64>>::try_from(value).ok()
+                        })
+                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                })
+            }
+            "Float" => {
+                let message = format!("Expected a Float argument at {coordinate}");
+                Some(quote! {
+                    _arguments.get(#name)
+                        .and_then(::necrassrs::JsonValue::as_f64)
+                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                })
+            }
+            "String" => {
+                let message = format!("Expected a String argument at {coordinate}");
+                Some(quote! {
+                    _arguments.get(#name)
+                        .and_then(::necrassrs::JsonValue::as_str)
+                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                        .to_owned()
+                })
+            }
+            "Boolean" => {
+                let message = format!("Expected a Boolean argument at {coordinate}");
+                Some(quote! {
+                    _arguments.get(#name)
+                        .and_then(::necrassrs::JsonValue::as_bool)
+                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                })
+            }
+            "ID" => {
+                let message = format!("Expected an ID argument at {coordinate}");
+                Some(quote! {
+                    _arguments.get(#name)
+                        .and_then(|value| {
+                            value.as_str().map(::std::borrow::ToOwned::to_owned).or_else(|| {
+                                value.as_i64().map(|value| value.to_string())
+                            })
+                        })
+                        .map(::necrassrs::Id::from)
+                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                })
+            }
+            _ => {
+                let ExtendedType::Enum(enum_type) = schema.types.get(type_name)? else {
+                    return None;
+                };
+                let enum_name = format_ident!("r#{}", rust_name(type_name.as_str()));
+                let (values, variants): (Vec<_>, Vec<_>) = enum_type
+                    .values
+                    .keys()
+                    .map(|value| {
+                        (
+                            value.as_str(),
+                            format_ident!("r#{}", rust_name(value.as_str())),
+                        )
+                    })
+                    .unzip();
+                let message = format!("Expected a {type_name} argument at {coordinate}");
+                Some(quote! {
+                    match _arguments.get(#name).and_then(::necrassrs::JsonValue::as_str) {
+                        #(Some(#values) => #types_path::#enum_name::#variants,)*
+                        _ => return Err(::necrassrs::ResolverError::new(#message)),
+                    }
+                })
+            }
+        },
+        _ => None,
     }
 }
 

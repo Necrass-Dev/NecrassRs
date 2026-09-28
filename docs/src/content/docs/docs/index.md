@@ -9,8 +9,8 @@ declarations. You implement the resolver bodies.
 
 :::caution[Under active development]
 The generated API currently supports query fields with `String!` results and
-either no arguments or `String!` arguments. Design documents describe broader
-targets; they are not claims of completed support.
+either no arguments or non-null built-in scalar and enum arguments. Design
+documents describe broader targets; they are not claims of completed support.
 :::
 
 ## Start with a working server

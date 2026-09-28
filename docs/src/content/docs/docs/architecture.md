@@ -78,7 +78,7 @@ The injective mapping is also the identity rule for source synchronization. Comp
 
 Resolver traits live in `generated::resolvers`. Append the fixed suffix `Resolver` to the mapped object name without changing case: `User`, `user`, and `UserResolver` become `UserResolver`, `userResolver`, and `UserResolverResolver`. Allow `non_camel_case_types` and `non_snake_case` on these generated traits. Each trait has a generic Context parameter, and each field produces a method using the same identifier mapping.
 
-Methods borrow `self` and Context for the call lifetime, take the field's generated `Args` by value, and return `impl Future<Output = Result<T, necrassrs::ResolverError>> + Send` with that lifetime. Fields without arguments use an empty `Args` struct. Default methods return a future that calls `unimplemented!()` when polled, allowing partial trait implementations to compile. Generated contract types cover built-in scalars, enums, ordinary input objects, lists, and nullable wrappers. Custom scalars and composite output types produce generation errors. End-to-end dispatcher conversion remains limited to `String!` arguments and results.
+Methods borrow `self` and Context for the call lifetime, take the field's generated `Args` by value, and return `impl Future<Output = Result<T, necrassrs::ResolverError>> + Send` with that lifetime. Fields without arguments use an empty `Args` struct. Default methods return a future that calls `unimplemented!()` when polled, allowing partial trait implementations to compile. Generated contract types cover built-in scalars, enums, ordinary input objects, lists, and nullable wrappers. Custom scalars and composite output types produce generation errors. Query dispatch converts non-null built-in scalar and enum arguments; result dispatch remains limited to `String!`.
 
 Trait defaults are a low-level fallback, not the user-facing scaffolding workflow. The build integration must also create the concrete resolver struct and an explicit editable async method for every supported SDL field. Users replace the `unimplemented!()` body in that implementation; they do not have to copy trait signatures or write an empty trait implementation first. The generated implementation must satisfy the existing borrowing, Context, and `Send` contracts.
 
@@ -90,13 +90,13 @@ Use the GraphQL September 2025 specification as the reference for supported beha
 
 #### MVP type support and current implementation
 
-Keep the generated API's type scope limited to `String!` arguments and results until issue #1 is complete. Establish expansion principles now; implement additional type support in follow-up issues rather than expanding the greeting MVP.
+The greeting MVP established `String!` arguments and results. Expand that scope only when generation, conversion, dispatch, and runtime behavior are covered together.
 
 Apollo schema validation establishes GraphQL validity, not NecrassRs code generation or execution support. Treat a type as supported through the generated API only when Rust generation, input conversion, dispatch, and runtime result completion work together and are tested.
 
 Current implementation status:
 
-- The generator produces argument structs and resolver methods for `String!`, including empty argument structs and default methods for partial implementations. Consumer compilation checks cover naming, borrowed Context values, and `Send` resolver futures.
+- The generator produces contracts for built-in scalars, enums, ordinary input objects, lists, and nullable wrappers. Query dispatch converts non-null built-in scalar and enum arguments. Consumer compilation checks cover naming, borrowed Context values, and `Send` resolver futures.
 - The runtime completes String results, including nullable and list combinations, but does not generally complete other scalar, enum, or object results. Its broader input processing and Apollo validation do not establish complete type support.
 - Generated query dispatch executes through the runtime with borrowed Context and a `Send` execution future. Executable consumer checks cover the greeting, custom root/field names, argument conversion failures, domain-error preservation, and successful execution without selecting an unimplemented field.
 - The generator exposes `generated::SDL` as a public string constant using Apollo's schema serialization. Executable consumer checks reconstruct the runtime schema from it, including definitions and extensions from multiple sources.
@@ -338,7 +338,7 @@ Use the injective naming rules in section 3.2 to compare the desired SDL-derived
 
 Do not infer renames or use fuzzy matching. Preserve application state and unrelated items outside SDL-owned declarations. Parse and validate inputs before destructive synchronization; invalid SDL or an unreadable/unparseable implementation must fail without replacing existing user code. Symlink destinations must not be followed or overwritten.
 
-Retained business logic is not automatically rewritten to accommodate incompatible contract changes. It may require user edits when rustc reports use of removed arguments or an incompatible result. In the current `String!`-only scope, retained fields keep the same return contract and Args path: argument changes update the generated Args definition in `OUT_DIR`, while the existing method declaration, including equivalent type spellings and comments, is preserved. Broader result-type and nullability synchronization must be implemented and checked as those types become supported.
+Retained business logic is not automatically rewritten to accommodate incompatible contract changes. It may require user edits when rustc reports use of removed arguments or an incompatible result. Retained fields currently keep the same return contract and Args path: argument changes update the generated Args definition in `OUT_DIR`, while the existing method declaration, including equivalent type spellings and comments, is preserved. Broader result-type and nullability synchronization must be implemented and checked as those types become supported.
 
 This is an explicit source-writing responsibility of the build library. The earlier policy forbidding all build-time edits under `src` is superseded for the designated resolver implementation file only. Other application files remain user-owned. Synchronization parses the existing Rust source and edits only affected declaration ranges; it does not reprint the whole AST. Retained bodies, parameter names, the existing impl's Context type, and unrelated source are preserved. New methods use the existing impl's Context type. General comments outside a deleted method's AST span are retained because their ownership is ambiguous.
 
