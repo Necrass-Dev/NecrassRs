@@ -159,6 +159,33 @@ mod request;
 
 pub use request::Request;
 
+pub enum GraphQLInput<T> {
+    Undefined,
+    Null,
+    Value(T),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Id(String);
+
+impl Id {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Id {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for Id {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
 #[cfg(test)]
 mod input_type_tests {
     use super::{GraphQLInput, Id};
