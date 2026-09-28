@@ -1111,6 +1111,74 @@ mod test {
     }
 
     #[test]
+    fn generated_dispatch_preserves_nullable_argument_presence() {
+        let schema = Schema::parse_and_validate(
+            "type Query { inspect(value: Int): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate_dispatch(&schema)
+            .expect("nullable arguments must be supported")
+            .to_token_stream()
+            .to_string();
+
+        for expected in [
+            "GraphQLInput :: Undefined",
+            "GraphQLInput :: Null",
+            "GraphQLInput :: Value",
+            "as_i64",
+        ] {
+            assert!(
+                generated.contains(expected),
+                "missing `{expected}` in {generated}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_dispatch_converts_list_container_and_item_nullability() {
+        let cases = [
+            ("[Int]", true, true, "as_i64", 1),
+            ("[Int]!", false, true, "as_i64", 1),
+            ("[Int!]", true, false, "as_i64", 1),
+            ("[Int!]!", false, false, "as_i64", 1),
+            ("[[Boolean!]!]!", false, false, "as_bool", 2),
+        ];
+
+        for (argument_type, nullable_container, nullable_item, leaf, list_depth) in cases {
+            let schema = Schema::parse_and_validate(
+                format!("type Query {{ inspect(value: {argument_type}): String! }}"),
+                "schema.graphql",
+            )
+            .unwrap_or_else(|error| panic!("{argument_type}: {error}"));
+            let generated = super::generate_dispatch(&schema)
+                .unwrap_or_else(|error| panic!("{argument_type}: {error}"))
+                .to_token_stream()
+                .to_string();
+
+            assert!(
+                generated.matches("as_array").count() >= list_depth,
+                "{argument_type}: missing recursive list conversion in {generated}"
+            );
+            assert!(
+                generated.contains(leaf),
+                "{argument_type}: missing `{leaf}` in {generated}"
+            );
+            assert_eq!(
+                generated.contains("GraphQLInput :: Undefined"),
+                nullable_container,
+                "{argument_type}: incorrect container presence conversion in {generated}"
+            );
+            if nullable_item {
+                assert!(
+                    generated.contains("Some") && generated.contains("None"),
+                    "{argument_type}: nullable items must produce Option values in {generated}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn generated_paths_preserve_case_boundaries_and_escape_rust_names() {
         let schema = Schema::parse_and_validate(
             r#"
