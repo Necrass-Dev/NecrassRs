@@ -135,7 +135,7 @@ fn generated_consumer_builds_and_rebuilds_without_the_cli() {
 
     fs::write(
         project.join("schema/schema.graphql"),
-        "type Query { hello(name: Int!): String! }",
+        "scalar Timestamp\ntype Query { hello(name: Timestamp!): String! }",
     )
     .unwrap();
     script.push('\n');
@@ -144,7 +144,7 @@ fn generated_consumer_builds_and_rebuilds_without_the_cli() {
     assert!(!invalid.status.success());
     let stderr = String::from_utf8_lossy(&invalid.stderr);
     assert!(stderr.contains("schema/schema.graphql"), "{stderr}");
-    assert!(stderr.contains("Int!"), "{stderr}");
+    assert!(stderr.contains("Timestamp!"), "{stderr}");
     assert!(
         !stderr.contains("\u{1b}["),
         "diagnostics must remain readable without color"

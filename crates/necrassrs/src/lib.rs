@@ -159,16 +159,22 @@ mod request;
 
 pub use request::Request;
 
+/// The presence state of a nullable GraphQL argument or input object field.
 pub enum GraphQLInput<T> {
+    /// The value was omitted.
     Undefined,
+    /// The value was explicitly provided as `null`.
     Null,
+    /// A non-null value was provided.
     Value(T),
 }
 
+/// A GraphQL ID that preserves its supplied string representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Id(String);
 
 impl Id {
+    /// Returns the ID as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }

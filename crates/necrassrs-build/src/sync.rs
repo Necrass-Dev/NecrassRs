@@ -217,8 +217,8 @@ fn update_existing(
                 "Expected a typed Args parameter",
             ));
         }
-        // In the String!-only contract, retained fields keep the same return type
-        // and Args path. Argument changes update Args in OUT_DIR, not this signature.
+        // Retained fields keep their existing return type and Args path. Argument
+        // changes update Args in OUT_DIR, not this signature.
         // Preserve user spelling, aliases, and comments instead of normalizing them.
     }
 
@@ -445,7 +445,9 @@ mod tests {
     #[test]
     fn rejects_unsupported_return_type_before_creating_source() {
         let file = ResolverFile::new();
-        let error = file.synchronize("type Query { count: Int! }").unwrap_err();
+        let error = file
+            .synchronize("scalar Timestamp\ntype Query { count: Timestamp! }")
+            .unwrap_err();
         assert!(matches!(error, BuildError::Codegen(_)));
         assert!(!file.path.exists());
     }

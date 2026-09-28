@@ -4,8 +4,13 @@
 //! synchronization. This module only generates disposable contract source.
 
 use apollo_compiler::{
-    Schema, ast::Type, parser::SourceSpan, schema::ExtendedType, validation::Valid,
+    Schema,
+    ast::{NamedType, Type},
+    parser::SourceSpan,
+    schema::ExtendedType,
+    validation::Valid,
 };
+use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 /// Returns Rust source containing embedded SDL, argument types, resolver traits,
@@ -18,8 +23,10 @@ use quote::{format_ident, quote};
 ///
 /// # Errors
 ///
-/// Returns [`CodegenError`] for unsupported argument/result types or mutation
-/// and subscription roots. Currently, argument and result types must be `String!`.
+/// Returns [`CodegenError`] for unsupported types or mutation and subscription
+/// roots. Generated contracts support built-in scalars, enums, ordinary input
+/// objects, lists, and nullable wrappers. Custom scalars and composite output
+/// types are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
@@ -47,10 +54,60 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
 }
 
 fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
+    let mut named_types = Vec::new();
     let mut object_modules = Vec::new();
 
     for (type_name, definition) in &schema.types {
         if type_name.as_str().starts_with("__") {
+            continue;
+        }
+
+        if let ExtendedType::Enum(enum_type) = definition {
+            let name = format_ident!("r#{}", rust_name(type_name.as_str()));
+            let variants = enum_type
+                .values
+                .keys()
+                .map(|value| format_ident!("r#{}", rust_name(value.as_str())));
+
+            named_types.push(quote! {
+                pub enum #name {
+                    #(#variants,)*
+                }
+            });
+            continue;
+        }
+
+        if let ExtendedType::InputObject(input_object) = definition {
+            let name = format_ident!("r#{}", rust_name(type_name.as_str()));
+
+            let (field_names, field_types) = input_object
+                .fields
+                .iter()
+                .map(|(field_name, field)| {
+                    let field_type = input_type(schema, field.ty.as_ref(), &quote! { self })
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                format!(
+                                    "Unsupported input type at {type_name}.{field_name}: {}",
+                                    field.ty,
+                                ),
+                                schema,
+                                field.ty.location(),
+                            )
+                        })?;
+
+                    Ok((
+                        format_ident!("r#{}", rust_name(field_name.as_str())),
+                        field_type,
+                    ))
+                })
+                .collect::<Result<(Vec<_>, Vec<_>), CodegenError>>()?;
+
+            named_types.push(quote! {
+                pub struct #name {
+                    #(pub #field_names: #field_types,)*
+                }
+            });
             continue;
         }
 
@@ -67,21 +124,21 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                 .arguments
                 .iter()
                 .map(|argument| {
-                    let argument_type = match argument.ty.as_ref() {
-                        Type::NonNullNamed(name) if name.as_str() == "String" => {
-                            quote! { ::std::string::String }
-                        }
-                        unsupported => {
-                            return Err(CodegenError::new(
-                                format!(
-                                    "Unsupported argument type at {type_name}.{field_name}({}): {unsupported}",
-                                    argument.name,
-                                ),
-                                schema,
-                                argument.ty.location(),
-                            ));
-                        }
-                    };
+                    let argument_type = input_type(
+                        schema,
+                        argument.ty.as_ref(),
+                        &quote! { super::super },
+                    )
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            format!(
+                                "Unsupported argument type at {type_name}.{field_name}({}): {}",
+                                argument.name, argument.ty,
+                            ),
+                            schema,
+                            argument.ty.location(),
+                        )
+                    })?;
 
                     Ok((
                         format_ident!("r#{}", rust_name(argument.name.as_str())),
@@ -109,6 +166,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
     Ok(quote! {
         #[allow(non_snake_case)]
         pub mod types {
+            #(#named_types)*
             #(#object_modules)*
         }
     })
@@ -256,17 +314,14 @@ pub(crate) fn resolver_return_type(
     type_name: &str,
     field_name: &str,
     ty: &Type,
-) -> Result<proc_macro2::TokenStream, CodegenError> {
-    match ty {
-        Type::NonNullNamed(name) if name.as_str() == "String" => {
-            Ok(quote! { ::std::string::String })
-        }
-        unsupported => Err(CodegenError::new(
-            format!("Unsupported return type at {type_name}.{field_name}: {unsupported}"),
+) -> Result<TokenStream, CodegenError> {
+    output_type(schema, ty, &quote! { super::types }).ok_or_else(|| {
+        CodegenError::new(
+            format!("Unsupported return type at {type_name}.{field_name}: {ty}"),
             schema,
             ty.inner_named_type().location(),
-        )),
-    }
+        )
+    })
 }
 
 pub(crate) fn rust_name(name: &str) -> String {
@@ -319,11 +374,97 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+fn output_type(schema: &Schema, ty: &Type, types_path: &TokenStream) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_type(schema, name, types_path),
+        Type::Named(name) => {
+            let inner = named_type(schema, name, types_path)?;
+            Some(quote! { ::core::option::Option<#inner> })
+        }
+        Type::NonNullList(item) => {
+            let item = output_type(schema, item, types_path)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        Type::List(item) => {
+            let item = output_type(schema, item, types_path)?;
+            Some(quote! { ::core::option::Option<::std::vec::Vec<#item>> })
+        }
+    }
+}
+
+fn input_type(schema: &Schema, ty: &Type, types_path: &TokenStream) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_type(schema, name, types_path),
+        Type::Named(name) => {
+            let inner = named_type(schema, name, types_path)?;
+            Some(quote! { ::necrassrs::GraphQLInput<#inner> })
+        }
+        Type::NonNullList(item) => {
+            let item = input_list_item_type(schema, item, types_path)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        Type::List(item) => {
+            let item = input_list_item_type(schema, item, types_path)?;
+            Some(quote! {
+                ::necrassrs::GraphQLInput<::std::vec::Vec<#item>>
+            })
+        }
+    }
+}
+
+fn input_list_item_type(
+    schema: &Schema,
+    ty: &Type,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_type(schema, name, types_path),
+        Type::Named(name) => {
+            let inner = named_type(schema, name, types_path)?;
+            Some(quote! { ::core::option::Option<#inner> })
+        }
+        Type::NonNullList(item) => {
+            let item = input_list_item_type(schema, item, types_path)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        Type::List(item) => {
+            let item = input_list_item_type(schema, item, types_path)?;
+            Some(quote! {
+                ::core::option::Option<::std::vec::Vec<#item>>
+            })
+        }
+    }
+}
+
+fn named_type(schema: &Schema, name: &NamedType, types_path: &TokenStream) -> Option<TokenStream> {
+    match name.as_str() {
+        "Int" => Some(quote! { i32 }),
+        "Float" => Some(quote! { f64 }),
+        "String" => Some(quote! { ::std::string::String }),
+        "Boolean" => Some(quote! { bool }),
+        "ID" => Some(quote! { ::necrassrs::Id }),
+        _ => match schema.types.get(name) {
+            Some(ExtendedType::Enum(_)) | Some(ExtendedType::InputObject(_)) => {
+                let name = format_ident!("r#{}", rust_name(name.as_str()));
+                Some(quote! { #types_path::#name })
+            }
+            _ => None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod test {
     use apollo_compiler::Schema;
     use miette::Diagnostic;
     use quote::{ToTokens, quote};
+
+    fn normalize_type(tokens: proc_macro2::TokenStream) -> String {
+        syn::parse2::<syn::Type>(tokens)
+            .expect("generated type must be valid Rust")
+            .to_token_stream()
+            .to_string()
+    }
 
     #[test]
     fn codegen_error_preserves_argument_type_source_and_span() {
@@ -747,10 +888,10 @@ mod test {
             ("stringResult", quote! { ::std::string::String }),
             ("booleanResult", quote! { bool }),
             ("idResult", quote! { ::necrassrs::Id }),
-            ("statusResult", quote! { super::types::Status }),
+            ("statusResult", quote! { super::types::r#Status }),
             (
                 "nullableStatusResult",
-                quote! { ::core::option::Option<super::types::Status> },
+                quote! { ::core::option::Option<super::types::r#Status> },
             ),
             (
                 "nullableListResult",
@@ -775,7 +916,11 @@ mod test {
             let actual =
                 super::resolver_return_type(&schema, query.name.as_str(), field_name, &field.ty)
                     .unwrap_or_else(|error| panic!("{field_name}: {error}"));
-            assert_eq!(actual.to_string(), expected.to_string(), "{field_name}");
+            assert_eq!(
+                normalize_type(actual),
+                normalize_type(expected),
+                "{field_name}"
+            );
         }
     }
 
@@ -815,11 +960,11 @@ mod test {
             "pub r#required : bool",
             "pub r#optionalId : :: necrassrs :: GraphQLInput < :: necrassrs :: Id >",
             "pub r#statuses : :: necrassrs :: GraphQLInput",
-            "pub r#status : super :: super :: Status",
+            "pub r#status : super :: super :: r#Status",
             "pub r#optionalString : :: necrassrs :: GraphQLInput",
             "pub r#nullableList : :: necrassrs :: GraphQLInput",
             "pub r#requiredList : :: std :: vec :: Vec",
-            "pub r#filter : :: necrassrs :: GraphQLInput < super :: super :: Filter >",
+            "pub r#filter : :: necrassrs :: GraphQLInput < super :: super :: r#Filter >",
         ] {
             assert!(
                 generated.contains(expected),
