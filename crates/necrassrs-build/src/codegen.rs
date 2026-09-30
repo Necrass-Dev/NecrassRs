@@ -314,6 +314,23 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                 })
             })
             .collect::<Result<Vec<_>, CodegenError>>()?;
+
+        let coordinate = format!("{type_name}.{field_name}");
+        let conversion = named_output_value(
+            schema,
+            field.ty.inner_named_type(),
+            &quote! { value },
+            &coordinate,
+            &quote! { super::types },
+        )
+        .ok_or_else(|| {
+            CodegenError::new(
+                format!("Unsupported result type at {coordinate}: {}", field.ty),
+                schema,
+                field.ty.inner_named_type().location(),
+            )
+        })?;
+
         branches.push(quote! {
             (#type_name, #field_name) => {
                 let args = super::types::#object_name::#method_name::Args {
@@ -321,7 +338,9 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                 };
                 super::resolvers::#resolver_name::#method_name(&self.query, context, args)
                     .await
-                    .map(::necrassrs::JsonValue::from)
+                    .map(|value| {
+                        #conversion
+                    })
             }
         });
     }
@@ -628,6 +647,42 @@ fn named_input_value(
                 })
             }
 
+            _ => None,
+        },
+    }
+}
+
+fn named_output_value(
+    schema: &Schema,
+    type_name: &NamedType,
+    value: &TokenStream,
+    _coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match type_name.as_str() {
+        "String" | "Int" | "Boolean" => Some(quote! {
+            ::necrassrs::JsonValue::from(#value)
+        }),
+        "ID" => Some(quote! { ::necrassrs::JsonValue::from((#value).as_str()) }),
+        _ => match schema.types.get(type_name)? {
+            ExtendedType::Enum(enum_type) => {
+                let enum_name = format_ident!("r#{}", rust_name(type_name.as_str()));
+                let arms = enum_type.values.keys().map(|name| {
+                    let graphql_name = name.as_str();
+                    let variant = format_ident!("r#{}", rust_name(graphql_name));
+
+                    quote! {
+                        #types_path::#enum_name::#variant =>
+                            ::necrassrs::JsonValue::from(#graphql_name),
+                    }
+                });
+
+                Some(quote! {
+                    match #value {
+                        #(#arms)*
+                    }
+                })
+            }
             _ => None,
         },
     }
