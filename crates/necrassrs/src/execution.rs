@@ -1506,6 +1506,122 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_accepts_int_results_at_boundaries() {
+        for value in [i32::MIN, 0, i32::MAX] {
+            let response = execute_value("Int!", json!(value)).await;
+
+            assert_eq!(response, json!({ "data": { "values": value } }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_accepts_finite_float_results() {
+        for value in [0.0, -0.0, 1.5, -2.5, f64::MIN, f64::MAX] {
+            let response = execute_value("Float!", json!(value)).await;
+
+            assert_eq!(response, json!({ "data": { "values": value } }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_accepts_boolean_results() {
+        for value in [false, true] {
+            let response = execute_value("Boolean!", json!(value)).await;
+
+            assert_eq!(response, json!({ "data": { "values": value } }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_preserves_id_string_results() {
+        for value in ["001", "", "Sheri"] {
+            let response = execute_value("ID!", json!(value)).await;
+
+            assert_eq!(response, json!({ "data": { "values": value } }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_accepts_enum_members_and_rejects_unknown_results() {
+        for field_type in ["Status", "Status!"] {
+            let schema = Schema::parse_and_validate(
+                format!("enum Status {{ OPEN CLOSED }} type Query {{ values: {field_type} }}"),
+                "schema.graphql",
+            )
+            .unwrap();
+            let request = Request::new("{ values }");
+
+            for value in [json!("OPEN"), json!("CLOSED"), json!("UNKNOWN"), json!(42)] {
+                let valid = value == json!("OPEN") || value == json!("CLOSED");
+                let response = to_value(
+                    super::execute(&schema, &request, &ValueDispatcher(value.clone()), &()).await,
+                )
+                .unwrap();
+
+                if valid {
+                    assert_eq!(response, json!({ "data": { "values": value } }));
+                } else {
+                    let expected_data = if field_type == "Status!" {
+                        JsonValue::Null
+                    } else {
+                        json!({ "values": null })
+                    };
+                    assert_eq!(response["data"], expected_data);
+                    assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+                    assert_eq!(response["errors"][0]["path"], json!(["values"]));
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_rejects_invalid_scalar_results() {
+        for (name, value) in [
+            ("Int", json!(i64::from(i32::MIN) - 1)),
+            ("Int", json!(i64::from(i32::MAX) + 1)),
+            ("Int", json!({ "invalid": true })),
+            ("Float", json!({ "invalid": true })),
+            ("Boolean", json!({ "invalid": true })),
+            ("ID", json!({ "invalid": true })),
+        ] {
+            for non_null in [false, true] {
+                let field_type = format!("{name}{}", if non_null { "!" } else { "" });
+                let response = execute_value(&field_type, value.clone()).await;
+                let expected_data = if non_null {
+                    JsonValue::Null
+                } else {
+                    json!({ "values": null })
+                };
+
+                assert_eq!(response["data"], expected_data, "{field_type}: {value}");
+                assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+                assert_eq!(response["errors"][0]["path"], json!(["values"]));
+                assert!(
+                    response["errors"][0]["message"]
+                        .as_str()
+                        .is_some_and(|message| !message.is_empty())
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_invalid_int_item_follows_list_nullability() {
+        for (field_type, expected_data) in [
+            ("[Int]", json!({ "values": [1, null, 2] })),
+            ("[Int]!", json!({ "values": [1, null, 2] })),
+            ("[Int!]", json!({ "values": null })),
+            ("[Int!]!", JsonValue::Null),
+        ] {
+            let response = execute_value(field_type, json!([1, i64::from(i32::MAX) + 1, 2])).await;
+
+            assert_eq!(response["data"], expected_data, "{field_type}");
+            assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+            assert_eq!(response["errors"][0]["path"], json!(["values", 1]));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn unsupported_object_result_becomes_execution_error() {
         let schema = Schema::parse_and_validate(
             "type Query { viewer: User } type User { name: String! }",
