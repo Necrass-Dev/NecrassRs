@@ -534,10 +534,10 @@ fn list_item_value(
 ) -> Option<TokenStream> {
     match ty {
         Type::NonNullNamed(type_name) => {
-            named_value(schema, type_name, value, coordinate, types_path)
+            named_input_value(schema, type_name, value, coordinate, types_path)
         }
         Type::Named(type_name) => {
-            let inner = named_value(schema, type_name, value, coordinate, types_path)?;
+            let inner = named_input_value(schema, type_name, value, coordinate, types_path)?;
             Some(quote! {
                 if (#value).is_null() {
                     None
@@ -560,7 +560,7 @@ fn list_item_value(
     }
 }
 
-fn named_value(
+fn named_input_value(
     schema: &Schema,
     type_name: &NamedType,
     value: &TokenStream,
@@ -651,11 +651,12 @@ fn input_position_value(
                     })?
             };
 
-            named_value(schema, type_name, &value, coordinate, types_path)
+            named_input_value(schema, type_name, &value, coordinate, types_path)
         }
 
         Type::Named(type_name) => {
-            let value = named_value(schema, type_name, &quote! { value }, coordinate, types_path)?;
+            let value =
+                named_input_value(schema, type_name, &quote! { value }, coordinate, types_path)?;
 
             Some(nullable_input(lookup, &value))
         }
