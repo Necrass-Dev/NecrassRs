@@ -316,9 +316,9 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             .collect::<Result<Vec<_>, CodegenError>>()?;
 
         let coordinate = format!("{type_name}.{field_name}");
-        let conversion = named_output_value(
+        let conversion = output_value(
             schema,
-            field.ty.inner_named_type(),
+            &field.ty,
             &quote! { value },
             &coordinate,
             &quote! { super::types },
@@ -781,6 +781,62 @@ fn named_type(schema: &Schema, name: &NamedType, types_path: &TokenStream) -> Op
             _ => None,
         },
     }
+}
+
+fn output_value(
+    schema: &Schema,
+    ty: &Type,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_output_value(schema, name, value, coordinate, types_path),
+        Type::Named(name) => {
+            let inner =
+                named_output_value(schema, name, &quote! { value }, coordinate, types_path)?;
+
+            Some(quote! {
+                match #value {
+                    None => ::necrassrs::JsonValue::Null,
+                    Some(value) => #inner,
+                }
+            })
+        }
+        Type::NonNullList(item) => output_list_value(schema, item, value, coordinate, types_path),
+        Type::List(item) => {
+            let inner = output_list_value(schema, item, &quote! { value }, coordinate, types_path)?;
+
+            Some(quote! {
+                match #value {
+                    None => ::necrassrs::JsonValue::Null,
+                    Some(value) => #inner,
+                }
+            })
+        }
+    }
+}
+
+fn output_list_value(
+    schema: &Schema,
+    item: &Type,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    let converted_item = output_value(schema, item, &quote! { item }, coordinate, types_path)?;
+
+    Some(quote! {
+        {
+            let mut items = ::std::vec::Vec::<::necrassrs::JsonValue>::new();
+
+            for item in #value {
+                items.push(#converted_item);
+            }
+
+            ::necrassrs::JsonValue::from(items)
+        }
+    })
 }
 
 #[cfg(test)]
