@@ -1241,6 +1241,75 @@ mod test {
     }
 
     #[test]
+    fn generated_dispatch_serializes_id_results_as_strings() {
+        let schema = Schema::parse_and_validate("type Query { id: ID! }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use necrassrs::Dispatcher;
+
+            pub struct Query(&'static str);
+            impl resolvers::QueryResolver<()> for Query {
+                async fn id<'a>(
+                    &'a self, _: &'a (), _: types::Query::id::Args,
+                ) -> Result<necrassrs::Id, necrassrs::ResolverError> {
+                    Ok(necrassrs::Id::from(self.0))
+                }
+            }
+
+            fn main() {
+                for expected in ["001", "", "Sheri"] {
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query(expected));
+                    let actual = futures::executor::block_on(dispatcher.resolve(
+                        &(),
+                        necrassrs::FieldCoordinate { parent_type: "Query", field: "id" },
+                        &necrassrs::JsonMap::new(),
+                    )).unwrap_or_else(|_| panic!("ID result conversion must succeed"));
+                    assert_eq!(actual, necrassrs::JsonValue::from(expected));
+                }
+            }
+        "#;
+
+        assert_consumer(&generated, consumer, true);
+    }
+
+    #[test]
+    fn generated_dispatch_serializes_enum_results_as_graphql_names() {
+        let schema = Schema::parse_and_validate(
+            "enum Status { OPEN CLOSED } type Query { status: Status! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use necrassrs::Dispatcher;
+
+            pub struct Query(bool);
+            impl resolvers::QueryResolver<()> for Query {
+                async fn status<'a>(
+                    &'a self, _: &'a (), _: types::Query::status::Args,
+                ) -> Result<types::Status, necrassrs::ResolverError> {
+                    Ok(if self.0 { types::Status::OPEN } else { types::Status::CLOSED })
+                }
+            }
+
+            fn main() {
+                for (open, expected) in [(true, "OPEN"), (false, "CLOSED")] {
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query(open));
+                    let actual = futures::executor::block_on(dispatcher.resolve(
+                        &(),
+                        necrassrs::FieldCoordinate { parent_type: "Query", field: "status" },
+                        &necrassrs::JsonMap::new(),
+                    )).unwrap_or_else(|_| panic!("enum result conversion must succeed"));
+                    assert_eq!(actual, necrassrs::JsonValue::from(expected));
+                }
+            }
+        "#;
+
+        assert_consumer(&generated, consumer, true);
+    }
+
+    #[test]
     fn generated_dispatch_converts_non_null_leaf_arguments() {
         let cases: &[(&str, &str, &[&str])] = &[
             ("", "Int!", &["as_i64", "i32"]),
