@@ -33,12 +33,13 @@
 //! changes when arguments change.
 //!
 //! Generated contract types cover built-in scalars, enums, ordinary input
-//! objects, lists, and nullable wrappers. Query dispatch accepts non-null
-//! built-in scalar and enum arguments; result dispatch remains limited to
-//! `String!`. Mutation and subscription roots are rejected. Applications must
-//! configure `panic = "abort"` in their root dev and release profiles to enforce
-//! process termination on unimplemented calls. This affects all panics;
-//! ordinary application failures should be returned as runtime resolver errors.
+//! objects, lists, and nullable wrappers. Query dispatch accepts built-in scalar
+//! and enum arguments, including nullable and list forms; result dispatch
+//! remains limited to `String!`. Mutation and subscription roots are rejected.
+//! Applications must configure `panic = "abort"` in their root dev and release
+//! profiles to enforce process termination on unimplemented calls. This affects
+//! all panics; ordinary application failures should be returned as runtime
+//! resolver errors.
 
 use apollo_compiler::Schema;
 use std::path::{Path, PathBuf};

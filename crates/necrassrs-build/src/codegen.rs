@@ -459,61 +459,111 @@ fn argument_value(
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
+    let lookup = quote! {
+        _arguments.get(#name)
+    };
+
+    input_position_value(schema, ty, &lookup, coordinate, types_path)
+}
+
+fn list_value(
+    schema: &Schema,
+    item: &Type,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    let item = list_item_value(schema, item, &quote! { item }, coordinate, types_path)?;
+    let message = format!("Expected a List argument at {coordinate}");
+    Some(quote! {
+        (#value).as_array()
+            .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+            .iter()
+            .map(|item| {
+                Ok(#item)
+            })
+            .collect::<::core::result::Result<
+                ::std::vec::Vec<_>,
+                ::necrassrs::ResolverError,
+            >>()?
+    })
+}
+
+fn list_item_value(
+    schema: &Schema,
+    ty: &Type,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
     match ty {
-        Type::NonNullNamed(type_name) => match type_name.as_str() {
-            "Int" => {
-                let message = format!("Expected an Int argument at {coordinate}");
-                Some(quote! {
-                    _arguments.get(#name)
-                        .and_then(::necrassrs::JsonValue::as_i64)
-                        .and_then(|value| {
-                            <i32 as ::core::convert::TryFrom<i64>>::try_from(value).ok()
-                        })
-                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+        Type::NonNullNamed(type_name) => {
+            named_value(schema, type_name, value, coordinate, types_path)
+        }
+        Type::Named(type_name) => {
+            let inner = named_value(schema, type_name, value, coordinate, types_path)?;
+            Some(quote! {
+                if (#value).is_null() {
+                    None
+                } else {
+                    Some(#inner)
+                }
+            })
+        }
+        Type::NonNullList(item) => list_value(schema, item, value, coordinate, types_path),
+        Type::List(item) => {
+            let inner = list_value(schema, item, value, coordinate, types_path)?;
+            Some(quote! {
+                if (#value).is_null() {
+                    None
+                } else {
+                    Some(#inner)
+                }
+            })
+        }
+    }
+}
+
+fn named_value(
+    schema: &Schema,
+    type_name: &NamedType,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    let message = format!("Expected a {type_name} argument at {coordinate}");
+    match type_name.as_str() {
+        "Int" => Some(quote! {
+            (#value).as_i64()
+                .and_then(|value| {
+                    <i32 as ::core::convert::TryFrom<i64>>::try_from(value).ok()
                 })
-            }
-            "Float" => {
-                let message = format!("Expected a Float argument at {coordinate}");
-                Some(quote! {
-                    _arguments.get(#name)
-                        .and_then(::necrassrs::JsonValue::as_f64)
-                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+        }),
+        "Float" => Some(quote! {
+            (#value).as_f64()
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+        }),
+        "String" => Some(quote! {
+            (#value).as_str()
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                .to_owned()
+        }),
+        "Boolean" => Some(quote! {
+            (#value).as_bool()
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+        }),
+        "ID" => Some(quote! {
+            (#value).as_str()
+                .map(::std::borrow::ToOwned::to_owned)
+                .or_else(|| {
+                    (#value).as_i64().map(|value| value.to_string())
                 })
-            }
-            "String" => {
-                let message = format!("Expected a String argument at {coordinate}");
-                Some(quote! {
-                    _arguments.get(#name)
-                        .and_then(::necrassrs::JsonValue::as_str)
-                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
-                        .to_owned()
-                })
-            }
-            "Boolean" => {
-                let message = format!("Expected a Boolean argument at {coordinate}");
-                Some(quote! {
-                    _arguments.get(#name)
-                        .and_then(::necrassrs::JsonValue::as_bool)
-                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
-                })
-            }
-            "ID" => {
-                let message = format!("Expected an ID argument at {coordinate}");
-                Some(quote! {
-                    _arguments.get(#name)
-                        .and_then(|value| {
-                            value.as_str().map(::std::borrow::ToOwned::to_owned).or_else(|| {
-                                value.as_i64().map(|value| value.to_string())
-                            })
-                        })
-                        .map(::necrassrs::Id::from)
-                        .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
-                })
-            }
-            _ => {
-                let ExtendedType::Enum(enum_type) = schema.types.get(type_name)? else {
-                    return None;
-                };
+                .map(::necrassrs::Id::from)
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+        }),
+        _ => match schema.types.get(type_name)? {
+            ExtendedType::Enum(enum_type) => {
                 let enum_name = format_ident!("r#{}", rust_name(type_name.as_str()));
                 let (values, variants): (Vec<_>, Vec<_>) = enum_type
                     .values
@@ -525,16 +575,81 @@ fn argument_value(
                         )
                     })
                     .unzip();
-                let message = format!("Expected a {type_name} argument at {coordinate}");
+
                 Some(quote! {
-                    match _arguments.get(#name).and_then(::necrassrs::JsonValue::as_str) {
+                    match (#value).as_str() {
                         #(Some(#values) => #types_path::#enum_name::#variants,)*
                         _ => return Err(::necrassrs::ResolverError::new(#message)),
                     }
                 })
             }
+
+            _ => None,
         },
-        _ => None,
+    }
+}
+
+fn input_position_value(
+    schema: &Schema,
+    ty: &Type,
+    lookup: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(type_name) => {
+            let message = format!("Expected a {type_name} argument at {coordinate}");
+
+            let value = quote! {
+                (#lookup)
+                    .ok_or_else(|| {
+                        ::necrassrs::ResolverError::new(#message)
+                    })?
+            };
+
+            named_value(schema, type_name, &value, coordinate, types_path)
+        }
+
+        Type::Named(type_name) => {
+            let value = named_value(schema, type_name, &quote! { value }, coordinate, types_path)?;
+
+            Some(nullable_input(lookup, &value))
+        }
+
+        Type::NonNullList(item) => {
+            let message = format!("Expected a List argument at {coordinate}");
+
+            let value = quote! {
+                (#lookup)
+                    .ok_or_else(|| {
+                        ::necrassrs::ResolverError::new(#message)
+                    })?
+            };
+
+            list_value(schema, item, &value, coordinate, types_path)
+        }
+
+        Type::List(item) => {
+            let value = list_value(schema, item, &quote! { value }, coordinate, types_path)?;
+
+            Some(nullable_input(lookup, &value))
+        }
+    }
+}
+
+fn nullable_input(lookup: &TokenStream, value: &TokenStream) -> TokenStream {
+    quote! {
+        match #lookup {
+            None => ::necrassrs::GraphQLInput::Undefined,
+
+            Some(value) if value.is_null() => {
+                ::necrassrs::GraphQLInput::Null
+            }
+
+            Some(value) => {
+                ::necrassrs::GraphQLInput::Value(#value)
+            }
+        }
     }
 }
 
