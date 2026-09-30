@@ -1438,6 +1438,199 @@ mod test {
         assert_consumer(&generated, &format!("{FLOAT_RESULT_CONSUMER}{main}"), true);
     }
 
+    fn assert_generated_result_cases(
+        definition: &str,
+        result_type: &str,
+        rust_type: &str,
+        cases: &[(&str, Option<&str>)],
+    ) {
+        let schema = Schema::parse_and_validate(
+            format!("{definition} type Query {{ value: {result_type} }}"),
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let arms = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (value, _))| format!("{index} => {value},"))
+            .collect::<String>();
+        let assertions = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (_, expected))| {
+                let assertion = match expected {
+                    Some(expected) => format!(
+                        "let actual = actual.unwrap_or_else(|_| panic!(\"case {index} must succeed\"));
+                         assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::json!({expected}));"
+                    ),
+                    None => format!("assert!(actual.is_err(), \"case {index} must return an error\");"),
+                };
+                format!(
+                    "let dispatcher = dispatch::SchemaDispatcher::new(Query({index}));
+                     let actual = futures::executor::block_on(dispatcher.resolve(
+                         &(), necrassrs::FieldCoordinate {{ parent_type: \"Query\", field: \"value\" }},
+                         &necrassrs::JsonMap::new(),
+                     ));
+                     {assertion}"
+                )
+            })
+            .collect::<String>();
+        let consumer = format!(
+            "use necrassrs::Dispatcher;
+             pub struct Query(usize);
+             impl resolvers::QueryResolver<()> for Query {{
+                 async fn value<'a>(
+                     &'a self, _: &'a (), _: types::Query::value::Args,
+                 ) -> Result<{rust_type}, necrassrs::ResolverError> {{
+                     Ok(match self.0 {{ {arms} _ => unreachable!() }})
+                 }}
+             }}
+             fn main() {{ {assertions} }}"
+        );
+
+        assert_consumer(&generated, &consumer, true);
+    }
+
+    #[test]
+    fn generated_result_wrappers_preserve_nullable_id_values() {
+        assert_generated_result_cases(
+            "",
+            "ID",
+            "Option<necrassrs::Id>",
+            &[
+                ("None", Some("null")),
+                ("Some(necrassrs::Id::from(\"001\"))", Some("\"001\"")),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_result_wrappers_preserve_nullable_enum_values() {
+        assert_generated_result_cases(
+            "enum Status { OPEN CLOSED }",
+            "Status",
+            "Option<types::Status>",
+            &[
+                ("None", Some("null")),
+                ("Some(types::Status::OPEN)", Some("\"OPEN\"")),
+                ("Some(types::Status::CLOSED)", Some("\"CLOSED\"")),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_result_wrappers_preserve_id_list_nullability() {
+        for (result_type, rust_type, cases) in [
+            (
+                "[ID]",
+                "Option<Vec<Option<necrassrs::Id>>>",
+                vec![
+                    ("None", Some("null")),
+                    ("Some(vec![])", Some("[]")),
+                    (
+                        "Some(vec![Some(necrassrs::Id::from(\"001\")), None])",
+                        Some("[\"001\", null]"),
+                    ),
+                ],
+            ),
+            (
+                "[ID]!",
+                "Vec<Option<necrassrs::Id>>",
+                vec![
+                    ("vec![]", Some("[]")),
+                    (
+                        "vec![Some(necrassrs::Id::from(\"001\")), None]",
+                        Some("[\"001\", null]"),
+                    ),
+                ],
+            ),
+            (
+                "[ID!]",
+                "Option<Vec<necrassrs::Id>>",
+                vec![
+                    ("None", Some("null")),
+                    ("Some(vec![])", Some("[]")),
+                    (
+                        "Some(vec![necrassrs::Id::from(\"001\")])",
+                        Some("[\"001\"]"),
+                    ),
+                ],
+            ),
+            (
+                "[ID!]!",
+                "Vec<necrassrs::Id>",
+                vec![
+                    ("vec![]", Some("[]")),
+                    ("vec![necrassrs::Id::from(\"001\")]", Some("[\"001\"]")),
+                ],
+            ),
+        ] {
+            assert_generated_result_cases("", result_type, rust_type, &cases);
+        }
+    }
+
+    #[test]
+    fn generated_result_wrappers_convert_nested_enum_lists() {
+        assert_generated_result_cases(
+            "enum Status { OPEN CLOSED }",
+            "[[Status]]",
+            "Option<Vec<Option<Vec<Option<types::Status>>>>>",
+            &[
+                ("None", Some("null")),
+                ("Some(vec![])", Some("[]")),
+                (
+                    "Some(vec![None, Some(vec![]), Some(vec![Some(types::Status::OPEN), None, Some(types::Status::CLOSED)])])",
+                    Some("[null, [], [\"OPEN\", null, \"CLOSED\"]]"),
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_result_wrappers_validate_nullable_float_values() {
+        assert_generated_result_cases(
+            "",
+            "Float",
+            "Option<f64>",
+            &[
+                ("None", Some("null")),
+                ("Some(1.5)", Some("1.5")),
+                ("Some(f64::NAN)", None),
+                ("Some(f64::INFINITY)", None),
+                ("Some(f64::NEG_INFINITY)", None),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_result_wrappers_validate_float_list_items() {
+        assert_generated_result_cases(
+            "",
+            "[Float!]!",
+            "Vec<f64>",
+            &[
+                ("vec![]", Some("[]")),
+                ("vec![1.5, -2.5]", Some("[1.5, -2.5]")),
+                ("vec![1.5, f64::NAN]", None),
+                ("vec![1.5, f64::INFINITY]", None),
+                ("vec![1.5, f64::NEG_INFINITY]", None),
+            ],
+        );
+        assert_generated_result_cases(
+            "",
+            "[[Float]]",
+            "Option<Vec<Option<Vec<Option<f64>>>>>",
+            &[
+                (
+                    "Some(vec![None, Some(vec![Some(1.5), None])])",
+                    Some("[null, [1.5, null]]"),
+                ),
+                ("Some(vec![Some(vec![Some(1.5), Some(f64::NAN)])])", None),
+            ],
+        );
+    }
+
     #[test]
     fn generated_dispatch_converts_non_null_leaf_arguments() {
         let cases: &[(&str, &str, &[&str])] = &[
