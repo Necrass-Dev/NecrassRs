@@ -642,11 +642,36 @@ fn complete_value(
         }
         Type::Named(name) | Type::NonNullNamed(name) => {
             let message = match schema.types.get(name) {
-                Some(ExtendedType::Scalar(_)) if name.as_str() == "String" && value.is_string() => {
+                Some(ExtendedType::Scalar(_))
+                    if match name.as_str() {
+                        "Int" => value
+                            .as_i64()
+                            .is_some_and(|value| i32::try_from(value).is_ok()),
+                        "Float" => value.as_f64().is_some_and(f64::is_finite),
+                        "String" | "ID" => value.is_string(),
+                        "Boolean" => value.as_bool().is_some(),
+                        _ => false,
+                    } =>
+                {
                     return Ok(value);
                 }
-                Some(ExtendedType::Scalar(_)) if name.as_str() == "String" => {
-                    format!("Expected field '{}' to return a String.", field.name)
+                Some(ExtendedType::Scalar(_))
+                    if matches!(name.as_str(), "Int" | "Float" | "String" | "Boolean" | "ID") =>
+                {
+                    format!("Expected field '{}' to return a {name}.", field.name)
+                }
+                Some(ExtendedType::Enum(enum_type))
+                    if value
+                        .as_str()
+                        .is_some_and(|value| enum_type.values.contains_key(value)) =>
+                {
+                    return Ok(value);
+                }
+                Some(ExtendedType::Enum(_)) => {
+                    format!(
+                        "Expected field '{}' to return a {name} enum value.",
+                        field.name
+                    )
                 }
                 Some(_) => {
                     format!("Result completion for type '{name}' is not supported.")
