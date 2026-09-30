@@ -21,11 +21,11 @@
 //! # Current scope
 //!
 //! Generated contracts support query fields returning `String!` with built-in
-//! scalar and enum arguments, including nullable and list forms. The runtime
-//! also completes nullable/list String results, but does not provide general
-//! output-object or scalar completion. Subscriptions are rejected. Schema
-//! introspection is enabled by default; use [`execute_with_options`] to disable
-//! it independently of any UI.
+//! scalar, enum, and ordinary input object arguments, including nullable and
+//! list forms. The runtime also completes nullable/list String results, but does
+//! not provide general output-object or scalar completion. Subscriptions are
+//! rejected. Schema introspection is enabled by default; use
+//! [`execute_with_options`] to disable it independently of any UI.
 
 use apollo_compiler::response::ExecutionResponse;
 pub use apollo_compiler::{

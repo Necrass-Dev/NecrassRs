@@ -9,8 +9,9 @@ declarations. You implement the resolver bodies.
 
 :::caution[Under active development]
 The generated API currently supports query fields with `String!` results and
-built-in scalar and enum arguments, including nullable and list forms. Design
-documents describe broader targets; they are not claims of completed support.
+built-in scalar, enum, and ordinary input object arguments, including nullable
+and list forms. Design documents describe broader targets; they are not claims
+of completed support.
 :::
 
 ## Start with a working server

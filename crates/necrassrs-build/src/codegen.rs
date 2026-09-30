@@ -79,11 +79,14 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
 
         if let ExtendedType::InputObject(input_object) = definition {
             let name = format_ident!("r#{}", rust_name(type_name.as_str()));
+            let message = format!("Expected a {type_name} input object");
 
-            let (field_names, field_types) = input_object
+            let (fields, field_values) = input_object
                 .fields
                 .iter()
                 .map(|(field_name, field)| {
+                    let graphql_name = field_name.as_str();
+                    let member = format_ident!("r#{}", rust_name(graphql_name));
                     let field_type = input_type(schema, field.ty.as_ref(), &quote! { self })
                         .ok_or_else(|| {
                             CodegenError::new(
@@ -95,17 +98,50 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                                 field.ty.location(),
                             )
                         })?;
+                    let coordinate = format!("{type_name}.{field_name}");
+                    let lookup = quote! { object.get(#graphql_name) };
+                    let field_value = input_position_value(
+                        schema,
+                        field.ty.as_ref(),
+                        &lookup,
+                        &coordinate,
+                        &quote! { self },
+                    )
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            format!(
+                                "Unsupported input type at {type_name}.{field_name}: {}",
+                                field.ty,
+                            ),
+                            schema,
+                            field.ty.location(),
+                        )
+                    })?;
 
                     Ok((
-                        format_ident!("r#{}", rust_name(field_name.as_str())),
-                        field_type,
+                        quote! { pub #member: #field_type, },
+                        quote! { #member: #field_value, },
                     ))
                 })
                 .collect::<Result<(Vec<_>, Vec<_>), CodegenError>>()?;
 
             named_types.push(quote! {
                 pub struct #name {
-                    #(pub #field_names: #field_types,)*
+                    #(#fields)*
+                }
+
+                impl #name {
+                    pub(super) fn from_graphql_value(
+                        value: &::necrassrs::JsonValue,
+                    ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                        let object = value
+                            .as_object()
+                            .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?;
+
+                        Ok(Self {
+                            #(#field_values)*
+                        })
+                    }
                 }
             });
             continue;
@@ -581,6 +617,14 @@ fn named_value(
                         #(Some(#values) => #types_path::#enum_name::#variants,)*
                         _ => return Err(::necrassrs::ResolverError::new(#message)),
                     }
+                })
+            }
+
+            ExtendedType::InputObject(_) => {
+                let name = format_ident!("r#{}", rust_name(type_name.as_str()));
+
+                Some(quote! {
+                    #types_path::#name::from_graphql_value(#value)?
                 })
             }
 
@@ -1146,10 +1190,12 @@ mod test {
         let schema = Schema::parse_and_validate(
             r#"
                 enum Status { OPEN CLOSED }
+                input Nested { name: String! }
                 input Filter {
                     required: Boolean!
                     optionalId: ID
                     statuses: [Status]
+                    nested: Nested!
                 }
                 type Query {
                     inspect(
@@ -1164,19 +1210,23 @@ mod test {
             "schema.graphql",
         )
         .expect("the test schema must be valid");
-        let generated = super::generate_types(&schema)
+        let generated = super::generate(&schema)
             .expect("supported input contracts must be generated")
-            .to_token_stream()
             .to_string();
 
         for expected in [
             "pub enum r#Status",
             "r#OPEN",
             "r#CLOSED",
+            "pub struct r#Nested",
             "pub struct r#Filter",
+            "fn from_graphql_value",
+            "as_object",
+            "object . get",
             "pub r#required : bool",
             "pub r#optionalId : :: necrassrs :: GraphQLInput < :: necrassrs :: Id >",
             "pub r#statuses : :: necrassrs :: GraphQLInput",
+            "self :: r#Nested :: from_graphql_value",
             "pub r#status : super :: super :: r#Status",
             "pub r#optionalString : :: necrassrs :: GraphQLInput",
             "pub r#nullableList : :: necrassrs :: GraphQLInput",
