@@ -336,11 +336,9 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                 let args = super::types::#object_name::#method_name::Args {
                     #(#arguments)*
                 };
-                super::resolvers::#resolver_name::#method_name(&self.query, context, args)
-                    .await
-                    .map(|value| {
-                        #conversion
-                    })
+                let value = super::resolvers::#resolver_name::#method_name(&self.query, context, args)
+                    .await?;
+                Ok(#conversion)
             }
         });
     }
@@ -656,13 +654,28 @@ fn named_output_value(
     schema: &Schema,
     type_name: &NamedType,
     value: &TokenStream,
-    _coordinate: &str,
+    coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
     match type_name.as_str() {
         "String" | "Int" | "Boolean" => Some(quote! {
             ::necrassrs::JsonValue::from(#value)
         }),
+        "Float" => {
+            let message = format!("Expected a finite Float result at {coordinate}");
+
+            Some(quote! {
+                {
+                    let value: f64 = #value;
+
+                    if !value.is_finite() {
+                        return Err(::necrassrs::ResolverError::new(#message));
+                    }
+
+                    ::necrassrs::JsonValue::from(value)
+                }
+            })
+        }
         "ID" => Some(quote! { ::necrassrs::JsonValue::from((#value).as_str()) }),
         _ => match schema.types.get(type_name)? {
             ExtendedType::Enum(enum_type) => {
@@ -1363,6 +1376,66 @@ mod test {
         "#;
 
         assert_consumer(&generated, consumer, true);
+    }
+
+    const FLOAT_RESULT_CONSUMER: &str = r#"
+        use necrassrs::Dispatcher;
+
+        pub struct Query(f64);
+        impl resolvers::QueryResolver<()> for Query {
+            async fn value<'a>(
+                &'a self, _: &'a (), _: types::Query::value::Args,
+            ) -> Result<f64, necrassrs::ResolverError> {
+                Ok(self.0)
+            }
+        }
+
+        fn resolve(value: f64) -> Result<necrassrs::JsonValue, necrassrs::ResolverError> {
+            let dispatcher = dispatch::SchemaDispatcher::new(Query(value));
+            futures::executor::block_on(dispatcher.resolve(
+                &(),
+                necrassrs::FieldCoordinate { parent_type: "Query", field: "value" },
+                &necrassrs::JsonMap::new(),
+            ))
+        }
+    "#;
+
+    #[test]
+    fn generated_dispatch_serializes_finite_float_results() {
+        let schema = Schema::parse_and_validate("type Query { value: Float! }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Float results must be supported");
+        let main = r#"
+            fn main() {
+                for value in [0.0, -0.0, 1.5, -2.5, f64::MIN, f64::MAX] {
+                    let actual = resolve(value)
+                        .unwrap_or_else(|_| panic!("finite Float {value} must succeed"));
+                    assert!(actual.is_number(), "finite Float {value} must be a JSON number");
+                    assert_eq!(actual, necrassrs::JsonValue::from(value));
+                }
+            }
+        "#;
+
+        assert_consumer(&generated, &format!("{FLOAT_RESULT_CONSUMER}{main}"), true);
+    }
+
+    #[test]
+    fn generated_dispatch_rejects_non_finite_float_results() {
+        let schema = Schema::parse_and_validate("type Query { value: Float! }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Float results must be supported");
+        let main = r#"
+            fn main() {
+                for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                    assert!(
+                        resolve(value).is_err(),
+                        "non-finite Float {value} must return a resolver error",
+                    );
+                }
+            }
+        "#;
+
+        assert_consumer(&generated, &format!("{FLOAT_RESULT_CONSUMER}{main}"), true);
     }
 
     #[test]
