@@ -81,6 +81,90 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
             let name = format_ident!("r#{}", rust_name(type_name.as_str()));
             let message = format!("Expected a {type_name} input object");
 
+            if input_object.directives.has("oneOf") {
+                let (variants, conversions) = input_object
+                    .fields
+                    .iter()
+                    .map(|(field_name, field)| {
+                        let variant = format_ident!("r#{}", rust_name(field_name.as_str()));
+
+                        // Only the selected payload's outermost type becomes non-null.
+                        let payload_type = field.ty.as_ref().clone().non_null();
+                        let payload = input_type(schema, &payload_type, &quote! { self })
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    format!(
+                                        "Unsupported OneOf input type at {type_name}.{field_name}: {}",
+                                        field.ty,
+                                    ),
+                                    schema,
+                                    field.ty.location(),
+                                )
+                            })?;
+
+                        let graphql_name = field_name.as_str();
+                        let coordinate = format!("{type_name}.{field_name}");
+                        let converted = list_item_value(
+                            schema,
+                            &payload_type,
+                            &quote! { value },
+                            &coordinate,
+                            &quote! { self },
+                        )
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                format!(
+                                    "Unsupported OneOf input type at {type_name}.{field_name}: {}",
+                                    field.ty,
+                                ),
+                                schema,
+                                field.ty.location(),
+                            )
+                        })?;
+
+                        Ok((
+                            quote! { #variant(#payload), },
+                            quote! { #graphql_name => Ok(Self::#variant(#converted)), },
+                        ))
+                    })
+                    .collect::<Result<(Vec<_>, Vec<_>), CodegenError>>()?;
+
+                let selection_message =
+                    format!("Expected exactly one non-null field in {type_name}");
+                let unknown_message = format!("Unknown field in {type_name} input object");
+
+                named_types.push(quote! {
+                    #[allow(non_camel_case_types)]
+                    pub enum #name {
+                        #(#variants)*
+                    }
+
+                    impl #name {
+                        pub(super) fn from_graphql_value(
+                            value: &::necrassrs::JsonValue,
+                        ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                            let object = value
+                                .as_object()
+                                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?;
+                            if object.len() != 1 {
+                                return Err(::necrassrs::ResolverError::new(#selection_message));
+                            }
+                            let (field, value) = object.iter().next().ok_or_else(|| {
+                                ::necrassrs::ResolverError::new(#selection_message)
+                            })?;
+                            if value.is_null() {
+                                return Err(::necrassrs::ResolverError::new(#selection_message));
+                            }
+                            match field.as_str() {
+                                #(#conversions)*
+                                _ => Err(::necrassrs::ResolverError::new(#unknown_message)),
+                            }
+                        }
+                    }
+                });
+                continue;
+            }
+
             let (fields, field_values) = input_object
                 .fields
                 .iter()
@@ -1415,6 +1499,7 @@ mod test {
             })
             .expect("OneOf Choice must be generated as an enum, not a struct");
         let expected = syn::parse2::<syn::ItemEnum>(quote! {
+            #[allow(non_camel_case_types)]
             pub enum r#Choice {
                 r#number(i32),
                 r#decimal(f64),
@@ -1438,7 +1523,8 @@ mod test {
         assert_consumer_compiles(
             &generated.to_string(),
             r#"
-                fn main() {
+                pub fn main() {
+                    let _ = types::Filter::from_graphql_value(&necrassrs::JsonValue::Null);
                     let _: types::Choice = types::Choice::number(1);
                     let _: types::Choice = types::Choice::items(vec![Some(1), None]);
                     let _: types::Choice = types::Choice::requiredItems(vec![1]);
@@ -1459,6 +1545,75 @@ mod test {
                     }
                 }
             "#,
+        );
+    }
+
+    #[test]
+    fn generated_one_of_conversion_requires_one_non_null_known_field() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                directive @oneOf on INPUT_OBJECT
+                enum Status { OPEN CLOSED }
+                input Nested { name: String! }
+                input Choice @oneOf {
+                    number: Int
+                    status: Status
+                    nested: Nested
+                    items: [Int]
+                    requiredItems: [Int!]
+                }
+                type Query { inspect(choice: Choice): String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the OneOf test schema must be valid");
+        let generated = super::generate_types(&schema)
+            .expect("OneOf type generation must succeed")
+            .to_token_stream()
+            .to_string();
+        assert_consumer(
+            &generated,
+            r#"
+                macro_rules! json {
+                    ($($tokens:tt)*) => {
+                        serde_json::from_value::<necrassrs::JsonValue>(
+                            serde_json::json!($($tokens)*),
+                        ).unwrap()
+                    };
+                }
+
+                fn main() {
+                    let value = types::Choice::from_graphql_value(&json!({"number": 7}));
+                    assert!(matches!(value, Ok(types::Choice::number(7))));
+                    let value = types::Choice::from_graphql_value(&json!({"status": "OPEN"}));
+                    assert!(matches!(value, Ok(types::Choice::status(types::Status::OPEN))));
+                    let value = types::Choice::from_graphql_value(&json!({"nested": {"name": "Sheri"}}));
+                    let Ok(types::Choice::nested(nested)) = value else {
+                        panic!("nested input must select its variant");
+                    };
+                    assert_eq!(nested.name, "Sheri");
+                    let value = types::Choice::from_graphql_value(&json!({"items": [1, null, 2]}));
+                    let Ok(types::Choice::items(items)) = value else {
+                        panic!("nullable list items must be preserved");
+                    };
+                    assert_eq!(items, vec![Some(1), None, Some(2)]);
+
+                    for invalid in [
+                        json!(null), json!([]), json!({}),
+                        json!({"number": null}), json!({"unknown": 1}),
+                        json!({"number": 1, "status": "OPEN"}),
+                        json!({"number": 1, "status": null}),
+                        json!({"number": "wrong"}), json!({"status": "UNKNOWN"}),
+                        json!({"nested": {}}), json!({"requiredItems": [null]}),
+                    ] {
+                        assert!(
+                            types::Choice::from_graphql_value(&invalid).is_err(),
+                            "invalid OneOf input was accepted: {invalid}",
+                        );
+                    }
+                }
+            "#,
+            true,
         );
     }
 
