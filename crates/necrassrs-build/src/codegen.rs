@@ -1368,6 +1368,101 @@ mod test {
     }
 
     #[test]
+    fn generated_one_of_types_use_non_null_variant_payloads() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                directive @oneOf on INPUT_OBJECT
+                enum Status { OPEN CLOSED }
+                input Nested { name: String! }
+                input Choice @oneOf {
+                    number: Int
+                    decimal: Float
+                    text: String
+                    flag: Boolean
+                    id: ID
+                    status: Status
+                    nested: Nested
+                    items: [Int]
+                    requiredItems: [Int!]
+                    matrix: [[Int!]]
+                }
+                input Filter { choice: Choice required: Choice! }
+                type Query { inspect(choice: Choice, required: Choice!): String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the OneOf test schema must be valid");
+        let generated = super::generate_types(&schema)
+            .expect("OneOf type generation must succeed")
+            .to_token_stream();
+        let file = syn::parse2::<syn::File>(generated.clone())
+            .expect("generated types must be valid Rust syntax");
+        let types = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Mod(module) if module.ident == "types" => {
+                    module.content.as_ref().map(|(_, items)| items)
+                }
+                _ => None,
+            })
+            .expect("generated types module must exist");
+        let choice = types
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Enum(item) if item.ident == "r#Choice" => Some(item),
+                _ => None,
+            })
+            .expect("OneOf Choice must be generated as an enum, not a struct");
+        let expected = syn::parse2::<syn::ItemEnum>(quote! {
+            pub enum r#Choice {
+                r#number(i32),
+                r#decimal(f64),
+                r#text(::std::string::String),
+                r#flag(bool),
+                r#id(::necrassrs::Id),
+                r#status(self::r#Status),
+                r#nested(self::r#Nested),
+                r#items(::std::vec::Vec<::core::option::Option<i32>>),
+                r#requiredItems(::std::vec::Vec<i32>),
+                r#matrix(::std::vec::Vec<::core::option::Option<::std::vec::Vec<i32>>>),
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            choice.to_token_stream().to_string(),
+            expected.to_token_stream().to_string(),
+            "selected payloads must be non-null while retaining nested list nullability"
+        );
+
+        assert_consumer_compiles(
+            &generated.to_string(),
+            r#"
+                fn main() {
+                    let _: types::Choice = types::Choice::number(1);
+                    let _: types::Choice = types::Choice::items(vec![Some(1), None]);
+                    let _: types::Choice = types::Choice::requiredItems(vec![1]);
+                    let _: types::Choice = types::Choice::matrix(vec![None, Some(vec![1])]);
+                    let _ = types::Filter {
+                        choice: necrassrs::GraphQLInput::Null,
+                        required: types::Choice::flag(true),
+                    };
+                    for choice in [
+                        necrassrs::GraphQLInput::Undefined,
+                        necrassrs::GraphQLInput::Null,
+                        necrassrs::GraphQLInput::Value(types::Choice::text(String::new())),
+                    ] {
+                        let _ = types::Query::inspect::Args {
+                            choice,
+                            required: types::Choice::id(necrassrs::Id::from("001")),
+                        };
+                    }
+                }
+            "#,
+        );
+    }
+
+    #[test]
     fn generated_dispatch_serializes_id_results_as_strings() {
         let schema = Schema::parse_and_validate("type Query { id: ID! }", "schema.graphql")
             .expect("the test schema must be valid");
