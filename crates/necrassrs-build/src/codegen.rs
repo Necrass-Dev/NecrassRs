@@ -1434,6 +1434,52 @@ mod test {
         assert_consumer(&generated, consumer, true);
     }
 
+    #[test]
+    fn generated_float_list_error_preserves_nullable_items_and_index_path() {
+        let schema = Schema::parse_and_validate("type Query { values: [Float] }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use generated::{resolvers::QueryResolver, types};
+
+            struct Query(f64);
+            impl QueryResolver<()> for Query {
+                async fn values<'a>(
+                    &'a self, _: &'a (), _: types::Query::values::Args,
+                ) -> Result<Option<Vec<Option<f64>>>, necrassrs::ResolverError> {
+                    Ok(Some(vec![Some(1.5), Some(self.0), Some(2.5)]))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let request = necrassrs::Request::new("{ numbers: values }");
+
+                for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                    let dispatcher = generated::dispatch::SchemaDispatcher::new(Query(value));
+                    let response = futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &()),
+                    );
+                    let response = serde_json::to_value(response).unwrap();
+
+                    assert_eq!(
+                        response["data"],
+                        serde_json::json!({ "numbers": [1.5, null, 2.5] }),
+                        "non-finite Float {value}: {response}",
+                    );
+                    let errors = response["errors"].as_array().expect("an item error is required");
+                    assert_eq!(errors.len(), 1);
+                    assert_eq!(errors[0]["path"], serde_json::json!(["numbers", 1]));
+                    assert!(errors[0]["message"].as_str().is_some_and(|message| !message.is_empty()));
+                }
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
     const FLOAT_RESULT_CONSUMER: &str = r#"
         use necrassrs::Dispatcher;
 
