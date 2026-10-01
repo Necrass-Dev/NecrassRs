@@ -2039,6 +2039,12 @@ mod test {
             process::{Command, Stdio},
         };
 
+        // ponytail: serialize shared Cargo artifact access; isolate target directories if throughput matters.
+        static COMPILATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _compilation = COMPILATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
         let build = Command::new(env!("CARGO"))
             .args([
                 "build",
