@@ -6,8 +6,8 @@ use actix_web::{
     test, web,
 };
 use necrassrs::{
-    Dispatcher, ExecutionOptions, FieldCoordinate, JsonMap, JsonValue, ResolverError, Schema,
-    Valid, execute_with_options,
+    Dispatcher, ExecutionOptions, FieldCoordinate, JsonMap, JsonValue, ResolvedValue,
+    ResolverError, Schema, Valid, execute_with_options,
 };
 use necrassrs_actix::{GraphQLRequest, GraphQLResponse, graphiql_html};
 use serde_json::{Value, json};
@@ -33,7 +33,7 @@ impl Dispatcher<Context> for GreetingDispatcher {
         context: &'a Context,
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
-    ) -> Result<JsonValue, ResolverError> {
+    ) -> Result<ResolvedValue, ResolverError> {
         assert!(matches!(coordinate.field, "hello" | "nullableHello"));
         let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
@@ -46,7 +46,9 @@ impl Dispatcher<Context> for GreetingDispatcher {
                 .with_extension("code", "USER_NOT_FOUND"));
         }
 
-        Ok(format!("{}, {name}", context.prefix).into())
+        Ok(ResolvedValue::Json(
+            format!("{}, {name}", context.prefix).into(),
+        ))
     }
 }
 

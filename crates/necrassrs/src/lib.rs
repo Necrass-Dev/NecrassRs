@@ -40,6 +40,16 @@ mod input;
 
 pub use execution::{Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options};
 
+/// A resolved value tree retaining conversion errors at their response positions.
+pub enum ResolvedValue {
+    /// A JSON value, including explicit null and JSON arrays from custom dispatchers.
+    Json(JsonValue),
+    /// List items that may independently contain values or conversion errors.
+    List(Vec<ResolvedValue>),
+    /// A conversion failure completed according to this position's nullability.
+    Error(ResolverError),
+}
+
 /// An application failure returned by a resolver.
 ///
 /// Execution preserves the message and extensions and adds the selected field's

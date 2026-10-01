@@ -8,7 +8,8 @@ use axum::{
     routing::{get, post},
 };
 use necrassrs::{
-    Dispatcher, FieldCoordinate, JsonMap, JsonValue, ResolverError, Schema, Valid, execute,
+    Dispatcher, FieldCoordinate, JsonMap, JsonValue, ResolvedValue, ResolverError, Schema, Valid,
+    execute,
 };
 use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
 use serde_json::{Value, json};
@@ -31,7 +32,7 @@ impl Dispatcher<Context> for GreetingDispatcher {
         context: &'a Context,
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
-    ) -> Result<JsonValue, ResolverError> {
+    ) -> Result<ResolvedValue, ResolverError> {
         assert!(matches!(coordinate.field, "hello" | "nullableHello"));
         let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
@@ -40,7 +41,9 @@ impl Dispatcher<Context> for GreetingDispatcher {
                 .with_extension("code", "USER_NOT_FOUND"));
         }
 
-        Ok(format!("{}, {name}", context.prefix).into())
+        Ok(ResolvedValue::Json(
+            format!("{}, {name}", context.prefix).into(),
+        ))
     }
 }
 

@@ -365,7 +365,7 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                     context: &'a C,
                     coordinate: ::necrassrs::FieldCoordinate<'a>,
                     _arguments: &'a ::necrassrs::JsonMap,
-                ) -> ::core::result::Result<::necrassrs::JsonValue, ::necrassrs::ResolverError> {
+                ) -> ::core::result::Result<::necrassrs::ResolvedValue, ::necrassrs::ResolverError> {
                     match (coordinate.parent_type, coordinate.field) {
                         #(#branches,)*
                         _ => Err(::necrassrs::ResolverError::new(::std::format!(
@@ -659,7 +659,7 @@ fn named_output_value(
 ) -> Option<TokenStream> {
     match type_name.as_str() {
         "String" | "Int" | "Boolean" => Some(quote! {
-            ::necrassrs::JsonValue::from(#value)
+            ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::from(#value))
         }),
         "Float" => {
             let message = format!("Expected a finite Float result at {coordinate}");
@@ -669,14 +669,16 @@ fn named_output_value(
                     let value: f64 = #value;
 
                     if !value.is_finite() {
-                        return Err(::necrassrs::ResolverError::new(#message));
+                        ::necrassrs::ResolvedValue::Error(::necrassrs::ResolverError::new(#message))
+                    } else {
+                        ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::from(value))
                     }
-
-                    ::necrassrs::JsonValue::from(value)
                 }
             })
         }
-        "ID" => Some(quote! { ::necrassrs::JsonValue::from((#value).as_str()) }),
+        "ID" => Some(quote! {
+            ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::from((#value).as_str()))
+        }),
         _ => match schema.types.get(type_name)? {
             ExtendedType::Enum(enum_type) => {
                 let enum_name = format_ident!("r#{}", rust_name(type_name.as_str()));
@@ -686,7 +688,7 @@ fn named_output_value(
 
                     quote! {
                         #types_path::#enum_name::#variant =>
-                            ::necrassrs::JsonValue::from(#graphql_name),
+                            ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::from(#graphql_name)),
                     }
                 });
 
@@ -798,7 +800,7 @@ fn output_value(
 
             Some(quote! {
                 match #value {
-                    None => ::necrassrs::JsonValue::Null,
+                    None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
                     Some(value) => #inner,
                 }
             })
@@ -809,7 +811,7 @@ fn output_value(
 
             Some(quote! {
                 match #value {
-                    None => ::necrassrs::JsonValue::Null,
+                    None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
                     Some(value) => #inner,
                 }
             })
@@ -828,13 +830,13 @@ fn output_list_value(
 
     Some(quote! {
         {
-            let mut items = ::std::vec::Vec::<::necrassrs::JsonValue>::new();
+            let mut items = ::std::vec::Vec::<::necrassrs::ResolvedValue>::new();
 
             for item in #value {
                 items.push(#converted_item);
             }
 
-            ::necrassrs::JsonValue::from(items)
+            ::necrassrs::ResolvedValue::List(items)
         }
     })
 }
@@ -1390,6 +1392,9 @@ mod test {
                         necrassrs::FieldCoordinate { parent_type: "Query", field: "id" },
                         &necrassrs::JsonMap::new(),
                     )).unwrap_or_else(|_| panic!("ID result conversion must succeed"));
+                    let necrassrs::ResolvedValue::Json(actual) = actual else {
+                        panic!("ID result must be a JSON leaf");
+                    };
                     assert_eq!(actual, necrassrs::JsonValue::from(expected));
                 }
             }
@@ -1426,6 +1431,9 @@ mod test {
                         necrassrs::FieldCoordinate { parent_type: "Query", field: "status" },
                         &necrassrs::JsonMap::new(),
                     )).unwrap_or_else(|_| panic!("enum result conversion must succeed"));
+                    let necrassrs::ResolvedValue::Json(actual) = actual else {
+                        panic!("enum result must be a JSON leaf");
+                    };
                     assert_eq!(actual, necrassrs::JsonValue::from(expected));
                 }
             }
@@ -1492,7 +1500,7 @@ mod test {
             }
         }
 
-        fn resolve(value: f64) -> Result<necrassrs::JsonValue, necrassrs::ResolverError> {
+        fn resolve(value: f64) -> Result<necrassrs::ResolvedValue, necrassrs::ResolverError> {
             let dispatcher = dispatch::SchemaDispatcher::new(Query(value));
             futures::executor::block_on(dispatcher.resolve(
                 &(),
@@ -1512,6 +1520,9 @@ mod test {
                 for value in [0.0, -0.0, 1.5, -2.5, f64::MIN, f64::MAX] {
                     let actual = resolve(value)
                         .unwrap_or_else(|_| panic!("finite Float {value} must succeed"));
+                    let necrassrs::ResolvedValue::Json(actual) = actual else {
+                        panic!("finite Float must be a JSON leaf");
+                    };
                     assert!(actual.is_number(), "finite Float {value} must be a JSON number");
                     assert_eq!(actual, necrassrs::JsonValue::from(value));
                 }
@@ -1530,8 +1541,8 @@ mod test {
             fn main() {
                 for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
                     assert!(
-                        resolve(value).is_err(),
-                        "non-finite Float {value} must return a resolver error",
+                        matches!(resolve(value), Ok(necrassrs::ResolvedValue::Error(_))),
+                        "non-finite Float {value} must retain a conversion error",
                     );
                 }
             }
@@ -1563,24 +1574,25 @@ mod test {
             .map(|(index, (_, expected))| {
                 let assertion = match expected {
                     Some(expected) => format!(
-                        "let actual = actual.unwrap_or_else(|_| panic!(\"case {index} must succeed\"));
-                         assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::json!({expected}));"
+                        "assert!(actual.get(\"errors\").is_none(), \"case {index}: {{actual}}\");
+                         assert_eq!(actual[\"data\"][\"value\"], serde_json::json!({expected}));"
                     ),
-                    None => format!("assert!(actual.is_err(), \"case {index} must return an error\");"),
+                    None => format!(
+                        "assert_eq!(actual[\"errors\"].as_array().unwrap().len(), 1, \"case {index}\");"
+                    ),
                 };
                 format!(
                     "let dispatcher = dispatch::SchemaDispatcher::new(Query({index}));
-                     let actual = futures::executor::block_on(dispatcher.resolve(
-                         &(), necrassrs::FieldCoordinate {{ parent_type: \"Query\", field: \"value\" }},
-                         &necrassrs::JsonMap::new(),
+                     let actual = futures::executor::block_on(necrassrs::execute(
+                         &schema, &request, &dispatcher, &(),
                      ));
+                     let actual = serde_json::to_value(actual).unwrap();
                      {assertion}"
                 )
             })
             .collect::<String>();
         let consumer = format!(
-            "use necrassrs::Dispatcher;
-             pub struct Query(usize);
+            "pub struct Query(usize);
              impl resolvers::QueryResolver<()> for Query {{
                  async fn value<'a>(
                      &'a self, _: &'a (), _: types::Query::value::Args,
@@ -1588,7 +1600,11 @@ mod test {
                      Ok(match self.0 {{ {arms} _ => unreachable!() }})
                  }}
              }}
-             fn main() {{ {assertions} }}"
+             fn main() {{
+                 let schema = necrassrs::Schema::parse_and_validate(SDL, \"schema.graphql\").unwrap();
+                 let request = necrassrs::Request::new(\"{{ value }}\");
+                 {assertions}
+             }}"
         );
 
         assert_consumer(&generated, &consumer, true);
