@@ -3,6 +3,53 @@ use apollo_compiler::response::{JsonMap, serde_json_bytes::json};
 use apollo_compiler::{ExecutableDocument, Schema, request::coerce_variable_values};
 
 #[test]
+fn json_variable_numbers_are_normalized_without_changing_literal_kinds() {
+    let schema = Schema::parse_and_validate(
+        "input Numbers { integers: [Int!] ids: [ID!] } type Query { inspect(value: Numbers): String }",
+        "schema.graphql",
+    ).unwrap();
+    let document = ExecutableDocument::parse_and_validate(
+        &schema,
+        "query($value: Numbers) { inspect(value: $value) }",
+        "query.graphql",
+    )
+    .unwrap();
+    let operation = document.operations.get(None).unwrap();
+    let supplied: JsonMap = [(
+        "value".into(),
+        json!({
+            "integers": [-2147483648.0, 1.0, 2147483647.0],
+            "ids": [42.0, -42, "001", u64::MAX]
+        }),
+    )]
+    .into_iter()
+    .collect();
+    let coerced = coerce_variable_values(&schema, operation, &supplied).unwrap();
+    assert_eq!(
+        coerced["value"],
+        json!({
+            "integers": [-2147483648i64, 1, 2147483647],
+            "ids": ["42", -42, "001", u64::MAX]
+        })
+    );
+    for invalid in [
+        json!({"integers": [1.5]}),
+        json!({"integers": [2147483648.0]}),
+        json!({"integers": [-2147483649.0]}),
+        json!({"ids": [1.5]}),
+    ] {
+        let supplied = [("value".into(), invalid)].into_iter().collect();
+        assert!(coerce_variable_values(&schema, operation, &supplied).is_err());
+    }
+    for query in [
+        "{ inspect(value: {integers: [1.0]}) }",
+        "{ inspect(value: {ids: [42.0]}) }",
+    ] {
+        assert!(ExecutableDocument::parse_and_validate(&schema, query, "query.graphql").is_err());
+    }
+}
+
+#[test]
 fn variable_defaults_are_coerced_by_apollo() {
     // Reuse the three execution default regressions at the dependency boundary.
     for (sdl, query, name, expected) in [

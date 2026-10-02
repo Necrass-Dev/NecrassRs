@@ -126,11 +126,18 @@ fn coerce_variable_value(
         ExtendedType::Scalar(_) => match ty_name.as_str() {
             "Int" => {
                 // https://spec.graphql.org/October2021/#sec-Int.Input-Coercion
-                if value
-                    .as_i64()
-                    .is_some_and(|value| i32::try_from(value).is_ok())
-                {
-                    return Ok(value.clone());
+                let integer = value.as_i64().or_else(|| {
+                    value
+                        .as_f64()
+                        .filter(|number| {
+                            number.fract() == 0.0
+                                && *number >= i32::MIN as f64
+                                && *number <= i32::MAX as f64
+                        })
+                        .map(|number| number as i64)
+                });
+                if let Some(integer) = integer.filter(|integer| i32::try_from(*integer).is_ok()) {
+                    return Ok(JsonValue::from(integer));
                 }
             }
             "Float" => {
@@ -157,8 +164,11 @@ fn coerce_variable_value(
             }
             "ID" => {
                 // https://spec.graphql.org/October2021/#sec-ID.Input-Coercion
-                if value.is_string() || value.is_i64() {
+                if value.is_string() || value.is_i64() || value.is_u64() {
                     return Ok(value.clone());
+                }
+                if let Some(number) = value.as_f64().filter(|number| number.fract() == 0.0) {
+                    return Ok(JsonValue::from(format!("{number:.0}")));
                 }
             }
             _ => {

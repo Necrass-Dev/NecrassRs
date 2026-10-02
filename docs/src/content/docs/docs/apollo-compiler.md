@@ -4,7 +4,7 @@ title: "Local Apollo correction and upstream work"
 
 NecrassRs maintains its own Apollo Compiler patch for
 [#23](https://github.com/Necrass-Dev/NecrassRs/issues/23) and OneOf support
-restrictions in [#24](https://github.com/Necrass-Dev/NecrassRs/issues/24). The separate
+and JSON numeric variable coercion in [#24](https://github.com/Necrass-Dev/NecrassRs/issues/24). The separate
 [dodok8/apollo-rs fork](https://github.com/dodok8/apollo-rs) is a preparation area
 for the minimal upstream implementation and regression tests. It is not a local
 path dependency of NecrassRs. The two repositories have different change scopes.
@@ -45,6 +45,16 @@ existing coercion while preserving validated scalar literal representations.
 Supplied JSON values retain scalar validation; recursive list/object processing
 keeps the distinction between supplied values and validated defaults. The first cycle diagnostic includes available field locations.
 Type recursion and the draft unbreakable-cycle rule remain separate checks.
+
+Supplied JSON numbers with an empty fractional part are integer inputs. The
+patch normalizes in-range Int variables to integer JSON values before generated
+conversion, including nested lists and input fields. ID variables accept signed
+and unsigned integer values and normalize integer-valued floating representations
+to strings. Fractional values remain invalid for Int and ID. GraphQL literal
+validation is unchanged: floating-point literals remain invalid at Int and ID
+positions. `json_variable_numbers_are_normalized_without_changing_literal_kinds`
+checks this directly through Apollo, and a compiled generated consumer checks
+the same behavior through resolver dispatch and result serialization.
 
 The patch also rejects non-null OneOf input fields and any OneOf field default,
 including explicit null, with source locations for the invalid type or default.
