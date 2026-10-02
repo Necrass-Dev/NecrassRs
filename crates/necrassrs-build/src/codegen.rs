@@ -1560,6 +1560,59 @@ mod test {
     }
 
     #[test]
+    fn scalar_primitives_cannot_be_shadowed_by_sdl_type_names() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                input i32 { name: String }
+                input f64 { name: String }
+                enum bool { YES NO }
+                input Filter { number: Int! decimal: Float! flag: Boolean! }
+                input Choice @oneOf { number: Int decimal: Float flag: Boolean }
+                type Query { inspect(value: Filter!, choice: Choice!, shadow: i32, floating: f64, kind: bool): [String!]! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &format!("#[allow(non_camel_case_types)] pub mod generated {{ {generated} }}"),
+            r#"
+                use generated::{types, resolvers::QueryResolver};
+                struct Query;
+                impl QueryResolver<()> for Query {
+                    async fn inspect(&self, _: &(), args: types::Query::inspect::Args)
+                        -> Result<Vec<String>, necrassrs::ResolverError> {
+                        let number: ::core::primitive::i32 = args.value.number;
+                        let decimal: ::core::primitive::f64 = args.value.decimal;
+                        let flag: ::core::primitive::bool = args.value.flag;
+                        let choice = match args.choice {
+                            types::Choice::number(value) => value.to_string(),
+                            types::Choice::decimal(value) => value.to_string(),
+                            types::Choice::flag(value) => value.to_string(),
+                        };
+                        Ok(vec![number.to_string(), decimal.to_string(), flag.to_string(), choice])
+                    }
+                }
+                fn main() {
+                    let schema = necrassrs::Schema::parse_and_validate(generated::SDL, "schema.graphql").unwrap();
+                    let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                    for (member, expected) in [("number: 7", "7"), ("decimal: 1.5", "1.5"), ("flag: true", "true")] {
+                        let request = necrassrs::Request::new(format!(
+                            "{{ inspect(value: {{number: 2, decimal: 2.5, flag: false}}, choice: {{{member}}}) }}",
+                        ));
+                        let response = futures::executor::block_on(necrassrs::execute(
+                            &schema, &request, &dispatcher, &(),
+                        ));
+                        assert_eq!(serde_json::to_value(response).unwrap(),
+                            serde_json::json!({"data": {"inspect": ["2", "2.5", "false", expected]}}));
+                    }
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
     fn documented_type_examples_compile_and_execute() {
         let guide = include_str!("../../../docs/src/content/docs/docs/types.md");
         let sdl = guide
