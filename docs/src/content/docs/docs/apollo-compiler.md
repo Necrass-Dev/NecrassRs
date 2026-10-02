@@ -3,7 +3,7 @@ title: "Local Apollo correction and upstream work"
 ---
 
 NecrassRs maintains its own Apollo Compiler patch for
-[#23](https://github.com/Necrass-Dev/NecrassRs/issues/23) and OneOf schema/document
+[#23](https://github.com/Necrass-Dev/NecrassRs/issues/23) and OneOf support
 restrictions in [#24](https://github.com/Necrass-Dev/NecrassRs/issues/24). The separate
 [dodok8/apollo-rs fork](https://github.com/dodok8/apollo-rs) is a preparation area
 for the minimal upstream implementation and regression tests. It is not a local
@@ -12,7 +12,7 @@ path dependency of NecrassRs. The two repositories have different change scopes.
 ## NecrassRs-owned artifacts
 
 - [Source patch](https://github.com/Necrass-Dev/NecrassRs/blob/main/patches/apollo-compiler-1.33.0.patch), relative to the compiler
-  crate root, records the seven validation/coercion source changes.
+  crate root, records the eight library source changes.
 - `vendor/apollo-compiler` is a minimal buildable copy of the crates.io 1.33.0
   package with that patch applied. It contains library source, licenses, provenance,
   README, and the single example embedded by the library's rustdoc. Upstream test
@@ -48,14 +48,22 @@ Type recursion and the draft unbreakable-cycle rule remain separate checks.
 
 The patch also rejects non-null OneOf input fields and any OneOf field default,
 including explicit null, with source locations for the invalid type or default.
-Tests declare `directive @oneOf on INPUT_OBJECT` explicitly; built-in directive
-registration and OneOf variable-value coercion are not implemented by these
-corrections. Document validation requires exactly one supplied field with a
+`@oneOf` is registered as a non-repeatable built-in directive without arguments,
+restricted to input object definitions. Existing explicit declarations remain
+supported. Document validation requires exactly one supplied field with a
 non-null literal or a compatible non-null member variable declaration, even if
 a nullable variable has a non-null default. It checks nested objects and list
 elements before variable coercion, so a second field using an undefined variable
 cannot disappear before the cardinality check. Existing unknown-field validation
 continues to apply.
+
+Variable-value coercion checks OneOf selection cardinality and non-nullness
+before recursively coercing the selected field, then checks that its coerced
+value remains non-null. The same path handles nested objects, list elements,
+and variable defaults. Nullable whole objects and nullable list items retain
+their ordinary semantics. Invalid supplied selections produce request errors
+before execution; `crates/necrassrs/tests/apollo_one_of.rs` exercises these rules
+directly through Apollo's public API.
 
 ## Cargo and consumers
 

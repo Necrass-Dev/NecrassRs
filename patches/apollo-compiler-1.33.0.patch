@@ -47,7 +47,23 @@
          ExtendedType::Scalar(_) => match ty_name.as_str() {
              "Int" => {
                  // https://spec.graphql.org/October2021/#sec-Int.Input-Coercion
-@@ -186,11 +198,19 @@
+@@ -178,6 +190,15 @@
+                         location: None,
+                     });
+                 }
++                let is_one_of = ty_def.directives.has("oneOf");
++                if is_one_of && (object.len() != 1 || object.values().any(JsonValue::is_null)) {
++                    return Err(InputCoercionError::ValueError {
++                        message: format!(
++                            "OneOf input object {ty_name} for {description} must contain exactly one non-null field"
++                        ),
++                        location: None,
++                    });
++                }
+                 let mut object = object.clone();
+                 for (field_name, field_def) in &ty_def.fields {
+                     if let Some(field_value) = object.get_mut(field_name.as_str()) {
+@@ -186,11 +207,19 @@
                              &format_args!("input field {ty_name}.{field_name}"),
                              &field_def.ty,
                              field_value,
@@ -67,6 +83,21 @@
                          )?;
                          object.insert(field_name.as_str(), default);
                      } else if field_def.ty.is_non_null() {
+@@ -201,6 +230,14 @@
+                     } else {
+                         // Field not required
+                     }
++                }
++                if is_one_of && object.values().any(JsonValue::is_null) {
++                    return Err(InputCoercionError::ValueError {
++                        message: format!(
++                            "OneOf input object {ty_name} for {description} must have a non-null coerced field"
++                        ),
++                        location: None,
++                    });
+                 }
+                 return Ok(object.into());
+             }
 --- a/src/schema/validation.rs
 +++ b/src/schema/validation.rs
 @@ -39,6 +39,7 @@
@@ -355,3 +386,15 @@
                          value_of_correct_type(diagnostics, schema, ty, v, var_defs);
                      }
                  })
+--- a/src/built_in_types.graphql
++++ b/src/built_in_types.graphql
+@@ -160,6 +160,9 @@
+     url: String!
+ ) on SCALAR
+
++"Requires exactly one non-null input field to be supplied."
++directive @oneOf on INPUT_OBJECT
++
+ """
+ The `Int` scalar type represents non-fractional signed whole numeric values. Int can represent values between -(2^31) and 2^31 - 1.
+ """

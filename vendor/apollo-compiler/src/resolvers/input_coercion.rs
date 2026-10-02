@@ -190,6 +190,15 @@ fn coerce_variable_value(
                         location: None,
                     });
                 }
+                let is_one_of = ty_def.directives.has("oneOf");
+                if is_one_of && (object.len() != 1 || object.values().any(JsonValue::is_null)) {
+                    return Err(InputCoercionError::ValueError {
+                        message: format!(
+                            "OneOf input object {ty_name} for {description} must contain exactly one non-null field"
+                        ),
+                        location: None,
+                    });
+                }
                 let mut object = object.clone();
                 for (field_name, field_def) in &ty_def.fields {
                     if let Some(field_value) = object.get_mut(field_name.as_str()) {
@@ -221,6 +230,14 @@ fn coerce_variable_value(
                     } else {
                         // Field not required
                     }
+                }
+                if is_one_of && object.values().any(JsonValue::is_null) {
+                    return Err(InputCoercionError::ValueError {
+                        message: format!(
+                            "OneOf input object {ty_name} for {description} must have a non-null coerced field"
+                        ),
+                        location: None,
+                    });
                 }
                 return Ok(object.into());
             }
