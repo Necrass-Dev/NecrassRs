@@ -3,6 +3,46 @@ use apollo_compiler::response::{JsonMap, serde_json_bytes::json};
 use apollo_compiler::{ExecutableDocument, Schema, request::coerce_variable_values};
 
 #[test]
+fn id_defaults_preserve_integer_text_before_json_number_conversion() {
+    let schema = Schema::parse_and_validate(
+        "input Holder { id: ID = 18446744073709551617 ids: [ID] = -18446744073709551617 } type Query { inspect(id: ID, holder: Holder): String }",
+        "schema.graphql",
+    ).unwrap();
+    for id in [
+        "18446744073709551617".to_owned(),
+        "-18446744073709551617".to_owned(),
+        "9".repeat(400),
+    ] {
+        let query = format!(
+            "query($id: ID = {id}, $holder: Holder = {{id: {id}, ids: {id}}}) {{inspect(id: $id, holder: $holder)}}"
+        );
+        let document =
+            ExecutableDocument::parse_and_validate(&schema, query, "query.graphql").unwrap();
+        let coerced = coerce_variable_values(
+            &schema,
+            document.operations.get(None).unwrap(),
+            &JsonMap::new(),
+        )
+        .unwrap();
+        assert_eq!(coerced["id"], json!(id));
+        assert_eq!(coerced["holder"], json!({"id": id, "ids": [id]}));
+    }
+    let document = ExecutableDocument::parse_and_validate(
+        &schema,
+        "query($holder: Holder!) {inspect(holder: $holder)}",
+        "query.graphql",
+    )
+    .unwrap();
+    let supplied = [("holder".into(), json!({}))].into_iter().collect();
+    let coerced =
+        coerce_variable_values(&schema, document.operations.get(None).unwrap(), &supplied).unwrap();
+    assert_eq!(
+        coerced["holder"],
+        json!({"id": "18446744073709551617", "ids": ["-18446744073709551617"]})
+    );
+}
+
+#[test]
 fn json_variable_numbers_are_normalized_without_changing_literal_kinds() {
     let schema = Schema::parse_and_validate(
         "input Numbers { integers: [Int!] ids: [ID!] } type Query { inspect(value: Numbers): String }",

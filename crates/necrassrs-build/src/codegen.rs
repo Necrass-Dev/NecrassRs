@@ -1613,6 +1613,80 @@ mod test {
     }
 
     #[test]
+    fn generated_id_inputs_preserve_unbounded_integer_literals_and_defaults() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                input Holder {
+                    id: ID! = 18446744073709551617
+                    ids: [ID!]! = -18446744073709551617
+                }
+                type Query {
+                    echo(value: ID! = 18446744073709551617): ID!
+                    inspect(value: Holder! = {}): [ID!]!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &generated,
+            r#"
+                struct Query;
+                impl resolvers::QueryResolver<()> for Query {
+                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<necrassrs::Id, necrassrs::ResolverError> { Ok(args.value) }
+                    async fn inspect(&self, _: &(), args: types::Query::inspect::Args)
+                        -> Result<Vec<necrassrs::Id>, necrassrs::ResolverError> {
+                        let mut ids = vec![args.value.id];
+                        ids.extend(args.value.ids);
+                        Ok(ids)
+                    }
+                }
+                fn main() {
+                    let schema = necrassrs::Schema::parse_and_validate(SDL, "schema.graphql").unwrap();
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query);
+                    let run = |document: &str, variables: serde_json::Value| {
+                        let request = necrassrs::Request::new(document)
+                            .with_variables(serde_json::from_value(variables).unwrap());
+                        serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                            &schema, &request, &dispatcher, &(),
+                        ))).unwrap()
+                    };
+                    for id in ["18446744073709551617".to_owned(), "-18446744073709551617".to_owned(), "9".repeat(400)] {
+                        for document in [
+                            format!("{{ echo(value: {id}) }}"),
+                            format!("query($id: ID! = {id}) {{ echo(value: $id) }}"),
+                        ] {
+                            assert_eq!(run(&document, serde_json::json!({})),
+                                serde_json::json!({"data": {"echo": id}}), "{document}");
+                        }
+                        let document = format!("{{ inspect(value: {{id: {id}, ids: {id}}}) }}");
+                        assert_eq!(run(&document, serde_json::json!({})),
+                            serde_json::json!({"data": {"inspect": [id, id]}}));
+                        let document = format!("query($v: Holder! = {{id: {id}, ids: [{id}]}}) {{inspect(value: $v)}}");
+                        assert_eq!(run(&document, serde_json::json!({})),
+                            serde_json::json!({"data": {"inspect": [id, id]}}));
+                    }
+                    for (document, variables) in [
+                        ("{ inspect }", serde_json::json!({})),
+                        ("{ inspect(value: {}) }", serde_json::json!({})),
+                        ("query($v: Holder! = {}) {inspect(value: $v)}", serde_json::json!({})),
+                        ("query($v: Holder!) {inspect(value: $v)}", serde_json::json!({"v": {}})),
+                    ] {
+                        assert_eq!(run(document, variables), serde_json::json!({"data": {
+                            "inspect": ["18446744073709551617", "-18446744073709551617"]
+                        }}), "{document}");
+                    }
+                    assert_eq!(run("{ echo }", serde_json::json!({})),
+                        serde_json::json!({"data": {"echo": "18446744073709551617"}}));
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
     fn documented_type_examples_compile_and_execute() {
         let guide = include_str!("../../../docs/src/content/docs/docs/types.md");
         let sdl = guide
