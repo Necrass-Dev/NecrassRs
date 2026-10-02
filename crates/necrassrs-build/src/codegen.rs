@@ -1687,6 +1687,56 @@ mod test {
     }
 
     #[test]
+    fn generated_sdl_names_compile_with_naming_warnings_denied() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                enum status { open in_progress type self _self }
+                input filter { status: status! next: filter }
+                input choice @oneOf { filter: filter status: status }
+                type Query { echo(value: filter!, choice: choice!): status! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &generated,
+            r#"
+                struct Query;
+                impl resolvers::QueryResolver<()> for Query {
+                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<types::status, necrassrs::ResolverError> {
+                        Ok(match args.choice {
+                            types::choice::filter(value) => value.status,
+                            types::choice::status(value) => value,
+                        })
+                    }
+                }
+                fn main() {
+                    let _: types::status = types::status::r#type;
+                    let _: types::status = types::status::_self;
+                    let _: types::status = types::status::__self;
+                    let _: necrassrs::GraphQLInput<Box<types::filter>> =
+                        types::filter { status: types::status::open, next: necrassrs::GraphQLInput::Undefined }.next;
+                    let schema = necrassrs::Schema::parse_and_validate(SDL, "schema.graphql").unwrap();
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query);
+                    for name in ["open", "in_progress", "type", "self", "_self"] {
+                        let request = necrassrs::Request::new(format!(
+                            "{{ echo(value: {{status: open}}, choice: {{status: {name}}}) }}",
+                        ));
+                        let response = futures::executor::block_on(necrassrs::execute(
+                            &schema, &request, &dispatcher, &(),
+                        ));
+                        assert_eq!(serde_json::to_value(response).unwrap(),
+                            serde_json::json!({"data": {"echo": name}}));
+                    }
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
     fn documented_type_examples_compile_and_execute() {
         let guide = include_str!("../../../docs/src/content/docs/docs/types.md");
         let sdl = guide
