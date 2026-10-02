@@ -193,7 +193,7 @@
 +}
 --- a/src/validation/diagnostics.rs
 +++ b/src/validation/diagnostics.rs
-@@ -318,6 +318,14 @@
+@@ -318,6 +318,16 @@
          name: Name,
          trace: Vec<Node<ast::InputValueDefinition>>,
      },
@@ -205,10 +205,12 @@
 +    NonNullableOneOfField { name: Name, field: Name },
 +    #[error("OneOf input field `{name}.{field}` must not define a default value")]
 +    OneOfFieldDefault { name: Name, field: Name },
++    #[error("OneOf input `{name}` must specify exactly one non-null field")]
++    InvalidOneOfSelection { name: Name },
      #[error("`{name}` fragment cannot reference itself")]
      RecursiveFragmentDefinition {
          /// Source location of just the "fragment FragName" part.
-@@ -498,6 +506,26 @@
+@@ -498,6 +508,32 @@
              DiagnosticData::RecursiveInputObjectDefinition { name, trace } => {
                  report.with_label_opt(main_location, "cyclical input object definition");
                  label_recursive_trace(report, trace, name, |reference| &reference.name);
@@ -232,6 +234,12 @@
 +            }
 +            DiagnosticData::OneOfFieldDefault { .. } => {
 +                report.with_label_opt(main_location, "remove this default value");
++            }
++            DiagnosticData::InvalidOneOfSelection { .. } => {
++                report.with_label_opt(
++                    main_location,
++                    "select exactly one field with a non-null value",
++                );
              }
              DiagnosticData::RecursiveFragmentDefinition {
                  head_location,
@@ -245,17 +253,18 @@
  pub(crate) mod input_object;
  pub(crate) mod interface;
  pub(crate) mod object;
-@@ -308,6 +309,9 @@
+@@ -308,6 +309,10 @@
                      RecursiveDirectiveDefinition { .. } => "RecursiveDirectiveDefinition",
                      RecursiveInterfaceDefinition { .. } => "RecursiveInterfaceDefinition",
                      RecursiveInputObjectDefinition { .. } => "RecursiveInputObjectDefinition",
 +                    RecursiveInputDefault { .. } => "RecursiveInputDefault",
 +                    NonNullableOneOfField { .. } => "NonNullableOneOfField",
 +                    OneOfFieldDefault { .. } => "OneOfFieldDefault",
++                    InvalidOneOfSelection { .. } => "InvalidOneOfSelection",
                      RecursiveFragmentDefinition { .. } => "RecursiveFragmentDefinition",
                      DeeplyNestedType { .. } => "DeeplyNestedType",
                      EmptyFieldSet { .. } => "EmptyFieldSet",
-@@ -376,7 +380,10 @@
+@@ -376,7 +381,11 @@
              Details::CompilerDiagnostic(diagnostic) => {
                  use diagnostics::DiagnosticData::*;
                  match diagnostic {
@@ -264,6 +273,7 @@
 +                    | RecursiveInputDefault { .. }
 +                    | NonNullableOneOfField { .. }
 +                    | OneOfFieldDefault { .. } => None,
++                    InvalidOneOfSelection { .. } => None,
                      UniqueVariable { name, .. } => Some(format!(
                          r#"There can be only one variable named "${name}"."#
                      )),
@@ -299,3 +309,49 @@
 
      match FindRecursiveInputValue::check(schema, input_object) {
          Ok(_) => {}
+--- a/src/validation/value.rs
++++ b/src/validation/value.rs
+@@ -202,6 +202,16 @@
+         ast::Value::Object(obj) => match &type_definition {
+             schema::ExtendedType::Scalar(scalar) if !scalar.is_built_in() => {}
+             schema::ExtendedType::InputObject(input_obj) => {
++                let is_one_of = input_obj.directives.has("oneOf");
++                if is_one_of && (obj.len() != 1 || obj.iter().any(|(_, value)| value.is_null())) {
++                    diagnostics.push(
++                        arg_value.location(),
++                        DiagnosticData::InvalidOneOfSelection {
++                            name: input_obj.name.clone(),
++                        },
++                    );
++                }
++
+                 let undefined_field = obj
+                     .iter()
+                     .find(|(name, ..)| !input_obj.fields.contains_key(name));
+@@ -248,6 +258,26 @@
+                     let used_val = obj.iter().find(|(obj_name, ..)| obj_name == input_name);
+
+                     if let Some((_, v)) = used_val {
++                        if is_one_of {
++                            if let Some(var_def) = v
++                                .as_variable()
++                                .and_then(|name| var_defs.iter().find(|def| def.name == *name))
++                            {
++                                if !var_def.ty.is_non_null() || !var_def.ty.is_assignable_to(ty) {
++                                    diagnostics.push(
++                                        v.location(),
++                                        DiagnosticData::DisallowedVariableUsage {
++                                            variable: var_def.name.clone(),
++                                            variable_type: (*var_def.ty).clone(),
++                                            variable_location: var_def.location(),
++                                            argument: input_name.clone(),
++                                            argument_type: ty.as_ref().clone().non_null(),
++                                            argument_location: v.location(),
++                                        },
++                                    );
++                                }
++                            }
++                        }
+                         value_of_correct_type(diagnostics, schema, ty, v, var_defs);
+                     }
+                 })

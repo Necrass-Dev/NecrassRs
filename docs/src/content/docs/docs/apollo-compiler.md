@@ -3,7 +3,7 @@ title: "Local Apollo correction and upstream work"
 ---
 
 NecrassRs maintains its own Apollo Compiler patch for
-[#23](https://github.com/Necrass-Dev/NecrassRs/issues/23) and OneOf schema
+[#23](https://github.com/Necrass-Dev/NecrassRs/issues/23) and OneOf schema/document
 restrictions in [#24](https://github.com/Necrass-Dev/NecrassRs/issues/24). The separate
 [dodok8/apollo-rs fork](https://github.com/dodok8/apollo-rs) is a preparation area
 for the minimal upstream implementation and regression tests. It is not a local
@@ -12,7 +12,7 @@ path dependency of NecrassRs. The two repositories have different change scopes.
 ## NecrassRs-owned artifacts
 
 - [Source patch](https://github.com/Necrass-Dev/NecrassRs/blob/main/patches/apollo-compiler-1.33.0.patch), relative to the compiler
-  crate root, records the six validation/coercion source changes.
+  crate root, records the seven validation/coercion source changes.
 - `vendor/apollo-compiler` is a minimal buildable copy of the crates.io 1.33.0
   package with that patch applied. It contains library source, licenses, provenance,
   README, and the single example embedded by the library's rustdoc. Upstream test
@@ -49,8 +49,13 @@ Type recursion and the draft unbreakable-cycle rule remain separate checks.
 The patch also rejects non-null OneOf input fields and any OneOf field default,
 including explicit null, with source locations for the invalid type or default.
 Tests declare `directive @oneOf on INPUT_OBJECT` explicitly; built-in directive
-registration, OneOf request validation, and variable coercion rules are not
-implemented by this schema correction.
+registration and OneOf variable-value coercion are not implemented by these
+corrections. Document validation requires exactly one supplied field with a
+non-null literal or a compatible non-null member variable declaration, even if
+a nullable variable has a non-null default. It checks nested objects and list
+elements before variable coercion, so a second field using an undefined variable
+cannot disappear before the cardinality check. Existing unknown-field validation
+continues to apply.
 
 ## Cargo and consumers
 

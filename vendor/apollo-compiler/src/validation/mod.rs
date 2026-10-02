@@ -312,6 +312,7 @@ impl DiagnosticData {
                     RecursiveInputDefault { .. } => "RecursiveInputDefault",
                     NonNullableOneOfField { .. } => "NonNullableOneOfField",
                     OneOfFieldDefault { .. } => "OneOfFieldDefault",
+                    InvalidOneOfSelection { .. } => "InvalidOneOfSelection",
                     RecursiveFragmentDefinition { .. } => "RecursiveFragmentDefinition",
                     DeeplyNestedType { .. } => "DeeplyNestedType",
                     EmptyFieldSet { .. } => "EmptyFieldSet",
@@ -384,6 +385,7 @@ impl DiagnosticData {
                     | RecursiveInputDefault { .. }
                     | NonNullableOneOfField { .. }
                     | OneOfFieldDefault { .. } => None,
+                    InvalidOneOfSelection { .. } => None,
                     UniqueVariable { name, .. } => Some(format!(
                         r#"There can be only one variable named "${name}"."#
                     )),
