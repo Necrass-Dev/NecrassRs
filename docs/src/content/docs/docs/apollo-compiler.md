@@ -3,7 +3,8 @@ title: "Local Apollo correction and upstream work"
 ---
 
 NecrassRs maintains its own Apollo Compiler patch for
-[#23](https://github.com/Necrass-Dev/NecrassRs/issues/23). The separate
+[#23](https://github.com/Necrass-Dev/NecrassRs/issues/23) and OneOf schema
+restrictions in [#24](https://github.com/Necrass-Dev/NecrassRs/issues/24). The separate
 [dodok8/apollo-rs fork](https://github.com/dodok8/apollo-rs) is a preparation area
 for the minimal upstream implementation and regression tests. It is not a local
 path dependency of NecrassRs. The two repositories have different change scopes.
@@ -11,7 +12,7 @@ path dependency of NecrassRs. The two repositories have different change scopes.
 ## NecrassRs-owned artifacts
 
 - [Source patch](https://github.com/Necrass-Dev/NecrassRs/blob/main/patches/apollo-compiler-1.33.0.patch), relative to the compiler
-  crate root, records the five validation/coercion source changes.
+  crate root, records the six validation/coercion source changes.
 - `vendor/apollo-compiler` is a minimal buildable copy of the crates.io 1.33.0
   package with that patch applied. It contains library source, licenses, provenance,
   README, and the single example embedded by the library's rustdoc. Upstream test
@@ -44,6 +45,12 @@ existing coercion while preserving validated scalar literal representations.
 Supplied JSON values retain scalar validation; recursive list/object processing
 keeps the distinction between supplied values and validated defaults. The first cycle diagnostic includes available field locations.
 Type recursion and the draft unbreakable-cycle rule remain separate checks.
+
+The patch also rejects non-null OneOf input fields and any OneOf field default,
+including explicit null, with source locations for the invalid type or default.
+Tests declare `directive @oneOf on INPUT_OBJECT` explicitly; built-in directive
+registration, OneOf request validation, and variable coercion rules are not
+implemented by this schema correction.
 
 ## Cargo and consumers
 

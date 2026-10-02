@@ -80,6 +80,29 @@ pub(crate) fn validate_input_object_definition(
         Default::default(),
     );
 
+    if input_object.directives.has("oneOf") {
+        for field in input_object.fields.values() {
+            if field.ty.is_non_null() {
+                diagnostics.push(
+                    field.ty.location(),
+                    DiagnosticData::NonNullableOneOfField {
+                        name: input_object.name.clone(),
+                        field: field.name.clone(),
+                    },
+                );
+            }
+            if let Some(default) = &field.default_value {
+                diagnostics.push(
+                    default.location(),
+                    DiagnosticData::OneOfFieldDefault {
+                        name: input_object.name.clone(),
+                        field: field.name.clone(),
+                    },
+                );
+            }
+        }
+    }
+
     match FindRecursiveInputValue::check(schema, input_object) {
         Ok(_) => {}
         Err(CycleError::Recursed(trace)) => diagnostics.push(

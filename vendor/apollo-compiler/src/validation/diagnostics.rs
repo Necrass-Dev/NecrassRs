@@ -322,6 +322,10 @@ pub(crate) enum DiagnosticData {
     RecursiveInputDefault {
         trace: Vec<(Name, Node<ast::InputValueDefinition>)>,
     },
+    #[error("OneOf input field `{name}.{field}` must be nullable")]
+    NonNullableOneOfField { name: Name, field: Name },
+    #[error("OneOf input field `{name}.{field}` must not define a default value")]
+    OneOfFieldDefault { name: Name, field: Name },
     #[error("`{name}` fragment cannot reference itself")]
     RecursiveFragmentDefinition {
         /// Source location of just the "fragment FragName" part.
@@ -516,6 +520,12 @@ impl DiagnosticData {
                         ),
                     );
                 }
+            }
+            DiagnosticData::NonNullableOneOfField { .. } => {
+                report.with_label_opt(main_location, "remove the outer non-null wrapper");
+            }
+            DiagnosticData::OneOfFieldDefault { .. } => {
+                report.with_label_opt(main_location, "remove this default value");
             }
             DiagnosticData::RecursiveFragmentDefinition {
                 head_location,

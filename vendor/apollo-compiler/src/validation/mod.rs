@@ -310,6 +310,8 @@ impl DiagnosticData {
                     RecursiveInterfaceDefinition { .. } => "RecursiveInterfaceDefinition",
                     RecursiveInputObjectDefinition { .. } => "RecursiveInputObjectDefinition",
                     RecursiveInputDefault { .. } => "RecursiveInputDefault",
+                    NonNullableOneOfField { .. } => "NonNullableOneOfField",
+                    OneOfFieldDefault { .. } => "OneOfFieldDefault",
                     RecursiveFragmentDefinition { .. } => "RecursiveFragmentDefinition",
                     DeeplyNestedType { .. } => "DeeplyNestedType",
                     EmptyFieldSet { .. } => "EmptyFieldSet",
@@ -378,7 +380,10 @@ impl DiagnosticData {
             Details::CompilerDiagnostic(diagnostic) => {
                 use diagnostics::DiagnosticData::*;
                 match diagnostic {
-                    RecursionError { .. } | RecursiveInputDefault { .. } => None,
+                    RecursionError { .. }
+                    | RecursiveInputDefault { .. }
+                    | NonNullableOneOfField { .. }
+                    | OneOfFieldDefault { .. } => None,
                     UniqueVariable { name, .. } => Some(format!(
                         r#"There can be only one variable named "${name}"."#
                     )),

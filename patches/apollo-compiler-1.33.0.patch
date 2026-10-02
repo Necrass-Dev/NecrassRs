@@ -193,7 +193,7 @@
 +}
 --- a/src/validation/diagnostics.rs
 +++ b/src/validation/diagnostics.rs
-@@ -318,6 +318,10 @@
+@@ -318,6 +318,14 @@
          name: Name,
          trace: Vec<Node<ast::InputValueDefinition>>,
      },
@@ -201,10 +201,14 @@
 +    RecursiveInputDefault {
 +        trace: Vec<(Name, Node<ast::InputValueDefinition>)>,
 +    },
++    #[error("OneOf input field `{name}.{field}` must be nullable")]
++    NonNullableOneOfField { name: Name, field: Name },
++    #[error("OneOf input field `{name}.{field}` must not define a default value")]
++    OneOfFieldDefault { name: Name, field: Name },
      #[error("`{name}` fragment cannot reference itself")]
      RecursiveFragmentDefinition {
          /// Source location of just the "fragment FragName" part.
-@@ -498,6 +502,20 @@
+@@ -498,6 +506,26 @@
              DiagnosticData::RecursiveInputObjectDefinition { name, trace } => {
                  report.with_label_opt(main_location, "cyclical input object definition");
                  label_recursive_trace(report, trace, name, |reference| &reference.name);
@@ -222,6 +226,12 @@
 +                        ),
 +                    );
 +                }
++            }
++            DiagnosticData::NonNullableOneOfField { .. } => {
++                report.with_label_opt(main_location, "remove the outer non-null wrapper");
++            }
++            DiagnosticData::OneOfFieldDefault { .. } => {
++                report.with_label_opt(main_location, "remove this default value");
              }
              DiagnosticData::RecursiveFragmentDefinition {
                  head_location,
@@ -235,20 +245,57 @@
  pub(crate) mod input_object;
  pub(crate) mod interface;
  pub(crate) mod object;
-@@ -308,6 +309,7 @@
+@@ -308,6 +309,9 @@
                      RecursiveDirectiveDefinition { .. } => "RecursiveDirectiveDefinition",
                      RecursiveInterfaceDefinition { .. } => "RecursiveInterfaceDefinition",
                      RecursiveInputObjectDefinition { .. } => "RecursiveInputObjectDefinition",
 +                    RecursiveInputDefault { .. } => "RecursiveInputDefault",
++                    NonNullableOneOfField { .. } => "NonNullableOneOfField",
++                    OneOfFieldDefault { .. } => "OneOfFieldDefault",
                      RecursiveFragmentDefinition { .. } => "RecursiveFragmentDefinition",
                      DeeplyNestedType { .. } => "DeeplyNestedType",
                      EmptyFieldSet { .. } => "EmptyFieldSet",
-@@ -376,7 +378,7 @@
+@@ -376,7 +380,10 @@
              Details::CompilerDiagnostic(diagnostic) => {
                  use diagnostics::DiagnosticData::*;
                  match diagnostic {
 -                    RecursionError { .. } => None,
-+                    RecursionError { .. } | RecursiveInputDefault { .. } => None,
++                    RecursionError { .. }
++                    | RecursiveInputDefault { .. }
++                    | NonNullableOneOfField { .. }
++                    | OneOfFieldDefault { .. } => None,
                      UniqueVariable { name, .. } => Some(format!(
                          r#"There can be only one variable named "${name}"."#
                      )),
+--- a/src/validation/input_object.rs
++++ b/src/validation/input_object.rs
+@@ -79,6 +79,29 @@
+         // input objects don't use variables
+         Default::default(),
+     );
++
++    if input_object.directives.has("oneOf") {
++        for field in input_object.fields.values() {
++            if field.ty.is_non_null() {
++                diagnostics.push(
++                    field.ty.location(),
++                    DiagnosticData::NonNullableOneOfField {
++                        name: input_object.name.clone(),
++                        field: field.name.clone(),
++                    },
++                );
++            }
++            if let Some(default) = &field.default_value {
++                diagnostics.push(
++                    default.location(),
++                    DiagnosticData::OneOfFieldDefault {
++                        name: input_object.name.clone(),
++                        field: field.name.clone(),
++                    },
++                );
++            }
++        }
++    }
+
+     match FindRecursiveInputValue::check(schema, input_object) {
+         Ok(_) => {}
