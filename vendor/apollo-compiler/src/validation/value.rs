@@ -202,6 +202,16 @@ pub(crate) fn value_of_correct_type(
         ast::Value::Object(obj) => match &type_definition {
             schema::ExtendedType::Scalar(scalar) if !scalar.is_built_in() => {}
             schema::ExtendedType::InputObject(input_obj) => {
+                let is_one_of = input_obj.directives.has("oneOf");
+                if is_one_of && (obj.len() != 1 || obj.iter().any(|(_, value)| value.is_null())) {
+                    diagnostics.push(
+                        arg_value.location(),
+                        DiagnosticData::InvalidOneOfSelection {
+                            name: input_obj.name.clone(),
+                        },
+                    );
+                }
+
                 let undefined_field = obj
                     .iter()
                     .find(|(name, ..)| !input_obj.fields.contains_key(name));
@@ -248,6 +258,26 @@ pub(crate) fn value_of_correct_type(
                     let used_val = obj.iter().find(|(obj_name, ..)| obj_name == input_name);
 
                     if let Some((_, v)) = used_val {
+                        if is_one_of {
+                            if let Some(var_def) = v
+                                .as_variable()
+                                .and_then(|name| var_defs.iter().find(|def| def.name == *name))
+                            {
+                                if !var_def.ty.is_non_null() || !var_def.ty.is_assignable_to(ty) {
+                                    diagnostics.push(
+                                        v.location(),
+                                        DiagnosticData::DisallowedVariableUsage {
+                                            variable: var_def.name.clone(),
+                                            variable_type: (*var_def.ty).clone(),
+                                            variable_location: var_def.location(),
+                                            argument: input_name.clone(),
+                                            argument_type: ty.as_ref().clone().non_null(),
+                                            argument_location: v.location(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
                         value_of_correct_type(diagnostics, schema, ty, v, var_defs);
                     }
                 })

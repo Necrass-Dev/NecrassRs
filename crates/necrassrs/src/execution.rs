@@ -11,7 +11,7 @@ use apollo_compiler::{
 };
 
 use crate::{
-    Request, ResolverError, Response,
+    Request, ResolvedValue, ResolverError, Response,
     input::literal_to_json as input_literal_to_json,
     request::{PreparedRequest, prepare_request},
 };
@@ -35,13 +35,15 @@ pub trait Dispatcher<C> {
     /// Argument keys are original SDL names. The returned `Send` future may
     /// borrow these inputs for the call lifetime. Return [`ResolverError`] for
     /// application failures; execution adds the response path and location and
-    /// completes successful JSON values according to the field's declared type.
+    /// completes the returned value tree according to the field's declared type.
+    /// Embedded conversion errors receive their list-index response paths during
+    /// completion; they do not discard successful sibling items.
     fn resolve<'a>(
         &'a self,
         context: &'a C,
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
-    ) -> impl Future<Output = Result<JsonValue, ResolverError>> + Send + 'a;
+    ) -> impl Future<Output = Result<ResolvedValue, ResolverError>> + Send + 'a;
 }
 
 /// Server-controlled execution settings.
@@ -69,7 +71,7 @@ impl Default for ExecutionOptions {
 /// # Example
 ///
 /// ```
-/// use necrassrs::{Dispatcher, FieldCoordinate, JsonMap, JsonValue, Request,
+/// use necrassrs::{Dispatcher, FieldCoordinate, JsonMap, ResolvedValue, Request,
 ///     ResolverError, Schema, execute};
 ///
 /// struct Greeting;
@@ -77,9 +79,9 @@ impl Default for ExecutionOptions {
 ///     async fn resolve<'a>(
 ///         &'a self, _context: &'a (), coordinate: FieldCoordinate<'a>,
 ///         _arguments: &'a JsonMap,
-///     ) -> Result<JsonValue, ResolverError> {
+///     ) -> Result<ResolvedValue, ResolverError> {
 ///         match (coordinate.parent_type, coordinate.field) {
-///             ("Query", "hello") => Ok("Hello, Sheri".into()),
+///             ("Query", "hello") => Ok(ResolvedValue::Json("Hello, Sheri".into())),
 ///             _ => Err(ResolverError::new("Unknown field")),
 ///         }
 ///     }
@@ -221,7 +223,9 @@ where
 
         let (value, has_error) = match field.name.as_str() {
             "__typename" => (
-                JsonValue::from(prepared.operation.selection_set.ty.as_str()),
+                ResolvedValue::Json(JsonValue::from(
+                    prepared.operation.selection_set.ty.as_str(),
+                )),
                 false,
             ),
             _ => match coerce_argument_values(schema, &prepared, &path, field, definition) {
@@ -242,17 +246,20 @@ where
                             &prepared, field, &path, error,
                         ));
 
-                        (JsonValue::Null, true)
+                        (ResolvedValue::Json(JsonValue::Null), true)
                     }
                 },
                 Err(error) => {
                     errors.push(*error);
-                    (JsonValue::Null, true)
+                    (ResolvedValue::Json(JsonValue::Null), true)
                 }
             },
         };
 
-        if has_error && value.is_null() && definition.ty.is_non_null() {
+        if has_error
+            && matches!(&value, ResolvedValue::Json(value) if value.is_null())
+            && definition.ty.is_non_null()
+        {
             return Response::execution(None, errors);
         }
 
@@ -503,6 +510,12 @@ fn coerce_input_value(
         Type::Named(name) | Type::NonNullNamed(name) => name,
     };
 
+    if type_name.as_str() == "ID"
+        && let Value::Int(integer) = value.as_ref()
+    {
+        return Ok(JsonValue::from(integer.as_str()));
+    }
+
     if let Some(ExtendedType::InputObject(input)) = schema.types.get(type_name) {
         let object = value.as_object().ok_or_else(|| {
             new_execution_error(
@@ -580,11 +593,26 @@ fn complete_value(
     prepared: &PreparedRequest,
     field: &Field,
     ty: &Type,
-    value: JsonValue,
+    value: ResolvedValue,
     path: &mut Vec<ResponseDataPathSegment>,
     errors: &mut Vec<GraphQLError>,
 ) -> Result<JsonValue, PropagateNull> {
-    if value.is_null() {
+    let value = match value {
+        ResolvedValue::Error(error) => {
+            errors.push(*resolver_error_to_graphql_error(
+                prepared, field, path, error,
+            ));
+
+            return if ty.is_non_null() {
+                Err(PropagateNull)
+            } else {
+                Ok(JsonValue::Null)
+            };
+        }
+        value => value,
+    };
+
+    if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
         return if ty.is_non_null() {
             errors.push(*new_execution_error(
                 prepared,
@@ -604,19 +632,25 @@ fn complete_value(
 
     match ty {
         Type::List(item_type) | Type::NonNullList(item_type) => {
-            let JsonValue::Array(values) = value else {
-                errors.push(*new_execution_error(
-                    prepared,
-                    path,
-                    format!("Expected field '{}' to return a list.", field.name),
-                    field.name.location(),
-                ));
+            let values = match value {
+                ResolvedValue::List(values) => values,
+                ResolvedValue::Json(JsonValue::Array(values)) => {
+                    values.into_iter().map(ResolvedValue::Json).collect()
+                }
+                _ => {
+                    errors.push(*new_execution_error(
+                        prepared,
+                        path,
+                        format!("Expected field '{}' to return a list.", field.name),
+                        field.name.location(),
+                    ));
 
-                return if ty.is_non_null() {
-                    Err(PropagateNull)
-                } else {
-                    Ok(JsonValue::Null)
-                };
+                    return if ty.is_non_null() {
+                        Err(PropagateNull)
+                    } else {
+                        Ok(JsonValue::Null)
+                    };
+                }
             };
 
             let completed = values
@@ -641,12 +675,52 @@ fn complete_value(
             }
         }
         Type::Named(name) | Type::NonNullNamed(name) => {
+            let ResolvedValue::Json(value) = value else {
+                errors.push(*new_execution_error(
+                    prepared,
+                    path,
+                    format!("Expected field '{}' to return a leaf value.", field.name),
+                    field.name.location(),
+                ));
+
+                return if ty.is_non_null() {
+                    Err(PropagateNull)
+                } else {
+                    Ok(JsonValue::Null)
+                };
+            };
+
             let message = match schema.types.get(name) {
-                Some(ExtendedType::Scalar(_)) if name.as_str() == "String" && value.is_string() => {
+                Some(ExtendedType::Scalar(_))
+                    if match name.as_str() {
+                        "Int" => value
+                            .as_i64()
+                            .is_some_and(|value| i32::try_from(value).is_ok()),
+                        "Float" => value.as_f64().is_some_and(f64::is_finite),
+                        "String" | "ID" => value.is_string(),
+                        "Boolean" => value.as_bool().is_some(),
+                        _ => false,
+                    } =>
+                {
                     return Ok(value);
                 }
-                Some(ExtendedType::Scalar(_)) if name.as_str() == "String" => {
-                    format!("Expected field '{}' to return a String.", field.name)
+                Some(ExtendedType::Scalar(_))
+                    if matches!(name.as_str(), "Int" | "Float" | "String" | "Boolean" | "ID") =>
+                {
+                    format!("Expected field '{}' to return a {name}.", field.name)
+                }
+                Some(ExtendedType::Enum(enum_type))
+                    if value
+                        .as_str()
+                        .is_some_and(|value| enum_type.values.contains_key(value)) =>
+                {
+                    return Ok(value);
+                }
+                Some(ExtendedType::Enum(_)) => {
+                    format!(
+                        "Expected field '{}' to return a {name} enum value.",
+                        field.name
+                    )
                 }
                 Some(_) => {
                     format!("Result completion for type '{name}' is not supported.")
@@ -697,7 +771,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use crate::{FieldCoordinate, Request, ResolverError, request::prepare_request};
+    use crate::{FieldCoordinate, Request, ResolvedValue, ResolverError, request::prepare_request};
     use apollo_compiler::{
         Schema,
         response::{
@@ -730,14 +804,17 @@ mod tests {
             context: &'a TestContext<'context>,
             coordinate: FieldCoordinate<'a>,
             arguments: &'a JsonMap,
-        ) -> Result<JsonValue, ResolverError> {
+        ) -> Result<ResolvedValue, ResolverError> {
             tokio::task::yield_now().await;
 
             assert_eq!(coordinate.field, "hello");
 
             let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
-            Ok(json!(format!("{}, {name}", context.greeting)))
+            Ok(ResolvedValue::Json(json!(format!(
+                "{}, {name}",
+                context.greeting
+            ))))
         }
     }
 
@@ -747,7 +824,7 @@ mod tests {
             _context: &'a (),
             _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
-        ) -> Result<JsonValue, ResolverError> {
+        ) -> Result<ResolvedValue, ResolverError> {
             Err(ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED"))
         }
     }
@@ -758,8 +835,8 @@ mod tests {
             _context: &'a (),
             _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
-        ) -> Result<JsonValue, ResolverError> {
-            Ok(JsonValue::Null)
+        ) -> Result<ResolvedValue, ResolverError> {
+            Ok(ResolvedValue::Json(JsonValue::Null))
         }
     }
 
@@ -769,8 +846,8 @@ mod tests {
             _context: &'a (),
             _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
-        ) -> Result<JsonValue, ResolverError> {
-            Ok(self.0.clone())
+        ) -> Result<ResolvedValue, ResolverError> {
+            Ok(ResolvedValue::Json(self.0.clone()))
         }
     }
 
@@ -780,10 +857,10 @@ mod tests {
             _context: &'a (),
             _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
-        ) -> Result<JsonValue, ResolverError> {
+        ) -> Result<ResolvedValue, ResolverError> {
             self.0.fetch_add(1, Ordering::Relaxed);
 
-            Ok(json!("unexpected resolver call"))
+            Ok(ResolvedValue::Json(json!("unexpected resolver call")))
         }
     }
 
@@ -793,11 +870,11 @@ mod tests {
             _context: &'a (),
             _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
-        ) -> Result<JsonValue, ResolverError> {
+        ) -> Result<ResolvedValue, ResolverError> {
             if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
                 Err(ResolverError::new("Greeting failed."))
             } else {
-                Ok(json!("Hello"))
+                Ok(ResolvedValue::Json(json!("Hello")))
             }
         }
     }
@@ -808,10 +885,10 @@ mod tests {
             _context: &'a (),
             coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
-        ) -> Result<JsonValue, ResolverError> {
+        ) -> Result<ResolvedValue, ResolverError> {
             self.0.lock().unwrap().push(coordinate.field.to_owned());
 
-            Ok(json!(coordinate.field))
+            Ok(ResolvedValue::Json(json!(coordinate.field)))
         }
     }
 
@@ -1506,6 +1583,172 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_accepts_int_results_at_boundaries() {
+        for value in [i32::MIN, 0, i32::MAX] {
+            let response = execute_value("Int!", json!(value)).await;
+
+            assert_eq!(response, json!({ "data": { "values": value } }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_accepts_finite_float_results() {
+        for value in [0.0, -0.0, 1.5, -2.5, f64::MIN, f64::MAX] {
+            let response = execute_value("Float!", json!(value)).await;
+
+            assert_eq!(response, json!({ "data": { "values": value } }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_accepts_boolean_results() {
+        for value in [false, true] {
+            let response = execute_value("Boolean!", json!(value)).await;
+
+            assert_eq!(response, json!({ "data": { "values": value } }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_preserves_id_string_results() {
+        for value in ["001", "", "Sheri"] {
+            let response = execute_value("ID!", json!(value)).await;
+
+            assert_eq!(response, json!({ "data": { "values": value } }));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_accepts_enum_members_and_rejects_unknown_results() {
+        for field_type in ["Status", "Status!"] {
+            let schema = Schema::parse_and_validate(
+                format!("enum Status {{ OPEN CLOSED }} type Query {{ values: {field_type} }}"),
+                "schema.graphql",
+            )
+            .unwrap();
+            let request = Request::new("{ values }");
+
+            for value in [json!("OPEN"), json!("CLOSED"), json!("UNKNOWN"), json!(42)] {
+                let valid = value == json!("OPEN") || value == json!("CLOSED");
+                let response = to_value(
+                    super::execute(&schema, &request, &ValueDispatcher(value.clone()), &()).await,
+                )
+                .unwrap();
+
+                if valid {
+                    assert_eq!(response, json!({ "data": { "values": value } }));
+                } else {
+                    let expected_data = if field_type == "Status!" {
+                        JsonValue::Null
+                    } else {
+                        json!({ "values": null })
+                    };
+                    assert_eq!(response["data"], expected_data);
+                    assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+                    assert_eq!(response["errors"][0]["path"], json!(["values"]));
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_rejects_invalid_scalar_results() {
+        for (name, value) in [
+            ("Int", json!(i64::from(i32::MIN) - 1)),
+            ("Int", json!(i64::from(i32::MAX) + 1)),
+            ("Int", json!({ "invalid": true })),
+            ("Float", json!({ "invalid": true })),
+            ("Boolean", json!({ "invalid": true })),
+            ("ID", json!({ "invalid": true })),
+        ] {
+            for non_null in [false, true] {
+                let field_type = format!("{name}{}", if non_null { "!" } else { "" });
+                let response = execute_value(&field_type, value.clone()).await;
+                let expected_data = if non_null {
+                    JsonValue::Null
+                } else {
+                    json!({ "values": null })
+                };
+
+                assert_eq!(response["data"], expected_data, "{field_type}: {value}");
+                assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+                assert_eq!(response["errors"][0]["path"], json!(["values"]));
+                assert!(
+                    response["errors"][0]["message"]
+                        .as_str()
+                        .is_some_and(|message| !message.is_empty())
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn leaf_completion_invalid_int_item_follows_list_nullability() {
+        for (field_type, expected_data) in [
+            ("[Int]", json!({ "values": [1, null, 2] })),
+            ("[Int]!", json!({ "values": [1, null, 2] })),
+            ("[Int!]", json!({ "values": null })),
+            ("[Int!]!", JsonValue::Null),
+        ] {
+            let response = execute_value(field_type, json!([1, i64::from(i32::MAX) + 1, 2])).await;
+
+            assert_eq!(response["data"], expected_data, "{field_type}");
+            assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+            assert_eq!(response["errors"][0]["path"], json!(["values", 1]));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn embedded_conversion_errors_follow_list_nullability_and_preserve_extensions() {
+        struct ConversionErrorDispatcher;
+
+        impl super::Dispatcher<()> for ConversionErrorDispatcher {
+            async fn resolve<'a>(
+                &'a self,
+                _: &'a (),
+                _: FieldCoordinate<'a>,
+                _: &'a JsonMap,
+            ) -> Result<ResolvedValue, ResolverError> {
+                Ok(ResolvedValue::List(vec![
+                    ResolvedValue::Json(json!(1.5)),
+                    ResolvedValue::Error(
+                        ResolverError::new("Invalid Float result.")
+                            .with_extension("code", "INVALID_FLOAT"),
+                    ),
+                    ResolvedValue::Json(json!(2.5)),
+                ]))
+            }
+        }
+
+        for (field_type, expected_data) in [
+            ("[Float]", json!({ "numbers": [1.5, null, 2.5] })),
+            ("[Float]!", json!({ "numbers": [1.5, null, 2.5] })),
+            ("[Float!]", json!({ "numbers": null })),
+            ("[Float!]!", JsonValue::Null),
+        ] {
+            let schema = Schema::parse_and_validate(
+                format!("type Query {{ values: {field_type} }}"),
+                "schema.graphql",
+            )
+            .unwrap();
+            let request = Request::new("{ numbers: values }");
+            let response =
+                to_value(super::execute(&schema, &request, &ConversionErrorDispatcher, &()).await)
+                    .unwrap();
+
+            assert_eq!(response["data"], expected_data, "{field_type}");
+            assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+            assert_eq!(response["errors"][0]["path"], json!(["numbers", 1]));
+            assert_eq!(response["errors"][0]["message"], "Invalid Float result.");
+            assert_eq!(response["errors"][0]["extensions"]["code"], "INVALID_FLOAT");
+            assert_eq!(
+                response["errors"][0]["locations"],
+                json!([{ "line": 1, "column": 12 }])
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn unsupported_object_result_becomes_execution_error() {
         let schema = Schema::parse_and_validate(
             "type Query { viewer: User } type User { name: String! }",
@@ -1610,12 +1853,12 @@ mod tests {
                 _context: &'a (),
                 coordinate: FieldCoordinate<'a>,
                 _arguments: &'a JsonMap,
-            ) -> Result<JsonValue, ResolverError> {
+            ) -> Result<ResolvedValue, ResolverError> {
                 self.0
                     .lock()
                     .unwrap()
                     .push(format!("{}.{}", coordinate.parent_type, coordinate.field));
-                Ok(json!("Hello"))
+                Ok(ResolvedValue::Json(json!("Hello")))
             }
         }
 

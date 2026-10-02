@@ -4,8 +4,13 @@
 //! synchronization. This module only generates disposable contract source.
 
 use apollo_compiler::{
-    Schema, ast::Type, parser::SourceSpan, schema::ExtendedType, validation::Valid,
+    Schema,
+    ast::{NamedType, Type},
+    parser::SourceSpan,
+    schema::ExtendedType,
+    validation::Valid,
 };
+use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 /// Returns Rust source containing embedded SDL, argument types, resolver traits,
@@ -18,8 +23,10 @@ use quote::{format_ident, quote};
 ///
 /// # Errors
 ///
-/// Returns [`CodegenError`] for unsupported argument/result types or mutation
-/// and subscription roots. Currently, argument and result types must be `String!`.
+/// Returns [`CodegenError`] for unsupported types or mutation and subscription
+/// roots. Generated contracts support built-in scalars, enums, ordinary input
+/// objects, lists, and nullable wrappers. Custom scalars and composite output
+/// types are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
@@ -46,11 +53,326 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     .to_string())
 }
 
+fn kosaraju(graph: &[Vec<usize>]) -> Vec<usize> {
+    struct Frame {
+        node: usize,
+        next_neighbor: usize,
+    }
+
+    let mut visited = vec![false; graph.len()];
+    let mut order = Vec::with_capacity(graph.len());
+    let mut stack = Vec::<Frame>::new();
+
+    for start in 0..graph.len() {
+        if visited[start] {
+            continue;
+        }
+
+        visited[start] = true;
+        stack.push(Frame {
+            node: start,
+            next_neighbor: 0,
+        });
+
+        while let Some(frame) = stack.last_mut() {
+            if frame.next_neighbor < graph[frame.node].len() {
+                let neighbor = graph[frame.node][frame.next_neighbor];
+                frame.next_neighbor += 1;
+
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    stack.push(Frame {
+                        node: neighbor,
+                        next_neighbor: 0,
+                    });
+                }
+            } else {
+                let finished = frame.node;
+                stack.pop();
+                order.push(finished);
+            }
+        }
+    }
+
+    let mut reversed = vec![Vec::new(); graph.len()];
+
+    for (node, neighbors) in graph.iter().enumerate() {
+        for &neighbor in neighbors {
+            reversed[neighbor].push(node);
+        }
+    }
+
+    let mut components = vec![usize::MAX; graph.len()];
+    let mut component_id = 0;
+    let mut pending = Vec::new();
+
+    for &start in order.iter().rev() {
+        if components[start] != usize::MAX {
+            continue;
+        }
+
+        components[start] = component_id;
+        pending.push(start);
+
+        while let Some(node) = pending.pop() {
+            for &neighbor in &reversed[node] {
+                if components[neighbor] == usize::MAX {
+                    components[neighbor] = component_id;
+                    pending.push(neighbor);
+                }
+            }
+        }
+
+        component_id += 1;
+    }
+
+    components
+}
+
+fn boxed_input_fields(
+    schema: &Valid<Schema>,
+) -> std::collections::HashSet<(apollo_compiler::Name, apollo_compiler::Name)> {
+    use std::collections::{HashMap, HashSet};
+
+    let inputs: Vec<_> = schema
+        .types
+        .values()
+        .filter_map(|definition| match definition {
+            ExtendedType::InputObject(input) => Some(input.as_ref()),
+            _ => None,
+        })
+        .collect();
+    let indices: HashMap<_, _> = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| (input.name.clone(), index))
+        .collect();
+    let mut graph = vec![Vec::new(); inputs.len()];
+    for (source, input) in inputs.iter().enumerate() {
+        for field in input.fields.values() {
+            match field.ty.as_ref() {
+                Type::Named(target) | Type::NonNullNamed(target) => {
+                    if let Some(&target) = indices.get(target) {
+                        graph[source].push(target);
+                    }
+                }
+                Type::List(_) | Type::NonNullList(_) => {}
+            }
+        }
+    }
+
+    let components = kosaraju(&graph);
+    let mut boxed = HashSet::new();
+    for (source, input) in inputs.iter().enumerate() {
+        for field in input.fields.values() {
+            if let Type::Named(target) = field.ty.as_ref()
+                && let Some(&target) = indices.get(target)
+                && components[source] == components[target]
+            {
+                boxed.insert((input.name.clone(), field.name.clone()));
+            }
+        }
+    }
+    boxed
+}
+
 fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
+    let boxed_fields = boxed_input_fields(schema);
+    let mut named_types = Vec::new();
     let mut object_modules = Vec::new();
 
     for (type_name, definition) in &schema.types {
         if type_name.as_str().starts_with("__") {
+            continue;
+        }
+
+        if let ExtendedType::Enum(enum_type) = definition {
+            let name = format_ident!("r#{}", rust_name(type_name.as_str()));
+            let variants = enum_type
+                .values
+                .keys()
+                .map(|value| format_ident!("r#{}", rust_name(value.as_str())));
+
+            named_types.push(quote! {
+                pub enum #name {
+                    #(#variants,)*
+                }
+            });
+            continue;
+        }
+
+        if let ExtendedType::InputObject(input_object) = definition {
+            let name = format_ident!("r#{}", rust_name(type_name.as_str()));
+            let message = format!("Expected a {type_name} input object");
+
+            if input_object.directives.has("oneOf") {
+                let (variants, conversions) = input_object
+                    .fields
+                    .iter()
+                    .map(|(field_name, field)| {
+                        let variant = format_ident!("r#{}", rust_name(field_name.as_str()));
+
+                        // Only the selected payload's outermost type becomes non-null.
+                        let payload_type = field.ty.as_ref().clone().non_null();
+                        let mut payload = input_type(schema, &payload_type, &quote! { self })
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    format!(
+                                        "Unsupported OneOf input type at {type_name}.{field_name}: {}",
+                                        field.ty,
+                                    ),
+                                    schema,
+                                    field.ty.location(),
+                                )
+                            })?;
+
+                        let graphql_name = field_name.as_str();
+                        let coordinate = format!("{type_name}.{field_name}");
+                        let mut converted = list_item_value(
+                            schema,
+                            &payload_type,
+                            &quote! { value },
+                            &coordinate,
+                            &quote! { self },
+                        )
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                format!(
+                                    "Unsupported OneOf input type at {type_name}.{field_name}: {}",
+                                    field.ty,
+                                ),
+                                schema,
+                                field.ty.location(),
+                            )
+                        })?;
+
+                        if boxed_fields.contains(&(type_name.clone(), field_name.clone())) {
+                            payload = quote! { ::std::boxed::Box<#payload> };
+                            converted = quote! { ::std::boxed::Box::new(#converted) };
+                        }
+
+                        Ok((
+                            quote! { #variant(#payload), },
+                            quote! { #graphql_name => Ok(Self::#variant(#converted)), },
+                        ))
+                    })
+                    .collect::<Result<(Vec<_>, Vec<_>), CodegenError>>()?;
+
+                let selection_message =
+                    format!("Expected exactly one non-null field in {type_name}");
+                let unknown_message = format!("Unknown field in {type_name} input object");
+
+                named_types.push(quote! {
+                    #[allow(non_camel_case_types)]
+                    pub enum #name {
+                        #(#variants)*
+                    }
+
+                    impl #name {
+                        pub(super) fn _from_graphql_value(
+                            value: &::necrassrs::JsonValue,
+                        ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                            let object = value
+                                .as_object()
+                                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?;
+                            if object.len() != 1 {
+                                return Err(::necrassrs::ResolverError::new(#selection_message));
+                            }
+                            let (field, value) = object.iter().next().ok_or_else(|| {
+                                ::necrassrs::ResolverError::new(#selection_message)
+                            })?;
+                            if value.is_null() {
+                                return Err(::necrassrs::ResolverError::new(#selection_message));
+                            }
+                            match field.as_str() {
+                                #(#conversions)*
+                                _ => Err(::necrassrs::ResolverError::new(#unknown_message)),
+                            }
+                        }
+                    }
+                });
+                continue;
+            }
+
+            let (fields, field_values) = input_object
+                .fields
+                .iter()
+                .map(|(field_name, field)| {
+                    let graphql_name = field_name.as_str();
+                    let member = format_ident!("r#{}", rust_name(graphql_name));
+                    let boxed = boxed_fields.contains(&(type_name.clone(), field_name.clone()));
+                    let ty = if boxed {
+                        field.ty.as_ref().clone().non_null()
+                    } else {
+                        field.ty.as_ref().clone()
+                    };
+                    let mut field_type =
+                        input_type(schema, &ty, &quote! { self }).ok_or_else(|| {
+                            CodegenError::new(
+                                format!(
+                                    "Unsupported input type at {type_name}.{field_name}: {}",
+                                    field.ty,
+                                ),
+                                schema,
+                                field.ty.location(),
+                            )
+                        })?;
+                    let coordinate = format!("{type_name}.{field_name}");
+                    let lookup = quote! { object.get(#graphql_name) };
+                    let field_value = if boxed {
+                        field_type = quote! {
+                            ::necrassrs::GraphQLInput<::std::boxed::Box<#field_type>>
+                        };
+                        list_item_value(
+                            schema,
+                            &ty,
+                            &quote! { value },
+                            &coordinate,
+                            &quote! { self },
+                        )
+                        .map(|value| {
+                            nullable_input(&lookup, &quote! { ::std::boxed::Box::new(#value) })
+                        })
+                    } else {
+                        input_position_value(schema, &ty, &lookup, &coordinate, &quote! { self })
+                    }
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            format!(
+                                "Unsupported input type at {type_name}.{field_name}: {}",
+                                field.ty,
+                            ),
+                            schema,
+                            field.ty.location(),
+                        )
+                    })?;
+
+                    Ok((
+                        quote! { pub #member: #field_type, },
+                        quote! { #member: #field_value, },
+                    ))
+                })
+                .collect::<Result<(Vec<_>, Vec<_>), CodegenError>>()?;
+
+            named_types.push(quote! {
+                pub struct #name {
+                    #(#fields)*
+                }
+
+                impl #name {
+                    pub(super) fn _from_graphql_value(
+                        value: &::necrassrs::JsonValue,
+                    ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                        let object = value
+                            .as_object()
+                            .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?;
+
+                        Ok(Self {
+                            #(#field_values)*
+                        })
+                    }
+                }
+            });
             continue;
         }
 
@@ -67,21 +389,21 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                 .arguments
                 .iter()
                 .map(|argument| {
-                    let argument_type = match argument.ty.as_ref() {
-                        Type::NonNullNamed(name) if name.as_str() == "String" => {
-                            quote! { ::std::string::String }
-                        }
-                        unsupported => {
-                            return Err(CodegenError::new(
-                                format!(
-                                    "Unsupported argument type at {type_name}.{field_name}({}): {unsupported}",
-                                    argument.name,
-                                ),
-                                schema,
-                                argument.ty.location(),
-                            ));
-                        }
-                    };
+                    let argument_type = input_type(
+                        schema,
+                        argument.ty.as_ref(),
+                        &quote! { super::super },
+                    )
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            format!(
+                                "Unsupported argument type at {type_name}.{field_name}({}): {}",
+                                argument.name, argument.ty,
+                            ),
+                            schema,
+                            argument.ty.location(),
+                        )
+                    })?;
 
                     Ok((
                         format_ident!("r#{}", rust_name(argument.name.as_str())),
@@ -107,8 +429,9 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
     }
 
     Ok(quote! {
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, non_camel_case_types)]
         pub mod types {
+            #(#named_types)*
             #(#object_modules)*
         }
     })
@@ -130,7 +453,13 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         let mut methods = Vec::new();
         for (field_name, field) in &object.fields {
             let method_name = format_ident!("r#{}", rust_name(field_name.as_str()));
-            let return_type = resolver_return_type(schema, type_name, field_name, &field.ty)?;
+            let return_type = resolver_return_type(
+                schema,
+                type_name,
+                field_name,
+                &field.ty,
+                &quote! { super::types },
+            )?;
             let message = format!("Resolver {type_name}.{field_name} is not implemented");
             methods.push(quote! {
                 fn #method_name<'a>(
@@ -193,25 +522,58 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
     for (field_name, field) in &query.fields {
         let field_name = field_name.as_str();
         let method_name = format_ident!("r#{}", rust_name(field_name));
-        let arguments = field.arguments.iter().map(|argument| {
-            let name = argument.name.as_str();
-            let member = format_ident!("r#{}", rust_name(name));
-            let message = format!("Expected a String argument at {type_name}.{field_name}({name})");
-            quote! {
-                #member: _arguments.get(#name)
-                    .and_then(::necrassrs::JsonValue::as_str)
-                    .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
-                    .to_owned(),
-            }
-        });
+        let arguments = field
+            .arguments
+            .iter()
+            .map(|argument| {
+                let name = argument.name.as_str();
+                let member = format_ident!("r#{}", rust_name(name));
+                let coordinate = format!("{type_name}.{field_name}({name})");
+                let value = argument_value(
+                    schema,
+                    argument.ty.as_ref(),
+                    name,
+                    &coordinate,
+                    &quote! { super::types },
+                )
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        format!("Unsupported argument type at {coordinate}: {}", argument.ty),
+                        schema,
+                        argument.ty.location(),
+                    )
+                })?;
+
+                Ok(quote! {
+                    #member: #value,
+                })
+            })
+            .collect::<Result<Vec<_>, CodegenError>>()?;
+
+        let coordinate = format!("{type_name}.{field_name}");
+        let conversion = output_value(
+            schema,
+            &field.ty,
+            &quote! { value },
+            &coordinate,
+            &quote! { super::types },
+        )
+        .ok_or_else(|| {
+            CodegenError::new(
+                format!("Unsupported result type at {coordinate}: {}", field.ty),
+                schema,
+                field.ty.inner_named_type().location(),
+            )
+        })?;
+
         branches.push(quote! {
             (#type_name, #field_name) => {
                 let args = super::types::#object_name::#method_name::Args {
                     #(#arguments)*
                 };
-                super::resolvers::#resolver_name::#method_name(&self.query, context, args)
-                    .await
-                    .map(::necrassrs::JsonValue::from)
+                let value = super::resolvers::#resolver_name::#method_name(&self.query, context, args)
+                    .await?;
+                Ok(#conversion)
             }
         });
     }
@@ -238,7 +600,7 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                     context: &'a C,
                     coordinate: ::necrassrs::FieldCoordinate<'a>,
                     _arguments: &'a ::necrassrs::JsonMap,
-                ) -> ::core::result::Result<::necrassrs::JsonValue, ::necrassrs::ResolverError> {
+                ) -> ::core::result::Result<::necrassrs::ResolvedValue, ::necrassrs::ResolverError> {
                     match (coordinate.parent_type, coordinate.field) {
                         #(#branches,)*
                         _ => Err(::necrassrs::ResolverError::new(::std::format!(
@@ -256,17 +618,15 @@ pub(crate) fn resolver_return_type(
     type_name: &str,
     field_name: &str,
     ty: &Type,
-) -> Result<proc_macro2::TokenStream, CodegenError> {
-    match ty {
-        Type::NonNullNamed(name) if name.as_str() == "String" => {
-            Ok(quote! { ::std::string::String })
-        }
-        unsupported => Err(CodegenError::new(
-            format!("Unsupported return type at {type_name}.{field_name}: {unsupported}"),
+    types_path: &TokenStream,
+) -> Result<TokenStream, CodegenError> {
+    output_type(schema, ty, types_path).ok_or_else(|| {
+        CodegenError::new(
+            format!("Unsupported return type at {type_name}.{field_name}: {ty}"),
             schema,
             ty.inner_named_type().location(),
-        )),
-    }
+        )
+    })
 }
 
 pub(crate) fn rust_name(name: &str) -> String {
@@ -319,10 +679,686 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+fn output_type(schema: &Schema, ty: &Type, types_path: &TokenStream) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_type(schema, name, types_path),
+        Type::Named(name) => {
+            let inner = named_type(schema, name, types_path)?;
+            Some(quote! { ::core::option::Option<#inner> })
+        }
+        Type::NonNullList(item) => {
+            let item = output_type(schema, item, types_path)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        Type::List(item) => {
+            let item = output_type(schema, item, types_path)?;
+            Some(quote! { ::core::option::Option<::std::vec::Vec<#item>> })
+        }
+    }
+}
+
+fn input_type(schema: &Schema, ty: &Type, types_path: &TokenStream) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_type(schema, name, types_path),
+        Type::Named(name) => {
+            let inner = named_type(schema, name, types_path)?;
+            Some(quote! { ::necrassrs::GraphQLInput<#inner> })
+        }
+        Type::NonNullList(item) => {
+            let item = input_list_item_type(schema, item, types_path)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        Type::List(item) => {
+            let item = input_list_item_type(schema, item, types_path)?;
+            Some(quote! {
+                ::necrassrs::GraphQLInput<::std::vec::Vec<#item>>
+            })
+        }
+    }
+}
+
+fn input_list_item_type(
+    schema: &Schema,
+    ty: &Type,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_type(schema, name, types_path),
+        Type::Named(name) => {
+            let inner = named_type(schema, name, types_path)?;
+            Some(quote! { ::core::option::Option<#inner> })
+        }
+        Type::NonNullList(item) => {
+            let item = input_list_item_type(schema, item, types_path)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        Type::List(item) => {
+            let item = input_list_item_type(schema, item, types_path)?;
+            Some(quote! {
+                ::core::option::Option<::std::vec::Vec<#item>>
+            })
+        }
+    }
+}
+
+fn argument_value(
+    schema: &Schema,
+    ty: &Type,
+    name: &str,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    let lookup = quote! {
+        _arguments.get(#name)
+    };
+
+    input_position_value(schema, ty, &lookup, coordinate, types_path)
+}
+
+fn list_value(
+    schema: &Schema,
+    item: &Type,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    let item = list_item_value(schema, item, &quote! { item }, coordinate, types_path)?;
+    let message = format!("Expected a List argument at {coordinate}");
+    Some(quote! {
+        (#value).as_array()
+            .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+            .iter()
+            .map(|item| {
+                Ok(#item)
+            })
+            .collect::<::core::result::Result<
+                ::std::vec::Vec<_>,
+                ::necrassrs::ResolverError,
+            >>()?
+    })
+}
+
+fn list_item_value(
+    schema: &Schema,
+    ty: &Type,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(type_name) => {
+            named_input_value(schema, type_name, value, coordinate, types_path)
+        }
+        Type::Named(type_name) => {
+            let inner = named_input_value(schema, type_name, value, coordinate, types_path)?;
+            Some(quote! {
+                if (#value).is_null() {
+                    None
+                } else {
+                    Some(#inner)
+                }
+            })
+        }
+        Type::NonNullList(item) => list_value(schema, item, value, coordinate, types_path),
+        Type::List(item) => {
+            let inner = list_value(schema, item, value, coordinate, types_path)?;
+            Some(quote! {
+                if (#value).is_null() {
+                    None
+                } else {
+                    Some(#inner)
+                }
+            })
+        }
+    }
+}
+
+fn named_input_value(
+    schema: &Schema,
+    type_name: &NamedType,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    let message = format!("Expected a {type_name} argument at {coordinate}");
+    match type_name.as_str() {
+        "Int" => Some(quote! {
+            (#value).as_i64()
+                .and_then(|value| {
+                    <::core::primitive::i32 as ::core::convert::TryFrom<::core::primitive::i64>>::try_from(value).ok()
+                })
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+        }),
+        "Float" => Some(quote! {
+            (#value).as_f64()
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+        }),
+        "String" => Some(quote! {
+            (#value).as_str()
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+                .to_owned()
+        }),
+        "Boolean" => Some(quote! {
+            (#value).as_bool()
+                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+        }),
+        "ID" => Some(quote! {
+            {
+                let value = #value;
+                value.as_str()
+                    .map(::std::borrow::ToOwned::to_owned)
+                    .or_else(|| {
+                        value.as_i64().map(|value| value.to_string())
+                    })
+                    .or_else(|| value.as_u64().map(|value| value.to_string()))
+                    .map(::necrassrs::Id::from)
+                    .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+            }
+        }),
+        _ => match schema.types.get(type_name)? {
+            ExtendedType::Enum(enum_type) => {
+                let enum_name = format_ident!("r#{}", rust_name(type_name.as_str()));
+                let (values, variants): (Vec<_>, Vec<_>) = enum_type
+                    .values
+                    .keys()
+                    .map(|value| {
+                        (
+                            value.as_str(),
+                            format_ident!("r#{}", rust_name(value.as_str())),
+                        )
+                    })
+                    .unzip();
+
+                Some(quote! {
+                    match (#value).as_str() {
+                        #(Some(#values) => #types_path::#enum_name::#variants,)*
+                        _ => return Err(::necrassrs::ResolverError::new(#message)),
+                    }
+                })
+            }
+
+            ExtendedType::InputObject(_) => {
+                let name = format_ident!("r#{}", rust_name(type_name.as_str()));
+
+                Some(quote! {
+                    #types_path::#name::_from_graphql_value(#value)?
+                })
+            }
+
+            _ => None,
+        },
+    }
+}
+
+fn named_output_value(
+    schema: &Schema,
+    type_name: &NamedType,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match type_name.as_str() {
+        "String" | "Int" | "Boolean" => Some(quote! {
+            ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::from(#value))
+        }),
+        "Float" => {
+            let message = format!("Expected a finite Float result at {coordinate}");
+
+            Some(quote! {
+                {
+                    let value: ::core::primitive::f64 = #value;
+
+                    if !value.is_finite() {
+                        ::necrassrs::ResolvedValue::Error(::necrassrs::ResolverError::new(#message))
+                    } else {
+                        ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::from(value))
+                    }
+                }
+            })
+        }
+        "ID" => Some(quote! {
+            ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::from((#value).as_str()))
+        }),
+        _ => match schema.types.get(type_name)? {
+            ExtendedType::Enum(enum_type) => {
+                let enum_name = format_ident!("r#{}", rust_name(type_name.as_str()));
+                let arms = enum_type.values.keys().map(|name| {
+                    let graphql_name = name.as_str();
+                    let variant = format_ident!("r#{}", rust_name(graphql_name));
+
+                    quote! {
+                        #types_path::#enum_name::#variant =>
+                            ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::from(#graphql_name)),
+                    }
+                });
+
+                Some(quote! {
+                    match #value {
+                        #(#arms)*
+                    }
+                })
+            }
+            _ => None,
+        },
+    }
+}
+
+fn input_position_value(
+    schema: &Schema,
+    ty: &Type,
+    lookup: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(type_name) => {
+            let message = format!("Expected a {type_name} argument at {coordinate}");
+
+            let value = quote! {
+                (#lookup)
+                    .ok_or_else(|| {
+                        ::necrassrs::ResolverError::new(#message)
+                    })?
+            };
+
+            named_input_value(schema, type_name, &value, coordinate, types_path)
+        }
+
+        Type::Named(type_name) => {
+            let value =
+                named_input_value(schema, type_name, &quote! { value }, coordinate, types_path)?;
+
+            Some(nullable_input(lookup, &value))
+        }
+
+        Type::NonNullList(item) => {
+            let message = format!("Expected a List argument at {coordinate}");
+
+            let value = quote! {
+                (#lookup)
+                    .ok_or_else(|| {
+                        ::necrassrs::ResolverError::new(#message)
+                    })?
+            };
+
+            list_value(schema, item, &value, coordinate, types_path)
+        }
+
+        Type::List(item) => {
+            let value = list_value(schema, item, &quote! { value }, coordinate, types_path)?;
+
+            Some(nullable_input(lookup, &value))
+        }
+    }
+}
+
+fn nullable_input(lookup: &TokenStream, value: &TokenStream) -> TokenStream {
+    quote! {
+        match #lookup {
+            None => ::necrassrs::GraphQLInput::Undefined,
+
+            Some(value) if value.is_null() => {
+                ::necrassrs::GraphQLInput::Null
+            }
+
+            Some(value) => {
+                ::necrassrs::GraphQLInput::Value(#value)
+            }
+        }
+    }
+}
+
+fn named_type(schema: &Schema, name: &NamedType, types_path: &TokenStream) -> Option<TokenStream> {
+    match name.as_str() {
+        "Int" => Some(quote! { ::core::primitive::i32 }),
+        "Float" => Some(quote! { ::core::primitive::f64 }),
+        "String" => Some(quote! { ::std::string::String }),
+        "Boolean" => Some(quote! { ::core::primitive::bool }),
+        "ID" => Some(quote! { ::necrassrs::Id }),
+        _ => match schema.types.get(name) {
+            Some(ExtendedType::Enum(_)) | Some(ExtendedType::InputObject(_)) => {
+                let name = format_ident!("r#{}", rust_name(name.as_str()));
+                Some(quote! { #types_path::#name })
+            }
+            _ => None,
+        },
+    }
+}
+
+fn output_value(
+    schema: &Schema,
+    ty: &Type,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_output_value(schema, name, value, coordinate, types_path),
+        Type::Named(name) => {
+            let inner =
+                named_output_value(schema, name, &quote! { value }, coordinate, types_path)?;
+
+            Some(quote! {
+                match #value {
+                    None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
+                    Some(value) => #inner,
+                }
+            })
+        }
+        Type::NonNullList(item) => output_list_value(schema, item, value, coordinate, types_path),
+        Type::List(item) => {
+            let inner = output_list_value(schema, item, &quote! { value }, coordinate, types_path)?;
+
+            Some(quote! {
+                match #value {
+                    None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
+                    Some(value) => #inner,
+                }
+            })
+        }
+    }
+}
+
+fn output_list_value(
+    schema: &Schema,
+    item: &Type,
+    value: &TokenStream,
+    coordinate: &str,
+    types_path: &TokenStream,
+) -> Option<TokenStream> {
+    let converted_item = output_value(schema, item, &quote! { item }, coordinate, types_path)?;
+
+    Some(quote! {
+        {
+            let mut items = ::std::vec::Vec::<::necrassrs::ResolvedValue>::new();
+
+            for item in #value {
+                items.push(#converted_item);
+            }
+
+            ::necrassrs::ResolvedValue::List(items)
+        }
+    })
+}
+
 #[cfg(test)]
 mod test {
     use apollo_compiler::Schema;
     use miette::Diagnostic;
+    use quote::{ToTokens, quote};
+
+    fn normalize_type(tokens: proc_macro2::TokenStream) -> String {
+        syn::parse2::<syn::Type>(tokens)
+            .expect("generated type must be valid Rust")
+            .to_token_stream()
+            .to_string()
+    }
+
+    #[test]
+    fn boxed_input_fields_ignore_non_recursive_references() {
+        assert_boxed_input_fields("type Query { next: Query }", &[]);
+        assert_boxed_input_fields(
+            r#"
+                enum Status { OPEN CLOSED }
+                input Leaf { name: String! }
+                input Root { child: Leaf! optional: Leaf status: Status count: Int }
+                type Query { inspect(input: Root): String }
+            "#,
+            &[],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_include_all_nullable_self_edges_regardless_of_defaults() {
+        assert_boxed_input_fields(
+            r#"
+                input Node {
+                    next: Node = { next: null }
+                    other: Node
+                    name: String
+                }
+                type Query { inspect(input: Node): String }
+            "#,
+            &[("Node", "next"), ("Node", "other")],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_use_non_null_edges_for_component_analysis() {
+        assert_boxed_input_fields(
+            r#"
+                input A { b: B! }
+                input B { c: C! }
+                input C { a: A }
+                type Query { inspect(input: A): String }
+            "#,
+            &[("C", "a")],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_exclude_edges_between_distinct_components() {
+        assert_boxed_input_fields(
+            r#"
+                input A { b: B otherB: B d: D }
+                input B { a: A }
+                input C { d: D! }
+                input D { c: C }
+                type Query { inspect(input: A): String }
+            "#,
+            &[("A", "b"), ("A", "otherB"), ("B", "a"), ("D", "c")],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_exclude_all_list_edges_from_component_analysis() {
+        assert_boxed_input_fields(
+            r#"
+                input Node {
+                    nullable: [Node]
+                    requiredItems: [Node!]
+                    required: [Node]!
+                    requiredBoth: [Node!]!
+                    nested: [[Node!]!]!
+                }
+                input A { bs: [B]! }
+                input B { a: A }
+                input C { d: D! }
+                input D { cs: [[C!]!]! }
+                type Query { inspect(node: Node, a: A, c: C): String }
+            "#,
+            &[],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_use_original_one_of_member_nullability() {
+        assert_boxed_input_fields(
+            r#"
+                input Choice @oneOf {
+                    number: Int
+                    next: Choice
+                    holder: Holder
+                    children: [Choice]
+                }
+                input Holder { choice: Choice! }
+                type Query { inspect(input: Choice): String }
+            "#,
+            &[("Choice", "next"), ("Choice", "holder")],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_preserve_graphql_names() {
+        assert_boxed_input_fields(
+            r#"
+                input self { type: self Type: self _type: self }
+                type Query { inspect(input: self): String }
+            "#,
+            &[("self", "type"), ("self", "Type"), ("self", "_type")],
+        );
+    }
+
+    fn assert_boxed_input_fields(source: &str, expected: &[(&str, &str)]) {
+        let schema = Schema::parse_and_validate(source, "schema.graphql")
+            .expect("boxing analysis fixtures must be valid schemas");
+        let mut actual: Vec<_> = super::boxed_input_fields(&schema)
+            .into_iter()
+            .map(|(ty, field)| (ty.as_str().to_owned(), field.as_str().to_owned()))
+            .collect();
+        let mut expected: Vec<_> = expected
+            .iter()
+            .map(|(ty, field)| ((*ty).to_owned(), (*field).to_owned()))
+            .collect();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected, "{source}");
+    }
+
+    #[test]
+    fn kosaraju_partitions_directed_graphs() {
+        let cases = [
+            ("empty", vec![], vec![]),
+            (
+                "isolated vertices",
+                vec![vec![], vec![], vec![]],
+                vec![vec![0], vec![1], vec![2]],
+            ),
+            ("self loops", vec![vec![0], vec![1]], vec![vec![0], vec![1]]),
+            (
+                "one-way chain",
+                vec![vec![1], vec![2], vec![]],
+                vec![vec![0], vec![1], vec![2]],
+            ),
+            (
+                "cycle",
+                vec![vec![1], vec![2], vec![0]],
+                vec![vec![0, 1, 2]],
+            ),
+            (
+                "cycles joined by one-way edges",
+                vec![vec![1], vec![0, 2], vec![3], vec![2, 4], vec![]],
+                vec![vec![0, 1], vec![2, 3], vec![4]],
+            ),
+            (
+                "disconnected cycles and duplicate edges",
+                vec![vec![1, 1], vec![0], vec![3], vec![2], vec![]],
+                vec![vec![0, 1], vec![2, 3], vec![4]],
+            ),
+            (
+                "sibling edges require DFS completion order",
+                vec![vec![1, 2], vec![2], vec![]],
+                vec![vec![0], vec![1], vec![2]],
+            ),
+            (
+                "connected cycles form one component",
+                vec![vec![1], vec![0, 2], vec![3], vec![2, 0]],
+                vec![vec![0, 1, 2, 3]],
+            ),
+        ];
+        for (case, graph, expected) in cases {
+            assert_scc_partition(case, &graph, expected);
+        }
+    }
+
+    #[test]
+    fn kosaraju_partition_is_independent_of_vertex_and_neighbor_order() {
+        let graph = vec![vec![1, 2], vec![0, 3], vec![3], vec![2, 4], vec![]];
+        assert_scc_partition("original", &graph, vec![vec![0, 1], vec![2, 3], vec![4]]);
+        let mut reordered = graph.clone();
+        for neighbors in &mut reordered {
+            neighbors.reverse();
+        }
+        assert_scc_partition(
+            "reversed neighbors",
+            &reordered,
+            vec![vec![0, 1], vec![2, 3], vec![4]],
+        );
+
+        let permutation = [2, 4, 0, 3, 1];
+        let mut renamed = vec![Vec::new(); graph.len()];
+        for (node, neighbors) in graph.iter().enumerate() {
+            renamed[permutation[node]] = neighbors
+                .iter()
+                .map(|&neighbor| permutation[neighbor])
+                .collect();
+        }
+        assert_scc_partition(
+            "renamed vertices",
+            &renamed,
+            vec![vec![2, 4], vec![0, 3], vec![1]],
+        );
+    }
+
+    fn assert_scc_partition(case: &str, graph: &[Vec<usize>], mut expected: Vec<Vec<usize>>) {
+        let components = super::kosaraju(graph);
+        assert_eq!(
+            components.len(),
+            graph.len(),
+            "{case}: every vertex needs a component"
+        );
+        let mut groups = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+        for (node, component) in components.into_iter().enumerate() {
+            groups.entry(component).or_default().push(node);
+        }
+        let mut actual: Vec<_> = groups.into_values().collect();
+        actual.sort_unstable();
+        for group in &mut expected {
+            group.sort_unstable();
+        }
+        expected.sort_unstable();
+        assert_eq!(actual, expected, "{case}");
+    }
+
+    #[test]
+    fn kosaraju_handles_deep_graphs_without_recursion() {
+        const CHILD_ENV: &str = "NECRASSRS_KOSARAJU_DEEP_GRAPH_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "codegen::test::kosaraju_handles_deep_graphs_without_recursion",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "deep graph analysis failed ({})\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
+        const NODES: usize = 100_000;
+        let mut graph: Vec<Vec<usize>> = (0..NODES)
+            .map(|node| {
+                if node + 1 < NODES {
+                    vec![node + 1]
+                } else {
+                    vec![]
+                }
+            })
+            .collect();
+        let mut components = super::kosaraju(&graph);
+        assert_eq!(components.len(), NODES);
+        components.sort_unstable();
+        components.dedup();
+        assert_eq!(components.len(), NODES, "a chain has no shared components");
+
+        graph[NODES - 1].push(0);
+        let components = super::kosaraju(&graph);
+        assert_eq!(components.len(), NODES);
+        assert!(
+            components
+                .iter()
+                .all(|component| *component == components[0]),
+            "a closed chain is one component"
+        );
+    }
 
     #[test]
     fn codegen_error_preserves_argument_type_source_and_span() {
@@ -481,6 +1517,458 @@ mod test {
             }
         "#;
 
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn one_of_members_cannot_shadow_input_conversion() {
+        let schema = Schema::parse_and_validate(
+            "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",
+            "schema.graphql",
+        ).unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &generated,
+            r#"
+                struct Query;
+                impl resolvers::QueryResolver<()> for Query {
+                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<String, necrassrs::ResolverError> {
+                        Ok(match args.value {
+                            types::Choice::from_graphql_value(value)
+                            | types::Choice::__from_graphql_value(value) => value,
+                        })
+                    }
+                }
+                fn main() {
+                    let schema = necrassrs::Schema::parse_and_validate(SDL, "schema.graphql").unwrap();
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query);
+                    for name in ["from_graphql_value", "_from_graphql_value"] {
+                        let request = necrassrs::Request::new(format!(
+                            "{{ echo(value: {{{name}: \"Sheri\"}}) }}",
+                        ));
+                        let response = futures::executor::block_on(necrassrs::execute(
+                            &schema, &request, &dispatcher, &(),
+                        ));
+                        assert_eq!(serde_json::to_value(response).unwrap(),
+                            serde_json::json!({"data": {"echo": "Sheri"}}));
+                    }
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
+    fn scalar_primitives_cannot_be_shadowed_by_sdl_type_names() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                input i32 { name: String }
+                input f64 { name: String }
+                enum bool { YES NO }
+                input Filter { number: Int! decimal: Float! flag: Boolean! }
+                input Choice @oneOf { number: Int decimal: Float flag: Boolean }
+                type Query { inspect(value: Filter!, choice: Choice!, shadow: i32, floating: f64, kind: bool): [String!]! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &format!("#[allow(non_camel_case_types)] pub mod generated {{ {generated} }}"),
+            r#"
+                use generated::{types, resolvers::QueryResolver};
+                struct Query;
+                impl QueryResolver<()> for Query {
+                    async fn inspect(&self, _: &(), args: types::Query::inspect::Args)
+                        -> Result<Vec<String>, necrassrs::ResolverError> {
+                        let number: ::core::primitive::i32 = args.value.number;
+                        let decimal: ::core::primitive::f64 = args.value.decimal;
+                        let flag: ::core::primitive::bool = args.value.flag;
+                        let choice = match args.choice {
+                            types::Choice::number(value) => value.to_string(),
+                            types::Choice::decimal(value) => value.to_string(),
+                            types::Choice::flag(value) => value.to_string(),
+                        };
+                        Ok(vec![number.to_string(), decimal.to_string(), flag.to_string(), choice])
+                    }
+                }
+                fn main() {
+                    let schema = necrassrs::Schema::parse_and_validate(generated::SDL, "schema.graphql").unwrap();
+                    let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                    for (member, expected) in [("number: 7", "7"), ("decimal: 1.5", "1.5"), ("flag: true", "true")] {
+                        let request = necrassrs::Request::new(format!(
+                            "{{ inspect(value: {{number: 2, decimal: 2.5, flag: false}}, choice: {{{member}}}) }}",
+                        ));
+                        let response = futures::executor::block_on(necrassrs::execute(
+                            &schema, &request, &dispatcher, &(),
+                        ));
+                        assert_eq!(serde_json::to_value(response).unwrap(),
+                            serde_json::json!({"data": {"inspect": ["2", "2.5", "false", expected]}}));
+                    }
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
+    fn generated_id_inputs_preserve_unbounded_integer_literals_and_defaults() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                input Holder {
+                    id: ID! = 18446744073709551617
+                    ids: [ID!]! = -18446744073709551617
+                }
+                type Query {
+                    echo(value: ID! = 18446744073709551617): ID!
+                    inspect(value: Holder! = {}): [ID!]!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &generated,
+            r#"
+                struct Query;
+                impl resolvers::QueryResolver<()> for Query {
+                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<necrassrs::Id, necrassrs::ResolverError> { Ok(args.value) }
+                    async fn inspect(&self, _: &(), args: types::Query::inspect::Args)
+                        -> Result<Vec<necrassrs::Id>, necrassrs::ResolverError> {
+                        let mut ids = vec![args.value.id];
+                        ids.extend(args.value.ids);
+                        Ok(ids)
+                    }
+                }
+                fn main() {
+                    let schema = necrassrs::Schema::parse_and_validate(SDL, "schema.graphql").unwrap();
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query);
+                    let run = |document: &str, variables: serde_json::Value| {
+                        let request = necrassrs::Request::new(document)
+                            .with_variables(serde_json::from_value(variables).unwrap());
+                        serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                            &schema, &request, &dispatcher, &(),
+                        ))).unwrap()
+                    };
+                    for id in ["18446744073709551617".to_owned(), "-18446744073709551617".to_owned(), "9".repeat(400)] {
+                        for document in [
+                            format!("{{ echo(value: {id}) }}"),
+                            format!("query($id: ID! = {id}) {{ echo(value: $id) }}"),
+                        ] {
+                            assert_eq!(run(&document, serde_json::json!({})),
+                                serde_json::json!({"data": {"echo": id}}), "{document}");
+                        }
+                        let document = format!("{{ inspect(value: {{id: {id}, ids: {id}}}) }}");
+                        assert_eq!(run(&document, serde_json::json!({})),
+                            serde_json::json!({"data": {"inspect": [id, id]}}));
+                        let document = format!("query($v: Holder! = {{id: {id}, ids: [{id}]}}) {{inspect(value: $v)}}");
+                        assert_eq!(run(&document, serde_json::json!({})),
+                            serde_json::json!({"data": {"inspect": [id, id]}}));
+                    }
+                    for (document, variables) in [
+                        ("{ inspect }", serde_json::json!({})),
+                        ("{ inspect(value: {}) }", serde_json::json!({})),
+                        ("query($v: Holder! = {}) {inspect(value: $v)}", serde_json::json!({})),
+                        ("query($v: Holder!) {inspect(value: $v)}", serde_json::json!({"v": {}})),
+                    ] {
+                        assert_eq!(run(document, variables), serde_json::json!({"data": {
+                            "inspect": ["18446744073709551617", "-18446744073709551617"]
+                        }}), "{document}");
+                    }
+                    assert_eq!(run("{ echo }", serde_json::json!({})),
+                        serde_json::json!({"data": {"echo": "18446744073709551617"}}));
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
+    fn generated_sdl_names_compile_with_naming_warnings_denied() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                enum status { open in_progress type self _self }
+                input filter { status: status! next: filter }
+                input choice @oneOf { filter: filter status: status }
+                type Query { echo(value: filter!, choice: choice!): status! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &generated,
+            r#"
+                struct Query;
+                impl resolvers::QueryResolver<()> for Query {
+                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<types::status, necrassrs::ResolverError> {
+                        Ok(match args.choice {
+                            types::choice::filter(value) => value.status,
+                            types::choice::status(value) => value,
+                        })
+                    }
+                }
+                fn main() {
+                    let _: types::status = types::status::r#type;
+                    let _: types::status = types::status::_self;
+                    let _: types::status = types::status::__self;
+                    let _: necrassrs::GraphQLInput<Box<types::filter>> =
+                        types::filter { status: types::status::open, next: necrassrs::GraphQLInput::Undefined }.next;
+                    let schema = necrassrs::Schema::parse_and_validate(SDL, "schema.graphql").unwrap();
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query);
+                    for name in ["open", "in_progress", "type", "self", "_self"] {
+                        let request = necrassrs::Request::new(format!(
+                            "{{ echo(value: {{status: open}}, choice: {{status: {name}}}) }}",
+                        ));
+                        let response = futures::executor::block_on(necrassrs::execute(
+                            &schema, &request, &dispatcher, &(),
+                        ));
+                        assert_eq!(serde_json::to_value(response).unwrap(),
+                            serde_json::json!({"data": {"echo": name}}));
+                    }
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
+    fn documented_type_examples_compile_and_execute() {
+        let guide = include_str!("../../../docs/src/content/docs/docs/types.md");
+        let sdl = guide
+            .split_once("```graphql\n")
+            .unwrap()
+            .1
+            .split_once("\n```")
+            .unwrap()
+            .0;
+        let mut rust = guide
+            .split("```rust\n")
+            .skip(1)
+            .map(|block| block.split_once("\n```").unwrap().0);
+        let resolvers = rust.next().unwrap();
+        let main = rust.next().unwrap().split_once("fn main()").unwrap().1;
+        let schema = Schema::parse_and_validate(sdl, "example.graphql").unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &format!("pub mod generated {{ {generated} }}"),
+            &format!("mod resolvers {{ {resolvers} }} fn main(){main}"),
+            true,
+        );
+    }
+
+    #[test]
+    fn generated_consumer_executes_leaf_boundaries_and_variable_numbers() {
+        let schema = Schema::parse_and_validate(
+            "type Query { integer(value: Int!): Int! float(value: Float!): Float! text(value: String!): String! boolean(value: Boolean!): Boolean! id(value: ID!): ID! nullable(value: [Int]): [Int] required(value: [Int]!): [Int]! nitems(value: [Int!]): [Int!] strict(value: [Int!]!): [Int!]! }",
+            "schema.graphql",
+        ).unwrap();
+        let generated = super::generate(&schema).unwrap();
+        let consumer = r##"
+            use generated::{resolvers::QueryResolver, types};
+            struct Query;
+            macro_rules! echo {
+                ($method:ident, $ty:ty) => {
+                    async fn $method(&self, _: &(), args: types::Query::$method::Args)
+                        -> Result<$ty, necrassrs::ResolverError> { Ok(args.value) }
+                };
+            }
+            impl QueryResolver<()> for Query {
+                echo!(integer, i32);
+                echo!(float, f64);
+                echo!(text, String);
+                echo!(boolean, bool);
+                echo!(id, necrassrs::Id);
+                echo!(required, Vec<Option<i32>>);
+                echo!(strict, Vec<i32>);
+                async fn nullable(&self, _: &(), args: types::Query::nullable::Args)
+                    -> Result<Option<Vec<Option<i32>>>, necrassrs::ResolverError> {
+                    Ok(match args.value {
+                        necrassrs::GraphQLInput::Value(value) => Some(value),
+                        necrassrs::GraphQLInput::Undefined | necrassrs::GraphQLInput::Null => None,
+                    })
+                }
+                async fn nitems(&self, _: &(), args: types::Query::nitems::Args)
+                    -> Result<Option<Vec<i32>>, necrassrs::ResolverError> {
+                    Ok(match args.value {
+                        necrassrs::GraphQLInput::Value(value) => Some(value),
+                        necrassrs::GraphQLInput::Undefined | necrassrs::GraphQLInput::Null => None,
+                    })
+                }
+            }
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(generated::SDL, "schema.graphql").unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let run = |document: &str, variables: serde_json::Value| {
+                    let request = necrassrs::Request::new(document)
+                        .with_variables(serde_json::from_value(variables).unwrap());
+                    serde_json::to_value(futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &()),
+                    )).unwrap()
+                };
+                assert_eq!(run(r#"{ min: integer(value: -2147483648) max: integer(value: 2147483647) float(value: 2) text(value: "Sheri") boolean(value: true) id(value: "001") numeric: id(value: -42) }"#, serde_json::json!({})),
+                    serde_json::json!({"data": {"min": -2147483648i64, "max": 2147483647, "float": 2.0, "text": "Sheri", "boolean": true, "id": "001", "numeric": "-42"}}));
+                let document = "query($i: Int!, $f: Float!, $id: ID!) { integer(value: $i) float(value: $f) id(value: $id) }";
+                assert_eq!(run("{ nullable nitems required(value: [1, null]) strict(value: 2) }", serde_json::json!({})),
+                    serde_json::json!({"data": {"nullable": null, "nitems": null, "required": [1, null], "strict": [2]}}));
+                assert_eq!(run("{ nullable(value: [1, null]) nitems(value: 2) required(value: []) strict(value: []) }", serde_json::json!({})),
+                    serde_json::json!({"data": {"nullable": [1, null], "nitems": [2], "required": [], "strict": []}}));
+                assert_eq!(run("{ nullable(value: null) nitems(value: null) }", serde_json::json!({})),
+                    serde_json::json!({"data": {"nullable": null, "nitems": null}}));
+                for (variables, expected) in [
+                    (serde_json::json!({"i": 1, "f": 1, "id": 42}), serde_json::json!({"integer": 1, "float": 1.0, "id": "42"})),
+                    (serde_json::json!({"i": 1.0, "f": 1.5, "id": "00042"}), serde_json::json!({"integer": 1, "float": 1.5, "id": "00042"})),
+                    (serde_json::json!({"i": -2147483648.0, "f": 1.5, "id": 42.0}), serde_json::json!({"integer": -2147483648i64, "float": 1.5, "id": "42"})),
+                    (serde_json::json!({"i": 2147483647.0, "f": 1.5, "id": u64::MAX}), serde_json::json!({"integer": 2147483647, "float": 1.5, "id": u64::MAX.to_string()})),
+                ] {
+                    assert_eq!(run(document, variables), serde_json::json!({"data": expected}));
+                }
+                for document in [
+                    "{ integer(value: 2147483648) }", "{ integer(value: -2147483649) }",
+                    "{ integer(value: 1.0) }", "{ float(value: true) }",
+                    "{ id(value: 1.5) }", "{ boolean(value: 1) }", "{ text(value: 1) }",
+                    "{ required(value: null) }", "{ nitems(value: [null]) }", "{ strict(value: [null]) }",
+                ] {
+                    let response = run(document, serde_json::json!({}));
+                    assert!(response.get("data").is_none(), "{document}: {response}");
+                    assert!(!response["errors"].as_array().unwrap().is_empty());
+                }
+                for variables in [
+                    serde_json::json!({"i": 2147483648i64, "f": 1, "id": 1}),
+                    serde_json::json!({"i": 2147483648.0, "f": 1, "id": 1}),
+                    serde_json::json!({"i": -2147483649.0, "f": 1, "id": 1}),
+                    serde_json::json!({"i": 1.5, "f": 1, "id": 1}),
+                    serde_json::json!({"i": 1, "f": "1", "id": 1}),
+                    serde_json::json!({"i": 1, "f": 1, "id": true}),
+                    serde_json::json!({"i": 1, "f": 1, "id": 1.5}),
+                ] {
+                    let response = run(document, variables);
+                    assert!(response.get("data").is_none(), "{response}");
+                    assert!(!response["errors"].as_array().unwrap().is_empty());
+                }
+            }
+        "##;
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                enum Status { OPEN CLOSED }
+                input Filter {
+                    status: Status = OPEN
+                    optional: Int
+                    matrix: [[Int]] = 3
+                }
+                type Query {
+                    inspect(value: Int = 7, raw: Int, filter: Filter = {}): [String!]!
+                    echo(status: Status!): Status!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        let consumer = r##"
+            use generated::{resolvers::QueryResolver, types};
+            use necrassrs::GraphQLInput;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            struct Query;
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+            fn presence(value: GraphQLInput<i32>) -> String {
+                match value {
+                    GraphQLInput::Undefined => "undefined".into(),
+                    GraphQLInput::Null => "null".into(),
+                    GraphQLInput::Value(value) => value.to_string(),
+                }
+            }
+
+            impl QueryResolver<()> for Query {
+                async fn inspect(
+                    &self, _: &(), args: types::Query::inspect::Args,
+                ) -> Result<Vec<String>, necrassrs::ResolverError> {
+                    CALLS.fetch_add(1, Ordering::Relaxed);
+                    let mut result = vec![presence(args.value), presence(args.raw)];
+                    match args.filter {
+                        GraphQLInput::Undefined => result.push("undefined".into()),
+                        GraphQLInput::Null => result.push("null".into()),
+                        GraphQLInput::Value(filter) => {
+                            result.push(match filter.status {
+                                GraphQLInput::Value(types::Status::OPEN) => "OPEN",
+                                GraphQLInput::Value(types::Status::CLOSED) => "CLOSED",
+                                GraphQLInput::Null => "null",
+                                GraphQLInput::Undefined => "undefined",
+                            }.into());
+                            result.push(presence(filter.optional));
+                            result.push(match filter.matrix {
+                                GraphQLInput::Value(value) => format!("{value:?}"),
+                                GraphQLInput::Null => "null".into(),
+                                GraphQLInput::Undefined => "undefined".into(),
+                            });
+                        }
+                    }
+                    Ok(result)
+                }
+
+                async fn echo(
+                    &self, _: &(), args: types::Query::echo::Args,
+                ) -> Result<types::Status, necrassrs::ResolverError> {
+                    CALLS.fetch_add(1, Ordering::Relaxed);
+                    Ok(args.status)
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(generated::SDL, "schema.graphql").unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let run = |document: &str, variables: serde_json::Value| {
+                    let request = necrassrs::Request::new(document)
+                        .with_variables(serde_json::from_value(variables).unwrap());
+                    serde_json::to_value(futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &()),
+                    )).unwrap()
+                };
+                for (document, variables, expected) in [
+                    ("{ inspect }", serde_json::json!({}),
+                        serde_json::json!(["7", "undefined", "OPEN", "undefined", "[Some([Some(3)])]"])),
+                    ("{ inspect(value: null, raw: null, filter: null) }", serde_json::json!({}),
+                        serde_json::json!(["null", "null", "null"])),
+                    ("query($v: Int, $f: Filter) { inspect(value: $v, filter: $f) }", serde_json::json!({}),
+                        serde_json::json!(["7", "undefined", "OPEN", "undefined", "[Some([Some(3)])]"])),
+                    ("query($v: Int = 9, $f: Filter = {optional: 5, matrix: 4}) { inspect(value: $v, filter: $f) }", serde_json::json!({}),
+                        serde_json::json!(["9", "undefined", "OPEN", "5", "[Some([Some(4)])]"])),
+                    ("query($f: Filter) { inspect(filter: $f) }", serde_json::json!({"f": {"status": null, "optional": null, "matrix": null}}),
+                        serde_json::json!(["7", "undefined", "null", "null", "null"])),
+                    ("query($f: Filter) { inspect(filter: $f) }", serde_json::json!({"f": {"status": "CLOSED", "optional": 2, "matrix": [[1, null], null]}}),
+                        serde_json::json!(["7", "undefined", "CLOSED", "2", "[Some([Some(1), None]), None]"])),
+                ] {
+                    assert_eq!(run(document, variables), serde_json::json!({"data": {"inspect": expected}}), "{document}");
+                }
+                assert_eq!(run("{ echo(status: CLOSED) }", serde_json::json!({})), serde_json::json!({"data": {"echo": "CLOSED"}}));
+                assert_eq!(run("query($s: Status!) { echo(status: $s) }", serde_json::json!({"s": "OPEN"})), serde_json::json!({"data": {"echo": "OPEN"}}));
+                for (document, variables) in [
+                    (r#"{ echo(status: "OPEN") }"#, serde_json::json!({})),
+                    ("{ echo(status: UNKNOWN) }", serde_json::json!({})),
+                    ("query($s: Status!) { echo(status: $s) }", serde_json::json!({"s": "UNKNOWN"})),
+                    ("query($s: Status!) { echo(status: $s) }", serde_json::json!({"s": 1})),
+                    ("{ inspect(filter: {unknown: 1}) }", serde_json::json!({})),
+                    ("query($f: Filter) { inspect(filter: $f) }", serde_json::json!({"f": {"unknown": 1}})),
+                ] {
+                    let before = CALLS.load(Ordering::Relaxed);
+                    let response = run(document, variables);
+                    assert!(response.get("data").is_none(), "{document}: {response}");
+                    assert!(!response["errors"].as_array().unwrap().is_empty());
+                    assert_eq!(CALLS.load(Ordering::Relaxed), before);
+                }
+            }
+        "##;
         assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
     }
 
@@ -718,6 +2206,865 @@ mod test {
     }
 
     #[test]
+    fn resolver_return_types_follow_graphql_wrappers() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                enum Status { OPEN CLOSED }
+                type Query {
+                    intResult: Int!
+                    floatResult: Float!
+                    stringResult: String!
+                    booleanResult: Boolean!
+                    idResult: ID!
+                    statusResult: Status!
+                    nullableStatusResult: Status
+                    nullableListResult: [Int]
+                    requiredListResult: [Int]!
+                    nullableNonNullItemsResult: [Int!]
+                    requiredNonNullItemsResult: [Int!]!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let query = schema.get_object("Query").unwrap();
+        let cases = [
+            ("intResult", quote! { ::core::primitive::i32 }),
+            ("floatResult", quote! { ::core::primitive::f64 }),
+            ("stringResult", quote! { ::std::string::String }),
+            ("booleanResult", quote! { ::core::primitive::bool }),
+            ("idResult", quote! { ::necrassrs::Id }),
+            ("statusResult", quote! { super::types::r#Status }),
+            (
+                "nullableStatusResult",
+                quote! { ::core::option::Option<super::types::r#Status> },
+            ),
+            (
+                "nullableListResult",
+                quote! { ::core::option::Option<::std::vec::Vec<::core::option::Option<::core::primitive::i32>>> },
+            ),
+            (
+                "requiredListResult",
+                quote! { ::std::vec::Vec<::core::option::Option<::core::primitive::i32>> },
+            ),
+            (
+                "nullableNonNullItemsResult",
+                quote! { ::core::option::Option<::std::vec::Vec<::core::primitive::i32>> },
+            ),
+            (
+                "requiredNonNullItemsResult",
+                quote! { ::std::vec::Vec<::core::primitive::i32> },
+            ),
+        ];
+
+        for (field_name, expected) in cases {
+            let field = &query.fields[field_name];
+            let actual = super::resolver_return_type(
+                &schema,
+                query.name.as_str(),
+                field_name,
+                &field.ty,
+                &quote! { super::types },
+            )
+            .unwrap_or_else(|error| panic!("{field_name}: {error}"));
+            assert_eq!(
+                normalize_type(actual),
+                normalize_type(expected),
+                "{field_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_types_include_enum_input_and_argument_contracts() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                enum Status { OPEN CLOSED }
+                input Nested { name: String! }
+                input Filter {
+                    required: Boolean!
+                    optionalId: ID
+                    statuses: [Status]
+                    nested: Nested!
+                }
+                type Query {
+                    inspect(
+                        status: Status!
+                        optionalString: String
+                        nullableList: [Int]
+                        requiredList: [Int]!
+                        filter: Filter
+                    ): String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema)
+            .expect("supported input contracts must be generated")
+            .to_string();
+
+        for expected in [
+            "pub enum r#Status",
+            "r#OPEN",
+            "r#CLOSED",
+            "pub struct r#Nested",
+            "pub struct r#Filter",
+            "fn _from_graphql_value",
+            "as_object",
+            "object . get",
+            "pub r#required : :: core :: primitive :: bool",
+            "pub r#optionalId : :: necrassrs :: GraphQLInput < :: necrassrs :: Id >",
+            "pub r#statuses : :: necrassrs :: GraphQLInput",
+            "self :: r#Nested :: _from_graphql_value",
+            "pub r#status : super :: super :: r#Status",
+            "pub r#optionalString : :: necrassrs :: GraphQLInput",
+            "pub r#nullableList : :: necrassrs :: GraphQLInput",
+            "pub r#requiredList : :: std :: vec :: Vec",
+            "pub r#filter : :: necrassrs :: GraphQLInput < super :: super :: r#Filter >",
+        ] {
+            assert!(
+                generated.contains(expected),
+                "missing `{expected}` in {generated}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_one_of_types_use_non_null_variant_payloads() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                directive @oneOf on INPUT_OBJECT
+                enum Status { OPEN CLOSED }
+                input Nested { name: String! }
+                input Choice @oneOf {
+                    number: Int
+                    decimal: Float
+                    text: String
+                    flag: Boolean
+                    id: ID
+                    status: Status
+                    nested: Nested
+                    items: [Int]
+                    requiredItems: [Int!]
+                    matrix: [[Int!]]
+                }
+                input Filter { choice: Choice required: Choice! }
+                type Query { inspect(choice: Choice, required: Choice!): String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the OneOf test schema must be valid");
+        let generated = super::generate_types(&schema)
+            .expect("OneOf type generation must succeed")
+            .to_token_stream();
+        let file = syn::parse2::<syn::File>(generated.clone())
+            .expect("generated types must be valid Rust syntax");
+        let types = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Mod(module) if module.ident == "types" => {
+                    module.content.as_ref().map(|(_, items)| items)
+                }
+                _ => None,
+            })
+            .expect("generated types module must exist");
+        let choice = types
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Enum(item) if item.ident == "r#Choice" => Some(item),
+                _ => None,
+            })
+            .expect("OneOf Choice must be generated as an enum, not a struct");
+        let expected = syn::parse2::<syn::ItemEnum>(quote! {
+            #[allow(non_camel_case_types)]
+            pub enum r#Choice {
+                r#number(::core::primitive::i32),
+                r#decimal(::core::primitive::f64),
+                r#text(::std::string::String),
+                r#flag(::core::primitive::bool),
+                r#id(::necrassrs::Id),
+                r#status(self::r#Status),
+                r#nested(self::r#Nested),
+                r#items(::std::vec::Vec<::core::option::Option<::core::primitive::i32>>),
+                r#requiredItems(::std::vec::Vec<::core::primitive::i32>),
+                r#matrix(::std::vec::Vec<::core::option::Option<::std::vec::Vec<::core::primitive::i32>>>),
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            choice.to_token_stream().to_string(),
+            expected.to_token_stream().to_string(),
+            "selected payloads must be non-null while retaining nested list nullability"
+        );
+
+        assert_consumer_compiles(
+            &generated.to_string(),
+            r#"
+                pub fn main() {
+                    let _ = types::Filter::_from_graphql_value(&necrassrs::JsonValue::Null);
+                    let _: types::Choice = types::Choice::number(1);
+                    let _: types::Choice = types::Choice::items(vec![Some(1), None]);
+                    let _: types::Choice = types::Choice::requiredItems(vec![1]);
+                    let _: types::Choice = types::Choice::matrix(vec![None, Some(vec![1])]);
+                    let _ = types::Filter {
+                        choice: necrassrs::GraphQLInput::Null,
+                        required: types::Choice::flag(true),
+                    };
+                    for choice in [
+                        necrassrs::GraphQLInput::Undefined,
+                        necrassrs::GraphQLInput::Null,
+                        necrassrs::GraphQLInput::Value(types::Choice::text(String::new())),
+                    ] {
+                        let _ = types::Query::inspect::Args {
+                            choice,
+                            required: types::Choice::id(necrassrs::Id::from("001")),
+                        };
+                    }
+                }
+            "#,
+        );
+    }
+
+    #[test]
+    fn generated_one_of_conversion_requires_one_non_null_known_field() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                directive @oneOf on INPUT_OBJECT
+                enum Status { OPEN CLOSED }
+                input Nested { name: String! }
+                input Choice @oneOf {
+                    number: Int
+                    status: Status
+                    nested: Nested
+                    items: [Int]
+                    requiredItems: [Int!]
+                }
+                type Query { inspect(choice: Choice): String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the OneOf test schema must be valid");
+        let generated = super::generate_types(&schema)
+            .expect("OneOf type generation must succeed")
+            .to_token_stream()
+            .to_string();
+        assert_consumer(
+            &generated,
+            r#"
+                macro_rules! json {
+                    ($($tokens:tt)*) => {
+                        serde_json::from_value::<necrassrs::JsonValue>(
+                            serde_json::json!($($tokens)*),
+                        ).unwrap()
+                    };
+                }
+
+                fn main() {
+                    let value = types::Choice::_from_graphql_value(&json!({"number": 7}));
+                    assert!(matches!(value, Ok(types::Choice::number(7))));
+                    let value = types::Choice::_from_graphql_value(&json!({"status": "OPEN"}));
+                    assert!(matches!(value, Ok(types::Choice::status(types::Status::OPEN))));
+                    let value = types::Choice::_from_graphql_value(&json!({"nested": {"name": "Sheri"}}));
+                    let Ok(types::Choice::nested(nested)) = value else {
+                        panic!("nested input must select its variant");
+                    };
+                    assert_eq!(nested.name, "Sheri");
+                    let value = types::Choice::_from_graphql_value(&json!({"items": [1, null, 2]}));
+                    let Ok(types::Choice::items(items)) = value else {
+                        panic!("nullable list items must be preserved");
+                    };
+                    assert_eq!(items, vec![Some(1), None, Some(2)]);
+
+                    for invalid in [
+                        json!(null), json!([]), json!({}),
+                        json!({"number": null}), json!({"unknown": 1}),
+                        json!({"number": 1, "status": "OPEN"}),
+                        json!({"number": 1, "status": null}),
+                        json!({"number": "wrong"}), json!({"status": "UNKNOWN"}),
+                        json!({"nested": {}}), json!({"requiredItems": [null]}),
+                    ] {
+                        assert!(
+                            types::Choice::_from_graphql_value(&invalid).is_err(),
+                            "invalid OneOf input was accepted: {invalid}",
+                        );
+                    }
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
+    fn generated_recursive_inputs_box_fields_and_convert_finite_values() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                input Node {
+                    next: Node
+                    choice: Choice
+                    children: [Node!]
+                }
+                input Choice @oneOf { number: Int node: Node }
+                type Query { inspect(input: Node): String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the recursive input schema must be valid");
+        let generated = super::generate_types(&schema)
+            .expect("recursive input type generation must succeed")
+            .to_token_stream()
+            .to_string();
+        assert_consumer(
+            &generated,
+            r##"
+                use necrassrs::GraphQLInput;
+                use types::{Choice, Node};
+
+                fn parse_node(source: &str) -> Node {
+                    let value = serde_json::from_str::<necrassrs::JsonValue>(source).unwrap();
+                    Node::_from_graphql_value(&value)
+                        .unwrap_or_else(|_| panic!("finite input must convert: {source}"))
+                }
+
+                fn main() {
+                    let node = parse_node("{}");
+                    let next: GraphQLInput<Box<Node>> = node.next;
+                    let choice: GraphQLInput<Box<Choice>> = node.choice;
+                    let children: GraphQLInput<Vec<Node>> = node.children;
+                    assert!(matches!(next, GraphQLInput::Undefined));
+                    assert!(matches!(choice, GraphQLInput::Undefined));
+                    assert!(matches!(children, GraphQLInput::Undefined));
+
+                    let node = parse_node(r#"{"next":null,"choice":null,"children":null}"#);
+                    assert!(matches!(node.next, GraphQLInput::Null));
+                    assert!(matches!(node.choice, GraphQLInput::Null));
+                    assert!(matches!(node.children, GraphQLInput::Null));
+
+                    let node = parse_node(r#"{
+                        "next": {},
+                        "choice": {"node": {"choice": {"number": 7}}},
+                        "children": [{}]
+                    }"#);
+                    let GraphQLInput::Value(next) = node.next else {
+                        panic!("supplied next must retain its presence");
+                    };
+                    let next: Box<Node> = next;
+                    assert!(matches!(next.next, GraphQLInput::Undefined));
+                    let GraphQLInput::Value(choice) = node.choice else {
+                        panic!("supplied choice must retain its presence");
+                    };
+                    let Choice::node(inner) = *choice else {
+                        panic!("OneOf must select the recursive node variant");
+                    };
+                    let inner: Box<Node> = inner;
+                    let GraphQLInput::Value(choice) = inner.choice else {
+                        panic!("nested choice must convert");
+                    };
+                    assert!(matches!(*choice, Choice::number(7)));
+                    let GraphQLInput::Value(children) = node.children else {
+                        panic!("supplied children must convert without boxing list items");
+                    };
+                    let children: Vec<Node> = children;
+                    assert_eq!(children.len(), 1);
+                    assert!(matches!(children[0].next, GraphQLInput::Undefined));
+
+                    let args = types::Query::inspect::Args {
+                        input: GraphQLInput::Value(parse_node("{}")),
+                    };
+                    let _: GraphQLInput<Node> = args.input;
+                }
+            "##,
+            true,
+        );
+    }
+
+    #[test]
+    fn generated_dispatch_serializes_id_results_as_strings() {
+        let schema = Schema::parse_and_validate("type Query { id: ID! }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use necrassrs::Dispatcher;
+
+            pub struct Query(&'static str);
+            impl resolvers::QueryResolver<()> for Query {
+                async fn id<'a>(
+                    &'a self, _: &'a (), _: types::Query::id::Args,
+                ) -> Result<necrassrs::Id, necrassrs::ResolverError> {
+                    Ok(necrassrs::Id::from(self.0))
+                }
+            }
+
+            fn main() {
+                for expected in ["001", "", "Sheri"] {
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query(expected));
+                    let actual = futures::executor::block_on(dispatcher.resolve(
+                        &(),
+                        necrassrs::FieldCoordinate { parent_type: "Query", field: "id" },
+                        &necrassrs::JsonMap::new(),
+                    )).unwrap_or_else(|_| panic!("ID result conversion must succeed"));
+                    let necrassrs::ResolvedValue::Json(actual) = actual else {
+                        panic!("ID result must be a JSON leaf");
+                    };
+                    assert_eq!(actual, necrassrs::JsonValue::from(expected));
+                }
+            }
+        "#;
+
+        assert_consumer(&generated, consumer, true);
+    }
+
+    #[test]
+    fn generated_dispatch_serializes_enum_results_as_graphql_names() {
+        let schema = Schema::parse_and_validate(
+            "enum Status { OPEN CLOSED } type Query { status: Status! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use necrassrs::Dispatcher;
+
+            pub struct Query(bool);
+            impl resolvers::QueryResolver<()> for Query {
+                async fn status<'a>(
+                    &'a self, _: &'a (), _: types::Query::status::Args,
+                ) -> Result<types::Status, necrassrs::ResolverError> {
+                    Ok(if self.0 { types::Status::OPEN } else { types::Status::CLOSED })
+                }
+            }
+
+            fn main() {
+                for (open, expected) in [(true, "OPEN"), (false, "CLOSED")] {
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query(open));
+                    let actual = futures::executor::block_on(dispatcher.resolve(
+                        &(),
+                        necrassrs::FieldCoordinate { parent_type: "Query", field: "status" },
+                        &necrassrs::JsonMap::new(),
+                    )).unwrap_or_else(|_| panic!("enum result conversion must succeed"));
+                    let necrassrs::ResolvedValue::Json(actual) = actual else {
+                        panic!("enum result must be a JSON leaf");
+                    };
+                    assert_eq!(actual, necrassrs::JsonValue::from(expected));
+                }
+            }
+        "#;
+
+        assert_consumer(&generated, consumer, true);
+    }
+
+    #[test]
+    fn generated_float_list_error_preserves_nullable_items_and_index_path() {
+        let schema = Schema::parse_and_validate("type Query { values: [Float] }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use generated::{resolvers::QueryResolver, types};
+
+            struct Query(f64);
+            impl QueryResolver<()> for Query {
+                async fn values<'a>(
+                    &'a self, _: &'a (), _: types::Query::values::Args,
+                ) -> Result<Option<Vec<Option<f64>>>, necrassrs::ResolverError> {
+                    Ok(Some(vec![Some(1.5), Some(self.0), Some(2.5)]))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let request = necrassrs::Request::new("{ numbers: values }");
+
+                for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                    let dispatcher = generated::dispatch::SchemaDispatcher::new(Query(value));
+                    let response = futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &()),
+                    );
+                    let response = serde_json::to_value(response).unwrap();
+
+                    assert_eq!(
+                        response["data"],
+                        serde_json::json!({ "numbers": [1.5, null, 2.5] }),
+                        "non-finite Float {value}: {response}",
+                    );
+                    let errors = response["errors"].as_array().expect("an item error is required");
+                    assert_eq!(errors.len(), 1);
+                    assert_eq!(errors[0]["path"], serde_json::json!(["numbers", 1]));
+                    assert!(errors[0]["message"].as_str().is_some_and(|message| !message.is_empty()));
+                }
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    const FLOAT_RESULT_CONSUMER: &str = r#"
+        use necrassrs::Dispatcher;
+
+        pub struct Query(f64);
+        impl resolvers::QueryResolver<()> for Query {
+            async fn value<'a>(
+                &'a self, _: &'a (), _: types::Query::value::Args,
+            ) -> Result<f64, necrassrs::ResolverError> {
+                Ok(self.0)
+            }
+        }
+
+        fn resolve(value: f64) -> Result<necrassrs::ResolvedValue, necrassrs::ResolverError> {
+            let dispatcher = dispatch::SchemaDispatcher::new(Query(value));
+            futures::executor::block_on(dispatcher.resolve(
+                &(),
+                necrassrs::FieldCoordinate { parent_type: "Query", field: "value" },
+                &necrassrs::JsonMap::new(),
+            ))
+        }
+    "#;
+
+    #[test]
+    fn generated_dispatch_serializes_finite_float_results() {
+        let schema = Schema::parse_and_validate("type Query { value: Float! }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Float results must be supported");
+        let main = r#"
+            fn main() {
+                for value in [0.0, -0.0, 1.5, -2.5, f64::MIN, f64::MAX] {
+                    let actual = resolve(value)
+                        .unwrap_or_else(|_| panic!("finite Float {value} must succeed"));
+                    let necrassrs::ResolvedValue::Json(actual) = actual else {
+                        panic!("finite Float must be a JSON leaf");
+                    };
+                    assert!(actual.is_number(), "finite Float {value} must be a JSON number");
+                    assert_eq!(actual, necrassrs::JsonValue::from(value));
+                }
+            }
+        "#;
+
+        assert_consumer(&generated, &format!("{FLOAT_RESULT_CONSUMER}{main}"), true);
+    }
+
+    #[test]
+    fn generated_dispatch_rejects_non_finite_float_results() {
+        let schema = Schema::parse_and_validate("type Query { value: Float! }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Float results must be supported");
+        let main = r#"
+            fn main() {
+                for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                    assert!(
+                        matches!(resolve(value), Ok(necrassrs::ResolvedValue::Error(_))),
+                        "non-finite Float {value} must retain a conversion error",
+                    );
+                }
+            }
+        "#;
+
+        assert_consumer(&generated, &format!("{FLOAT_RESULT_CONSUMER}{main}"), true);
+    }
+
+    fn assert_generated_result_cases(
+        definition: &str,
+        result_type: &str,
+        rust_type: &str,
+        cases: &[(&str, Option<&str>)],
+    ) {
+        let schema = Schema::parse_and_validate(
+            format!("{definition} type Query {{ value: {result_type} }}"),
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let arms = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (value, _))| format!("{index} => {value},"))
+            .collect::<String>();
+        let assertions = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (_, expected))| {
+                let assertion = match expected {
+                    Some(expected) => format!(
+                        "assert!(actual.get(\"errors\").is_none(), \"case {index}: {{actual}}\");
+                         assert_eq!(actual[\"data\"][\"value\"], serde_json::json!({expected}));"
+                    ),
+                    None => format!(
+                        "assert_eq!(actual[\"errors\"].as_array().unwrap().len(), 1, \"case {index}\");"
+                    ),
+                };
+                format!(
+                    "let dispatcher = dispatch::SchemaDispatcher::new(Query({index}));
+                     let actual = futures::executor::block_on(necrassrs::execute(
+                         &schema, &request, &dispatcher, &(),
+                     ));
+                     let actual = serde_json::to_value(actual).unwrap();
+                     {assertion}"
+                )
+            })
+            .collect::<String>();
+        let consumer = format!(
+            "pub struct Query(usize);
+             impl resolvers::QueryResolver<()> for Query {{
+                 async fn value<'a>(
+                     &'a self, _: &'a (), _: types::Query::value::Args,
+                 ) -> Result<{rust_type}, necrassrs::ResolverError> {{
+                     Ok(match self.0 {{ {arms} _ => unreachable!() }})
+                 }}
+             }}
+             fn main() {{
+                 let schema = necrassrs::Schema::parse_and_validate(SDL, \"schema.graphql\").unwrap();
+                 let request = necrassrs::Request::new(\"{{ value }}\");
+                 {assertions}
+             }}"
+        );
+
+        assert_consumer(&generated, &consumer, true);
+    }
+
+    #[test]
+    fn generated_result_wrappers_preserve_nullable_id_values() {
+        assert_generated_result_cases(
+            "",
+            "ID",
+            "Option<necrassrs::Id>",
+            &[
+                ("None", Some("null")),
+                ("Some(necrassrs::Id::from(\"001\"))", Some("\"001\"")),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_result_wrappers_preserve_nullable_enum_values() {
+        assert_generated_result_cases(
+            "enum Status { OPEN CLOSED }",
+            "Status",
+            "Option<types::Status>",
+            &[
+                ("None", Some("null")),
+                ("Some(types::Status::OPEN)", Some("\"OPEN\"")),
+                ("Some(types::Status::CLOSED)", Some("\"CLOSED\"")),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_result_wrappers_preserve_id_list_nullability() {
+        for (result_type, rust_type, cases) in [
+            (
+                "[ID]",
+                "Option<Vec<Option<necrassrs::Id>>>",
+                vec![
+                    ("None", Some("null")),
+                    ("Some(vec![])", Some("[]")),
+                    (
+                        "Some(vec![Some(necrassrs::Id::from(\"001\")), None])",
+                        Some("[\"001\", null]"),
+                    ),
+                ],
+            ),
+            (
+                "[ID]!",
+                "Vec<Option<necrassrs::Id>>",
+                vec![
+                    ("vec![]", Some("[]")),
+                    (
+                        "vec![Some(necrassrs::Id::from(\"001\")), None]",
+                        Some("[\"001\", null]"),
+                    ),
+                ],
+            ),
+            (
+                "[ID!]",
+                "Option<Vec<necrassrs::Id>>",
+                vec![
+                    ("None", Some("null")),
+                    ("Some(vec![])", Some("[]")),
+                    (
+                        "Some(vec![necrassrs::Id::from(\"001\")])",
+                        Some("[\"001\"]"),
+                    ),
+                ],
+            ),
+            (
+                "[ID!]!",
+                "Vec<necrassrs::Id>",
+                vec![
+                    ("vec![]", Some("[]")),
+                    ("vec![necrassrs::Id::from(\"001\")]", Some("[\"001\"]")),
+                ],
+            ),
+        ] {
+            assert_generated_result_cases("", result_type, rust_type, &cases);
+        }
+    }
+
+    #[test]
+    fn generated_result_wrappers_convert_nested_enum_lists() {
+        assert_generated_result_cases(
+            "enum Status { OPEN CLOSED }",
+            "[[Status]]",
+            "Option<Vec<Option<Vec<Option<types::Status>>>>>",
+            &[
+                ("None", Some("null")),
+                ("Some(vec![])", Some("[]")),
+                (
+                    "Some(vec![None, Some(vec![]), Some(vec![Some(types::Status::OPEN), None, Some(types::Status::CLOSED)])])",
+                    Some("[null, [], [\"OPEN\", null, \"CLOSED\"]]"),
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_result_wrappers_validate_nullable_float_values() {
+        assert_generated_result_cases(
+            "",
+            "Float",
+            "Option<f64>",
+            &[
+                ("None", Some("null")),
+                ("Some(1.5)", Some("1.5")),
+                ("Some(f64::NAN)", None),
+                ("Some(f64::INFINITY)", None),
+                ("Some(f64::NEG_INFINITY)", None),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_result_wrappers_validate_float_list_items() {
+        assert_generated_result_cases(
+            "",
+            "[Float!]!",
+            "Vec<f64>",
+            &[
+                ("vec![]", Some("[]")),
+                ("vec![1.5, -2.5]", Some("[1.5, -2.5]")),
+                ("vec![1.5, f64::NAN]", None),
+                ("vec![1.5, f64::INFINITY]", None),
+                ("vec![1.5, f64::NEG_INFINITY]", None),
+            ],
+        );
+        assert_generated_result_cases(
+            "",
+            "[[Float]]",
+            "Option<Vec<Option<Vec<Option<f64>>>>>",
+            &[
+                (
+                    "Some(vec![None, Some(vec![Some(1.5), None])])",
+                    Some("[null, [1.5, null]]"),
+                ),
+                ("Some(vec![Some(vec![Some(1.5), Some(f64::NAN)])])", None),
+            ],
+        );
+    }
+
+    #[test]
+    fn generated_dispatch_converts_non_null_leaf_arguments() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            ("", "Int!", &["as_i64", "i32"]),
+            ("", "Float!", &["as_f64"]),
+            ("", "String!", &["as_str"]),
+            ("", "Boolean!", &["as_bool"]),
+            ("", "ID!", &["necrassrs :: Id", "as_i64"]),
+            (
+                "enum Status { OPEN CLOSED }",
+                "Status!",
+                &["r#OPEN", "r#CLOSED"],
+            ),
+        ];
+
+        for (definition, argument_type, expected) in cases {
+            let schema = Schema::parse_and_validate(
+                format!("{definition}\ntype Query {{ inspect(value: {argument_type}): String! }}"),
+                "schema.graphql",
+            )
+            .unwrap_or_else(|error| panic!("{argument_type}: {error}"));
+            let generated = super::generate_dispatch(&schema)
+                .unwrap_or_else(|error| panic!("{argument_type}: {error}"))
+                .to_token_stream()
+                .to_string();
+
+            for token in *expected {
+                assert!(
+                    generated.contains(token),
+                    "{argument_type}: missing `{token}` in {generated}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generated_dispatch_preserves_nullable_argument_presence() {
+        let schema = Schema::parse_and_validate(
+            "type Query { inspect(value: Int): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate_dispatch(&schema)
+            .expect("nullable arguments must be supported")
+            .to_token_stream()
+            .to_string();
+
+        for expected in [
+            "GraphQLInput :: Undefined",
+            "GraphQLInput :: Null",
+            "GraphQLInput :: Value",
+            "as_i64",
+        ] {
+            assert!(
+                generated.contains(expected),
+                "missing `{expected}` in {generated}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_dispatch_converts_list_container_and_item_nullability() {
+        let cases = [
+            ("[Int]", true, true, "as_i64", 1),
+            ("[Int]!", false, true, "as_i64", 1),
+            ("[Int!]", true, false, "as_i64", 1),
+            ("[Int!]!", false, false, "as_i64", 1),
+            ("[[Boolean!]!]!", false, false, "as_bool", 2),
+        ];
+
+        for (argument_type, nullable_container, nullable_item, leaf, list_depth) in cases {
+            let schema = Schema::parse_and_validate(
+                format!("type Query {{ inspect(value: {argument_type}): String! }}"),
+                "schema.graphql",
+            )
+            .unwrap_or_else(|error| panic!("{argument_type}: {error}"));
+            let generated = super::generate_dispatch(&schema)
+                .unwrap_or_else(|error| panic!("{argument_type}: {error}"))
+                .to_token_stream()
+                .to_string();
+
+            assert!(
+                generated.matches("as_array").count() >= list_depth,
+                "{argument_type}: missing recursive list conversion in {generated}"
+            );
+            assert!(
+                generated.contains(leaf),
+                "{argument_type}: missing `{leaf}` in {generated}"
+            );
+            assert_eq!(
+                generated.contains("GraphQLInput :: Undefined"),
+                nullable_container,
+                "{argument_type}: incorrect container presence conversion in {generated}"
+            );
+            if nullable_item {
+                assert!(
+                    generated.contains("Some") && generated.contains("None"),
+                    "{argument_type}: nullable items must produce Option values in {generated}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn generated_paths_preserve_case_boundaries_and_escape_rust_names() {
         let schema = Schema::parse_and_validate(
             r#"
@@ -903,6 +3250,12 @@ mod test {
             path::Path,
             process::{Command, Stdio},
         };
+
+        // ponytail: serialize shared Cargo artifact access; isolate target directories if throughput matters.
+        static COMPILATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _compilation = COMPILATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
 
         let build = Command::new(env!("CARGO"))
             .args([

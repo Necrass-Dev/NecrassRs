@@ -8,9 +8,11 @@ the public API. Cargo generates Rust contracts and synchronizes resolver
 declarations. You implement the resolver bodies.
 
 :::caution[Under active development]
-The generated API currently supports query fields with `String!` results and
-either no arguments or `String!` arguments. Design documents describe broader
-targets; they are not claims of completed support.
+The generated API supports built-in scalar and enum query results, ordinary and
+OneOf input objects, nullable and list forms, and recursive input layouts. Custom
+scalars, composite results, and generated mutation/subscription routing remain
+unsupported. These pages describe this source checkout, not an older resolved
+Git dependency.
 :::
 
 ## Start with a working server
@@ -33,6 +35,7 @@ for the full ownership contract.
 
 ## Explore the documentation
 
+- [Generated types and inputs](/docs/types/): executable resolver examples, defaults, lists, OneOf, and recursion.
 - [HTTP adapters](/docs/http/): Axum and Actix request/response behavior.
 - [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
 - [Architecture](/docs/architecture/): crate responsibilities, source ownership, and planned work.

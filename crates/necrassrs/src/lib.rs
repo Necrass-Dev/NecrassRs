@@ -20,11 +20,14 @@
 //!
 //! # Current scope
 //!
-//! Generated contracts support query fields returning `String!`, with no
-//! arguments or `String!` arguments. The runtime also completes nullable/list
-//! String results, but does not provide general output-object or scalar
-//! completion. Subscriptions are rejected. Schema introspection is enabled by
-//! default; use [`execute_with_options`] to disable it independently of any UI.
+//! Generated query contracts support built-in scalar and enum results, ordinary
+//! and OneOf input objects, nullable/list forms, and recursive input boxing.
+//! The runtime completes built-in scalar and enum results, preserving list-item
+//! conversion errors and nullability. Custom scalar conversion, composite output
+//! generation/completion, and generated mutation/subscription routing remain
+//! unsupported. Runtime subscriptions are rejected. Schema introspection is
+//! enabled by default; use
+//! [`execute_with_options`] to disable it independently of any UI.
 
 use apollo_compiler::response::ExecutionResponse;
 pub use apollo_compiler::{
@@ -38,6 +41,16 @@ mod execution;
 mod input;
 
 pub use execution::{Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options};
+
+/// A resolved value tree retaining conversion errors at their response positions.
+pub enum ResolvedValue {
+    /// A JSON value, including explicit null and JSON arrays from custom dispatchers.
+    Json(JsonValue),
+    /// List items that may independently contain values or conversion errors.
+    List(Vec<ResolvedValue>),
+    /// A conversion failure completed according to this position's nullability.
+    Error(ResolverError),
+}
 
 /// An application failure returned by a resolver.
 ///
@@ -158,3 +171,63 @@ impl From<request::RequestError> for Response {
 mod request;
 
 pub use request::Request;
+
+/// The presence state of a nullable GraphQL argument or input object field.
+pub enum GraphQLInput<T> {
+    /// The value was omitted.
+    Undefined,
+    /// The value was explicitly provided as `null`.
+    Null,
+    /// A non-null value was provided.
+    Value(T),
+}
+
+/// A GraphQL ID that preserves its supplied string representation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Id(String);
+
+impl Id {
+    /// Returns the ID as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Id {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for Id {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod input_type_tests {
+    use super::{GraphQLInput, Id};
+
+    #[test]
+    fn graphql_input_distinguishes_undefined_null_and_value() {
+        assert!(matches!(
+            GraphQLInput::<i32>::Undefined,
+            GraphQLInput::Undefined
+        ));
+        assert!(matches!(GraphQLInput::<i32>::Null, GraphQLInput::Null));
+
+        let input = GraphQLInput::Value(String::from("Sheri"));
+        let GraphQLInput::Value(value) = input else {
+            panic!("value input must preserve its payload");
+        };
+        assert_eq!(value, "Sheri");
+    }
+
+    #[test]
+    fn id_preserves_supplied_string_contents() {
+        let id = Id::from(String::from("001"));
+
+        assert_eq!(id.as_str(), "001");
+    }
+}

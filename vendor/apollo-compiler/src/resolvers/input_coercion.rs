@@ -50,8 +50,12 @@ pub(crate) fn coerce_variable_values(
             )?;
             coerced_values.insert(key.clone(), value);
         } else if let Some(default) = &variable_def.default_value {
-            let value =
-                graphql_value_to_json(&format_args!("default value of variable {name}"), default)?;
+            let value = graphql_value_to_json(
+                schema,
+                &variable_def.ty,
+                &format_args!("default value of variable {name}"),
+                default,
+            )?;
             let value = coerce_variable_value(
                 schema,
                 &format_args!("default value of variable {name}"),
@@ -126,11 +130,18 @@ fn coerce_variable_value(
         ExtendedType::Scalar(_) => match ty_name.as_str() {
             "Int" => {
                 // https://spec.graphql.org/October2021/#sec-Int.Input-Coercion
-                if value
-                    .as_i64()
-                    .is_some_and(|value| i32::try_from(value).is_ok())
-                {
-                    return Ok(value.clone());
+                let integer = value.as_i64().or_else(|| {
+                    value
+                        .as_f64()
+                        .filter(|number| {
+                            number.fract() == 0.0
+                                && *number >= i32::MIN as f64
+                                && *number <= i32::MAX as f64
+                        })
+                        .map(|number| number as i64)
+                });
+                if let Some(integer) = integer.filter(|integer| i32::try_from(*integer).is_ok()) {
+                    return Ok(JsonValue::from(integer));
                 }
             }
             "Float" => {
@@ -157,8 +168,11 @@ fn coerce_variable_value(
             }
             "ID" => {
                 // https://spec.graphql.org/October2021/#sec-ID.Input-Coercion
-                if value.is_string() || value.is_i64() {
+                if value.is_string() || value.is_i64() || value.is_u64() {
                     return Ok(value.clone());
+                }
+                if let Some(number) = value.as_f64().filter(|number| number.fract() == 0.0) {
+                    return Ok(JsonValue::from(format!("{number:.0}")));
                 }
             }
             _ => {
@@ -190,6 +204,15 @@ fn coerce_variable_value(
                         location: None,
                     });
                 }
+                let is_one_of = ty_def.directives.has("oneOf");
+                if is_one_of && (object.len() != 1 || object.values().any(JsonValue::is_null)) {
+                    return Err(InputCoercionError::ValueError {
+                        message: format!(
+                            "OneOf input object {ty_name} for {description} must contain exactly one non-null field"
+                        ),
+                        location: None,
+                    });
+                }
                 let mut object = object.clone();
                 for (field_name, field_def) in &ty_def.fields {
                     if let Some(field_value) = object.get_mut(field_name.as_str()) {
@@ -202,6 +225,8 @@ fn coerce_variable_value(
                         )?
                     } else if let Some(default) = &field_def.default_value {
                         let default = graphql_value_to_json(
+                            schema,
+                            &field_def.ty,
                             &format_args!("input field {ty_name}.{field_name}"),
                             default,
                         )?;
@@ -222,6 +247,14 @@ fn coerce_variable_value(
                         // Field not required
                     }
                 }
+                if is_one_of && object.values().any(JsonValue::is_null) {
+                    return Err(InputCoercionError::ValueError {
+                        message: format!(
+                            "OneOf input object {ty_name} for {description} must have a non-null coerced field"
+                        ),
+                        location: None,
+                    });
+                }
                 return Ok(object.into());
             }
         }
@@ -233,6 +266,8 @@ fn coerce_variable_value(
 }
 
 fn graphql_value_to_json(
+    schema: &Schema,
+    ty: &Type,
     description: &std::fmt::Arguments<'_>,
     value: &Node<Value>,
 ) -> Result<JsonValue, InputCoercionError> {
@@ -250,6 +285,7 @@ fn graphql_value_to_json(
         Value::Enum(value) => Ok(value.as_str().into()),
         Value::String(value) => Ok(value.as_str().into()),
         Value::Boolean(value) => Ok((*value).into()),
+        Value::Int(i) if ty.inner_named_type().as_str() == "ID" => Ok(i.as_str().into()),
         // Rely on `serde_json::Number`’s own parser to use whatever precision it supports
         Value::Int(i) => Ok(JsonValue::Number(i.as_str().parse().map_err(|_| {
             InputCoercionError::ValueError {
@@ -263,14 +299,31 @@ fn graphql_value_to_json(
                 location: value.location(),
             }
         })?)),
-        Value::List(value) => value
-            .iter()
-            .map(|value| graphql_value_to_json(description, value))
-            .collect(),
-        Value::Object(value) => value
-            .iter()
-            .map(|(key, value)| Ok((key.as_str(), graphql_value_to_json(description, value)?)))
-            .collect(),
+        Value::List(value) => {
+            let item_type = match ty {
+                Type::List(item) | Type::NonNullList(item) => item.as_ref(),
+                _ => ty,
+            };
+            value
+                .iter()
+                .map(|value| graphql_value_to_json(schema, item_type, description, value))
+                .collect()
+        }
+        Value::Object(value) => {
+            let input = schema.get_input_object(ty.inner_named_type().as_str());
+            value
+                .iter()
+                .map(|(key, value)| {
+                    let field_type = input
+                        .and_then(|input| input.fields.get(key))
+                        .map_or(ty, |field| field.ty.as_ref());
+                    Ok((
+                        key.as_str(),
+                        graphql_value_to_json(schema, field_type, description, value)?,
+                    ))
+                })
+                .collect()
+        }
     }
 }
 
@@ -321,12 +374,17 @@ pub(crate) fn coerce_argument_values(
             }
         }
         if let Some(default) = &arg_def.default_value {
-            let value = graphql_value_to_json(&format_args!("argument {arg_name}"), default)
-                .map_err(|err| {
-                    ctx.errors
-                        .push(err.into_field_error(path, &ctx.document.sources));
-                    PropagateNull
-                })?;
+            let value = graphql_value_to_json(
+                ctx.schema,
+                &arg_def.ty,
+                &format_args!("argument {arg_name}"),
+                default,
+            )
+            .map_err(|err| {
+                ctx.errors
+                    .push(err.into_field_error(path, &ctx.document.sources));
+                PropagateNull
+            })?;
             coerced_values.insert(arg_def.name.as_str(), value);
             continue;
         }
@@ -442,6 +500,8 @@ fn coerce_argument_value(
                         coerced_object.insert(field_name.as_str(), coerced_value);
                     } else if let Some(default) = &field_def.default_value {
                         let default = graphql_value_to_json(
+                            ctx.schema,
+                            &field_def.ty,
                             &format_args!("input field {ty_name}.{field_name}"),
                             default,
                         )
@@ -470,7 +530,7 @@ fn coerce_argument_value(
         }
         _ => {
             // For scalar and enums, rely and validation and just convert between Rust types
-            return graphql_value_to_json(description, value).map_err(|err| {
+            return graphql_value_to_json(ctx.schema, ty, description, value).map_err(|err| {
                 ctx.errors
                     .push(err.into_field_error(path, &ctx.document.sources));
                 PropagateNull

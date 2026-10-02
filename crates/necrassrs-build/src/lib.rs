@@ -32,9 +32,12 @@
 //! Review source changes after editing SDL. Retained bodies may need manual
 //! changes when arguments change.
 //!
-//! Generated contracts currently support query fields returning `String!` with
-//! no arguments or `String!` arguments. Mutation and subscription roots are
-//! rejected. Applications must configure `panic = "abort"` in their root dev
+//! Generated contract types cover built-in scalars, enums, ordinary input
+//! objects, lists, and nullable wrappers. Query dispatch accepts built-in scalar,
+//! enum, and ordinary input object arguments, including nullable and list forms;
+//! result dispatch supports built-in scalars and enums with nullable/list forms.
+//! OneOf inputs and recursive input boxing are supported. Mutation and subscription roots
+//! are rejected. Applications must configure `panic = "abort"` in their root dev
 //! and release profiles to enforce process termination on unimplemented calls.
 //! This affects all panics; ordinary application failures should be returned as
 //! runtime resolver errors.
@@ -318,7 +321,10 @@ mod tests {
         std::fs::write(&resolver, "user code").unwrap();
         for (input, expected) in [
             ("type Query { hello(: String!): String! }", "schema"),
-            ("type Query { count: Int! }", "codegen"),
+            (
+                "scalar Timestamp\ntype Query { count: Timestamp! }",
+                "codegen",
+            ),
         ] {
             std::fs::write(&sdl, input).unwrap();
             let error = directory.build().unwrap_err();
@@ -387,8 +393,11 @@ mod tests {
         assert!(!schema_error.to_string().is_empty());
         assert!(schema_error.source().is_none());
 
-        let valid =
-            Schema::parse_and_validate("type Query { count: Int! }", "schema.graphql").unwrap();
+        let valid = Schema::parse_and_validate(
+            "scalar Timestamp\ntype Query { count: Timestamp! }",
+            "schema.graphql",
+        )
+        .unwrap();
         let codegen_error = BuildError::Codegen(codegen::generate(&valid).unwrap_err());
         assert!(
             codegen_error

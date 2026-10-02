@@ -3,7 +3,8 @@ title: "Local Apollo correction and upstream work"
 ---
 
 NecrassRs maintains its own Apollo Compiler patch for
-[#23](https://github.com/Necrass-Dev/NecrassRs/issues/23). The separate
+[#23](https://github.com/Necrass-Dev/NecrassRs/issues/23) and OneOf support
+and JSON numeric variable coercion in [#24](https://github.com/Necrass-Dev/NecrassRs/issues/24). The separate
 [dodok8/apollo-rs fork](https://github.com/dodok8/apollo-rs) is a preparation area
 for the minimal upstream implementation and regression tests. It is not a local
 path dependency of NecrassRs. The two repositories have different change scopes.
@@ -11,7 +12,7 @@ path dependency of NecrassRs. The two repositories have different change scopes.
 ## NecrassRs-owned artifacts
 
 - [Source patch](https://github.com/Necrass-Dev/NecrassRs/blob/main/patches/apollo-compiler-1.33.0.patch), relative to the compiler
-  crate root, records the five validation/coercion source changes.
+  crate root, records the eight library source changes.
 - `vendor/apollo-compiler` is a minimal buildable copy of the crates.io 1.33.0
   package with that patch applied. It contains library source, licenses, provenance,
   README, and the single example embedded by the library's rustdoc. Upstream test
@@ -44,6 +45,43 @@ existing coercion while preserving validated scalar literal representations.
 Supplied JSON values retain scalar validation; recursive list/object processing
 keeps the distinction between supplied values and validated defaults. The first cycle diagnostic includes available field locations.
 Type recursion and the draft unbreakable-cycle rule remain separate checks.
+
+Supplied JSON numbers with an empty fractional part are integer inputs. The
+patch normalizes in-range Int variables to integer JSON values before generated
+conversion, including nested lists and input fields. ID variables accept signed
+and unsigned integer values and normalize integer-valued floating representations
+to strings. Fractional values remain invalid for Int and ID. GraphQL literal
+validation is unchanged: floating-point literals remain invalid at Int and ID
+positions. `json_variable_numbers_are_normalized_without_changing_literal_kinds`
+checks this directly through Apollo, and a compiled generated consumer checks
+the same behavior through resolver dispatch and result serialization.
+
+Validated ID integer literals are converted directly from their AST text to
+strings before JSON number parsing. This preserves integers beyond signed,
+unsigned, or floating-point ranges in variable and nested input-field defaults,
+including singleton and nested lists. The NecrassRs argument coercion path uses
+the same representation for request literals and argument defaults. Public Apollo
+and compiled-consumer regressions cover positive/negative large IDs and 400-digit
+integers without rounding.
+
+The patch also rejects non-null OneOf input fields and any OneOf field default,
+including explicit null, with source locations for the invalid type or default.
+`@oneOf` is registered as a non-repeatable built-in directive without arguments,
+restricted to input object definitions. Existing explicit declarations remain
+supported. Document validation requires exactly one supplied field with a
+non-null literal or a compatible non-null member variable declaration, even if
+a nullable variable has a non-null default. It checks nested objects and list
+elements before variable coercion, so a second field using an undefined variable
+cannot disappear before the cardinality check. Existing unknown-field validation
+continues to apply.
+
+Variable-value coercion checks OneOf selection cardinality and non-nullness
+before recursively coercing the selected field, then checks that its coerced
+value remains non-null. The same path handles nested objects, list elements,
+and variable defaults. Nullable whole objects and nullable list items retain
+their ordinary semantics. Invalid supplied selections produce request errors
+before execution; `crates/necrassrs/tests/apollo_one_of.rs` exercises these rules
+directly through Apollo's public API.
 
 ## Cargo and consumers
 

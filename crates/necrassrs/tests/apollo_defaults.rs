@@ -3,6 +3,93 @@ use apollo_compiler::response::{JsonMap, serde_json_bytes::json};
 use apollo_compiler::{ExecutableDocument, Schema, request::coerce_variable_values};
 
 #[test]
+fn id_defaults_preserve_integer_text_before_json_number_conversion() {
+    let schema = Schema::parse_and_validate(
+        "input Holder { id: ID = 18446744073709551617 ids: [ID] = -18446744073709551617 } type Query { inspect(id: ID, holder: Holder): String }",
+        "schema.graphql",
+    ).unwrap();
+    for id in [
+        "18446744073709551617".to_owned(),
+        "-18446744073709551617".to_owned(),
+        "9".repeat(400),
+    ] {
+        let query = format!(
+            "query($id: ID = {id}, $holder: Holder = {{id: {id}, ids: {id}}}) {{inspect(id: $id, holder: $holder)}}"
+        );
+        let document =
+            ExecutableDocument::parse_and_validate(&schema, query, "query.graphql").unwrap();
+        let coerced = coerce_variable_values(
+            &schema,
+            document.operations.get(None).unwrap(),
+            &JsonMap::new(),
+        )
+        .unwrap();
+        assert_eq!(coerced["id"], json!(id));
+        assert_eq!(coerced["holder"], json!({"id": id, "ids": [id]}));
+    }
+    let document = ExecutableDocument::parse_and_validate(
+        &schema,
+        "query($holder: Holder!) {inspect(holder: $holder)}",
+        "query.graphql",
+    )
+    .unwrap();
+    let supplied = [("holder".into(), json!({}))].into_iter().collect();
+    let coerced =
+        coerce_variable_values(&schema, document.operations.get(None).unwrap(), &supplied).unwrap();
+    assert_eq!(
+        coerced["holder"],
+        json!({"id": "18446744073709551617", "ids": ["-18446744073709551617"]})
+    );
+}
+
+#[test]
+fn json_variable_numbers_are_normalized_without_changing_literal_kinds() {
+    let schema = Schema::parse_and_validate(
+        "input Numbers { integers: [Int!] ids: [ID!] } type Query { inspect(value: Numbers): String }",
+        "schema.graphql",
+    ).unwrap();
+    let document = ExecutableDocument::parse_and_validate(
+        &schema,
+        "query($value: Numbers) { inspect(value: $value) }",
+        "query.graphql",
+    )
+    .unwrap();
+    let operation = document.operations.get(None).unwrap();
+    let supplied: JsonMap = [(
+        "value".into(),
+        json!({
+            "integers": [-2147483648.0, 1.0, 2147483647.0],
+            "ids": [42.0, -42, "001", u64::MAX]
+        }),
+    )]
+    .into_iter()
+    .collect();
+    let coerced = coerce_variable_values(&schema, operation, &supplied).unwrap();
+    assert_eq!(
+        coerced["value"],
+        json!({
+            "integers": [-2147483648i64, 1, 2147483647],
+            "ids": ["42", -42, "001", u64::MAX]
+        })
+    );
+    for invalid in [
+        json!({"integers": [1.5]}),
+        json!({"integers": [2147483648.0]}),
+        json!({"integers": [-2147483649.0]}),
+        json!({"ids": [1.5]}),
+    ] {
+        let supplied = [("value".into(), invalid)].into_iter().collect();
+        assert!(coerce_variable_values(&schema, operation, &supplied).is_err());
+    }
+    for query in [
+        "{ inspect(value: {integers: [1.0]}) }",
+        "{ inspect(value: {ids: [42.0]}) }",
+    ] {
+        assert!(ExecutableDocument::parse_and_validate(&schema, query, "query.graphql").is_err());
+    }
+}
+
+#[test]
 fn variable_defaults_are_coerced_by_apollo() {
     // Reuse the three execution default regressions at the dependency boundary.
     for (sdl, query, name, expected) in [
@@ -37,18 +124,14 @@ fn variable_defaults_are_coerced_by_apollo() {
 #[test]
 fn numeric_literal_defaults_preserve_validated_values() {
     let mut failures = Vec::new();
-    for (scalar, literal, number) in [
+    for (scalar, literal, value) in [
         ("Float", "9007199254740991", json!(9_007_199_254_740_991u64)),
-        (
-            "ID",
-            "9223372036854775808",
-            json!(9_223_372_036_854_775_808u64),
-        ),
+        ("ID", "9223372036854775808", json!("9223372036854775808")),
     ] {
         for (ty, expected) in [
-            (scalar.to_owned(), number.clone()),
-            (format!("[{scalar}]"), json!([number.clone()])),
-            (format!("[[{scalar}]]"), json!([[number]])),
+            (scalar.to_owned(), value.clone()),
+            (format!("[{scalar}]"), json!([value.clone()])),
+            (format!("[[{scalar}]]"), json!([[value]])),
         ] {
             for (case, sdl, query, variables, expected) in [
                 (

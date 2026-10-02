@@ -9,7 +9,7 @@
 NecrassRs is an SDL-first GraphQL server framework for Rust. Define your public API in GraphQL SDL, let Cargo generate Rust contracts and resolver scaffolding, and fill in the resolver bodies with your application logic.
 
 > [!WARNING]
-> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API currently supports query fields with `String!` return values and either no arguments or `String!` arguments.
+> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API supports built-in scalar and enum query results, ordinary and OneOf input objects, nullable and list forms, and recursive input layouts. Custom scalars, composite results, and generated mutation/subscription routing remain unsupported.
 
 ## Quick start
 
@@ -86,6 +86,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {
 ```
 
 Your application owns routing and request Context construction. At runtime, NecrassRs validates the request, dispatches selected fields to your resolvers, and builds the GraphQL response. Return `ResolverError` for ordinary application errors.
+
+See [Generated types and inputs](docs/src/content/docs/docs/types.md) for executable schema/resolver examples, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
 
 ## Everyday development
 

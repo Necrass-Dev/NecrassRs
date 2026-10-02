@@ -173,6 +173,76 @@ fn modifying_arguments_updates_generated_contract_and_preserves_method_body() {
 }
 
 #[test]
+fn expanded_input_and_result_contracts_rebuild_without_replacing_user_body() {
+    let consumer = Consumer::new(
+        "enum Status { OPEN CLOSED } input Filter { status: Status } type Query { inspect(filter: Filter): [ID!] }",
+    );
+    consumer.bootstrap();
+    let mut ast = consumer.ast();
+    let implementation = ast
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            Item::Impl(item) if item.trait_.is_some() => Some(item),
+            _ => None,
+        })
+        .unwrap();
+    let inspect = implementation
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident.unraw() == "inspect" => Some(method),
+            _ => None,
+        })
+        .unwrap();
+    inspect.block = syn::parse_quote!({ Ok(Default::default()) });
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    let before = body(method(&consumer.ast(), "inspect"));
+
+    consumer.schema(
+        r#"
+            enum Status { OPEN CLOSED }
+            input Filter { status: Status = OPEN next: Filter choice: Choice children: [Filter!] }
+            input Choice @oneOf { filter: Filter id: ID }
+            input type { self: type required: Link! children: [type!] }
+            input Link { back: type }
+            input user { value: Int }
+            input User { value: Int }
+            input _user { value: Int }
+            type Query {
+                inspect(filter: Filter!, choice: Choice, count: Int = 7, names: type, lower: user, upper: User, underscored: _user): [ID!]
+                echo(status: Status!): Status!
+            }
+        "#,
+    );
+    let build = consumer.build();
+    assert_success(&build);
+    let ast = consumer.ast();
+    assert_eq!(body(method(&ast, "inspect")), before);
+    assert_stub(method(&ast, "echo"));
+    assert!(
+        method(&ast, "inspect")
+            .sig
+            .output
+            .to_token_stream()
+            .to_string()
+            .contains("Option < :: std :: vec :: Vec < :: necrassrs :: Id > >")
+    );
+    let executable = messages(&build)
+        .find_map(|message| message["executable"].as_str().map(PathBuf::from))
+        .unwrap();
+    let run = Command::new(executable)
+        .arg("{ inspect(filter: {}) }")
+        .output()
+        .unwrap();
+    assert_success(&run);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&run.stdout).unwrap(),
+        serde_json::json!({"data": {"inspect": null}}),
+    );
+}
+
+#[test]
 fn synchronization_uses_injective_names_without_matching_similar_methods() {
     let consumer = Consumer::new(
         "type Query { hello: String! Hello: String! type: String! self: String! _self: String! _: String! }",
