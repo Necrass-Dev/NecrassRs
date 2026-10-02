@@ -56,6 +56,14 @@ positions. `json_variable_numbers_are_normalized_without_changing_literal_kinds`
 checks this directly through Apollo, and a compiled generated consumer checks
 the same behavior through resolver dispatch and result serialization.
 
+Validated ID integer literals are converted directly from their AST text to
+strings before JSON number parsing. This preserves integers beyond signed,
+unsigned, or floating-point ranges in variable and nested input-field defaults,
+including singleton and nested lists. The NecrassRs argument coercion path uses
+the same representation for request literals and argument defaults. Public Apollo
+and compiled-consumer regressions cover positive/negative large IDs and 400-digit
+integers without rounding.
+
 The patch also rejects non-null OneOf input fields and any OneOf field default,
 including explicit null, with source locations for the invalid type or default.
 `@oneOf` is registered as a non-repeatable built-in directive without arguments,

@@ -124,18 +124,14 @@ fn variable_defaults_are_coerced_by_apollo() {
 #[test]
 fn numeric_literal_defaults_preserve_validated_values() {
     let mut failures = Vec::new();
-    for (scalar, literal, number) in [
+    for (scalar, literal, value) in [
         ("Float", "9007199254740991", json!(9_007_199_254_740_991u64)),
-        (
-            "ID",
-            "9223372036854775808",
-            json!(9_223_372_036_854_775_808u64),
-        ),
+        ("ID", "9223372036854775808", json!("9223372036854775808")),
     ] {
         for (ty, expected) in [
-            (scalar.to_owned(), number.clone()),
-            (format!("[{scalar}]"), json!([number.clone()])),
-            (format!("[[{scalar}]]"), json!([[number]])),
+            (scalar.to_owned(), value.clone()),
+            (format!("[{scalar}]"), json!([value.clone()])),
+            (format!("[[{scalar}]]"), json!([[value]])),
         ] {
             for (case, sdl, query, variables, expected) in [
                 (

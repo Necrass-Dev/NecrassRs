@@ -510,6 +510,12 @@ fn coerce_input_value(
         Type::Named(name) | Type::NonNullNamed(name) => name,
     };
 
+    if type_name.as_str() == "ID"
+        && let Value::Int(integer) = value.as_ref()
+    {
+        return Ok(JsonValue::from(integer.as_str()));
+    }
+
     if let Some(ExtendedType::InputObject(input)) = schema.types.get(type_name) {
         let object = value.as_object().ok_or_else(|| {
             new_execution_error(

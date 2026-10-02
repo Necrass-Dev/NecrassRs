@@ -1,6 +1,6 @@
 --- a/src/resolvers/input_coercion.rs
 +++ b/src/resolvers/input_coercion.rs
-@@ -46,11 +46,19 @@
+@@ -46,11 +46,23 @@
                  &format_args!("variable {name}"),
                  &variable_def.ty,
                  value,
@@ -8,8 +8,14 @@
              )?;
              coerced_values.insert(key.clone(), value);
          } else if let Some(default) = &variable_def.default_value {
-             let value =
-                 graphql_value_to_json(&format_args!("default value of variable {name}"), default)?;
+-            let value =
+-                graphql_value_to_json(&format_args!("default value of variable {name}"), default)?;
++            let value = graphql_value_to_json(
++                schema,
++                &variable_def.ty,
++                &format_args!("default value of variable {name}"),
++                default,
++            )?;
 +            let value = coerce_variable_value(
 +                schema,
 +                &format_args!("default value of variable {name}"),
@@ -20,7 +26,7 @@
              coerced_values.insert(name, value);
          } else if variable_def.ty.is_non_null() {
              return Err(InputCoercionError::ValueError {
-@@ -73,6 +81,7 @@
+@@ -73,6 +85,7 @@
      description: &std::fmt::Arguments<'_>,
      ty: &Type,
      value: &JsonValue,
@@ -28,7 +34,7 @@
  ) -> Result<JsonValue, InputCoercionError> {
      if value.is_null() {
          if ty.is_non_null() {
-@@ -93,7 +102,7 @@
+@@ -93,7 +106,7 @@
                  // If not an array, treat the value as an array of size one:
                  .unwrap_or(std::slice::from_ref(value))
                  .iter()
@@ -37,7 +43,7 @@
                  .collect();
          }
          Type::Named(ty_name) | Type::NonNullNamed(ty_name) => ty_name,
-@@ -111,14 +120,24 @@
+@@ -111,14 +124,24 @@
                  location: ty_name.location(),
              })?
          }
@@ -67,7 +73,7 @@
                  }
              }
              "Float" => {
-@@ -145,8 +164,11 @@
+@@ -145,8 +168,11 @@
              }
              "ID" => {
                  // https://spec.graphql.org/October2021/#sec-ID.Input-Coercion
@@ -80,7 +86,7 @@
                  }
              }
              _ => {
-@@ -178,6 +200,15 @@
+@@ -178,6 +204,15 @@
                          location: None,
                      });
                  }
@@ -96,7 +102,7 @@
                  let mut object = object.clone();
                  for (field_name, field_def) in &ty_def.fields {
                      if let Some(field_value) = object.get_mut(field_name.as_str()) {
-@@ -186,11 +217,19 @@
+@@ -186,11 +221,21 @@
                              &format_args!("input field {ty_name}.{field_name}"),
                              &field_def.ty,
                              field_value,
@@ -104,6 +110,8 @@
                          )?
                      } else if let Some(default) = &field_def.default_value {
                          let default = graphql_value_to_json(
++                            schema,
++                            &field_def.ty,
                              &format_args!("input field {ty_name}.{field_name}"),
                              default,
 +                        )?;
@@ -116,11 +124,10 @@
                          )?;
                          object.insert(field_name.as_str(), default);
                      } else if field_def.ty.is_non_null() {
-@@ -201,6 +240,14 @@
-                     } else {
+@@ -202,6 +247,14 @@
                          // Field not required
                      }
-+                }
+                 }
 +                if is_one_of && object.values().any(JsonValue::is_null) {
 +                    return Err(InputCoercionError::ValueError {
 +                        message: format!(
@@ -128,9 +135,109 @@
 +                        ),
 +                        location: None,
 +                    });
-                 }
++                }
                  return Ok(object.into());
              }
+         }
+@@ -213,6 +266,8 @@
+ }
+
+ fn graphql_value_to_json(
++    schema: &Schema,
++    ty: &Type,
+     description: &std::fmt::Arguments<'_>,
+     value: &Node<Value>,
+ ) -> Result<JsonValue, InputCoercionError> {
+@@ -230,6 +285,7 @@
+         Value::Enum(value) => Ok(value.as_str().into()),
+         Value::String(value) => Ok(value.as_str().into()),
+         Value::Boolean(value) => Ok((*value).into()),
++        Value::Int(i) if ty.inner_named_type().as_str() == "ID" => Ok(i.as_str().into()),
+         // Rely on `serde_json::Number`’s own parser to use whatever precision it supports
+         Value::Int(i) => Ok(JsonValue::Number(i.as_str().parse().map_err(|_| {
+             InputCoercionError::ValueError {
+@@ -243,14 +299,31 @@
+                 location: value.location(),
+             }
+         })?)),
+-        Value::List(value) => value
+-            .iter()
+-            .map(|value| graphql_value_to_json(description, value))
+-            .collect(),
+-        Value::Object(value) => value
+-            .iter()
+-            .map(|(key, value)| Ok((key.as_str(), graphql_value_to_json(description, value)?)))
+-            .collect(),
++        Value::List(value) => {
++            let item_type = match ty {
++                Type::List(item) | Type::NonNullList(item) => item.as_ref(),
++                _ => ty,
++            };
++            value
++                .iter()
++                .map(|value| graphql_value_to_json(schema, item_type, description, value))
++                .collect()
++        }
++        Value::Object(value) => {
++            let input = schema.get_input_object(ty.inner_named_type().as_str());
++            value
++                .iter()
++                .map(|(key, value)| {
++                    let field_type = input
++                        .and_then(|input| input.fields.get(key))
++                        .map_or(ty, |field| field.ty.as_ref());
++                    Ok((
++                        key.as_str(),
++                        graphql_value_to_json(schema, field_type, description, value)?,
++                    ))
++                })
++                .collect()
++        }
+     }
+ }
+
+@@ -301,12 +374,17 @@
+             }
+         }
+         if let Some(default) = &arg_def.default_value {
+-            let value = graphql_value_to_json(&format_args!("argument {arg_name}"), default)
+-                .map_err(|err| {
+-                    ctx.errors
+-                        .push(err.into_field_error(path, &ctx.document.sources));
+-                    PropagateNull
+-                })?;
++            let value = graphql_value_to_json(
++                ctx.schema,
++                &arg_def.ty,
++                &format_args!("argument {arg_name}"),
++                default,
++            )
++            .map_err(|err| {
++                ctx.errors
++                    .push(err.into_field_error(path, &ctx.document.sources));
++                PropagateNull
++            })?;
+             coerced_values.insert(arg_def.name.as_str(), value);
+             continue;
+         }
+@@ -422,6 +500,8 @@
+                         coerced_object.insert(field_name.as_str(), coerced_value);
+                     } else if let Some(default) = &field_def.default_value {
+                         let default = graphql_value_to_json(
++                            ctx.schema,
++                            &field_def.ty,
+                             &format_args!("input field {ty_name}.{field_name}"),
+                             default,
+                         )
+@@ -450,7 +530,7 @@
+         }
+         _ => {
+             // For scalar and enums, rely and validation and just convert between Rust types
+-            return graphql_value_to_json(description, value).map_err(|err| {
++            return graphql_value_to_json(ctx.schema, ty, description, value).map_err(|err| {
+                 ctx.errors
+                     .push(err.into_field_error(path, &ctx.document.sources));
+                 PropagateNull
 --- a/src/schema/validation.rs
 +++ b/src/schema/validation.rs
 @@ -39,6 +39,7 @@
