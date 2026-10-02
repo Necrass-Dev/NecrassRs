@@ -825,7 +825,7 @@ fn named_input_value(
         "Int" => Some(quote! {
             (#value).as_i64()
                 .and_then(|value| {
-                    <i32 as ::core::convert::TryFrom<i64>>::try_from(value).ok()
+                    <::core::primitive::i32 as ::core::convert::TryFrom<::core::primitive::i64>>::try_from(value).ok()
                 })
                 .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
         }),
@@ -906,7 +906,7 @@ fn named_output_value(
 
             Some(quote! {
                 {
-                    let value: f64 = #value;
+                    let value: ::core::primitive::f64 = #value;
 
                     if !value.is_finite() {
                         ::necrassrs::ResolvedValue::Error(::necrassrs::ResolverError::new(#message))
@@ -1010,10 +1010,10 @@ fn nullable_input(lookup: &TokenStream, value: &TokenStream) -> TokenStream {
 
 fn named_type(schema: &Schema, name: &NamedType, types_path: &TokenStream) -> Option<TokenStream> {
     match name.as_str() {
-        "Int" => Some(quote! { i32 }),
-        "Float" => Some(quote! { f64 }),
+        "Int" => Some(quote! { ::core::primitive::i32 }),
+        "Float" => Some(quote! { ::core::primitive::f64 }),
         "String" => Some(quote! { ::std::string::String }),
-        "Boolean" => Some(quote! { bool }),
+        "Boolean" => Some(quote! { ::core::primitive::bool }),
         "ID" => Some(quote! { ::necrassrs::Id }),
         _ => match schema.types.get(name) {
             Some(ExtendedType::Enum(_)) | Some(ExtendedType::InputObject(_)) => {
@@ -2105,10 +2105,10 @@ mod test {
         .expect("the test schema must be valid");
         let query = schema.get_object("Query").unwrap();
         let cases = [
-            ("intResult", quote! { i32 }),
-            ("floatResult", quote! { f64 }),
+            ("intResult", quote! { ::core::primitive::i32 }),
+            ("floatResult", quote! { ::core::primitive::f64 }),
             ("stringResult", quote! { ::std::string::String }),
-            ("booleanResult", quote! { bool }),
+            ("booleanResult", quote! { ::core::primitive::bool }),
             ("idResult", quote! { ::necrassrs::Id }),
             ("statusResult", quote! { super::types::r#Status }),
             (
@@ -2117,19 +2117,19 @@ mod test {
             ),
             (
                 "nullableListResult",
-                quote! { ::core::option::Option<::std::vec::Vec<::core::option::Option<i32>>> },
+                quote! { ::core::option::Option<::std::vec::Vec<::core::option::Option<::core::primitive::i32>>> },
             ),
             (
                 "requiredListResult",
-                quote! { ::std::vec::Vec<::core::option::Option<i32>> },
+                quote! { ::std::vec::Vec<::core::option::Option<::core::primitive::i32>> },
             ),
             (
                 "nullableNonNullItemsResult",
-                quote! { ::core::option::Option<::std::vec::Vec<i32>> },
+                quote! { ::core::option::Option<::std::vec::Vec<::core::primitive::i32>> },
             ),
             (
                 "requiredNonNullItemsResult",
-                quote! { ::std::vec::Vec<i32> },
+                quote! { ::std::vec::Vec<::core::primitive::i32> },
             ),
         ];
 
@@ -2189,7 +2189,7 @@ mod test {
             "fn _from_graphql_value",
             "as_object",
             "object . get",
-            "pub r#required : bool",
+            "pub r#required : :: core :: primitive :: bool",
             "pub r#optionalId : :: necrassrs :: GraphQLInput < :: necrassrs :: Id >",
             "pub r#statuses : :: necrassrs :: GraphQLInput",
             "self :: r#Nested :: _from_graphql_value",
@@ -2256,16 +2256,16 @@ mod test {
         let expected = syn::parse2::<syn::ItemEnum>(quote! {
             #[allow(non_camel_case_types)]
             pub enum r#Choice {
-                r#number(i32),
-                r#decimal(f64),
+                r#number(::core::primitive::i32),
+                r#decimal(::core::primitive::f64),
                 r#text(::std::string::String),
-                r#flag(bool),
+                r#flag(::core::primitive::bool),
                 r#id(::necrassrs::Id),
                 r#status(self::r#Status),
                 r#nested(self::r#Nested),
-                r#items(::std::vec::Vec<::core::option::Option<i32>>),
-                r#requiredItems(::std::vec::Vec<i32>),
-                r#matrix(::std::vec::Vec<::core::option::Option<::std::vec::Vec<i32>>>),
+                r#items(::std::vec::Vec<::core::option::Option<::core::primitive::i32>>),
+                r#requiredItems(::std::vec::Vec<::core::primitive::i32>),
+                r#matrix(::std::vec::Vec<::core::option::Option<::std::vec::Vec<::core::primitive::i32>>>),
             }
         })
         .unwrap();
