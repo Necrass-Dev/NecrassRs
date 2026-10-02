@@ -429,7 +429,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
     }
 
     Ok(quote! {
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, non_camel_case_types)]
         pub mod types {
             #(#named_types)*
             #(#object_modules)*
