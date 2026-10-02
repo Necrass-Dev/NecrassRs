@@ -17,7 +17,7 @@ export default defineConfig({
       customCss: ["./src/styles/docs.css"],
       sidebar: [
         { label: "Start here", items: [{ label: "Introduction", slug: "docs" }] },
-        { label: "Server guides", items: ["docs/http", "docs/graphiql"] },
+        { label: "Server guides", items: ["docs/types", "docs/http", "docs/graphiql"] },
         {
           label: "Design & development",
           items: [

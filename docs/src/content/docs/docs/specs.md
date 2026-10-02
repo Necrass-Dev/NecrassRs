@@ -2,7 +2,7 @@
 title: "Specification implementation requirements"
 ---
 
-Updated: 2026-09-27
+Updated: 2026-10-02
 
 This document maps [issue #18](https://github.com/Necrass-Dev/NecrassRs/issues/18) to GraphQL requirements, implementation gaps, and acceptance cases. It is an implementation target, not evidence of completed conformance. Requirement levels come from the cited specification; project scope, Rust representations, and deviations are identified separately.
 
@@ -210,6 +210,33 @@ Validation: `cargo test --workspace --locked`, workspace all-target Clippy with
 warnings denied, and formatting pass. The root lockfile resolves Apollo from the
 local maintained Apollo source. No protocol implementation changes are part of this patch.
 
+### Generated leaf and input verification for #24
+
+The source checkout now generates and executes built-in scalar and enum query
+contracts, ordinary and OneOf inputs, nullable/list wrappers, and recursive input
+boxing. [The type guide](/docs/types/) contains schema, resolver, and executable
+examples that are compiled and run by `documented_type_examples_compile_and_execute`.
+The following evidence covers #24's clauses against the immutable references
+recorded below; it does not establish complete GraphQL or Working Draft conformance.
+
+| Clause / scope | Executable evidence | Coverage and limit |
+| --- | --- | --- |
+| G03: built-in scalars; §3.5, §6.4.3 | `generated_consumer_executes_leaf_boundaries_and_variable_numbers`; finite/non-finite Float consumer tests; `json_variable_numbers_are_normalized_without_changing_literal_kinds` | Int boundaries, scalar inputs/results, ID string preservation and integer serialization, JSON integer-valued numbers versus floating-point literals; custom scalars remain #25. |
+| G04: enums; §3.9 | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; enum result and nested-list consumer tests | Enum literals, JSON string variables, membership rejection, and enum results. Invalid input does not dispatch. |
+| G06/G11: input presence/defaults; §3.10, §6.1.2, §6.4.1 | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; public Apollo default tests | Argument, variable, nested-field defaults, absent variables, explicit null, supplied values, and unknown literal/variable fields reach the expected boundary. |
+| G07: OneOf; §3.10.1, §5.8.5 | Generated OneOf consumer tests; `apollo_one_of` integration tests; OneOf schema/document request tests | Valid alternatives and invalid empty/multiple/unknown/null selections; undefined second member, schema restrictions, and non-null member-variable compatibility. Draft unbreakable-cycle validation remains #28. |
+| G08: list/nullability; §3.11, §3.12 | Input/result wrapper tests; generated default consumer; `generated_float_list_error_preserves_nullable_items_and_index_path` | Independent container/item wrappers, nested singleton/default coercion, null items, and indexed leaf conversion errors preserving nullable siblings. |
+| G09: recursive Rust layout | Kosaraju and schema-wrapper unit tests; `generated_recursive_inputs_box_fields_and_convert_finite_values`; expanded Cargo rebuild | Self/mutual/OneOf recursion, mixed non-null edges, lists, names, finite values, and presence states. Invalid schema/default cycles are validated separately. |
+| Source synchronization (project contract) | `expanded_input_and_result_contracts_rebuild_without_replacing_user_body` | A real consumer rebuilds after input/default/recursive contract changes, retains its body, and compiles a new enum-return stub through the patched dependency. Retained return signatures remain user-written; changed return types can require manual edits. |
+
+Validation on 2026-10-02: all listed checks passed in
+`cargo test --workspace --locked`; workspace formatting and all-target Clippy
+with warnings denied passed. The documentation examples ran successfully, and
+`pnpm check` and `pnpm build` passed in `docs/`. Applying the maintained Apollo
+patch to the original 1.33.0 source reproduced all eight changed source files
+byte-for-byte. This is local source-checkout evidence, not a published package
+or a protocol conformance result.
+
 ### Immutable reference comparison for #23
 
 The released source is graphql/graphql-spec commit
@@ -323,8 +350,8 @@ These observations locate work; they are not a fresh exhaustive conformance audi
 
 | Area                | Current evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Requirement coverage to establish                                        |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Generated contracts | [codegen.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-build/src/codegen.rs) restricts generated argument/result types to String! and generated dispatch to query roots.                                                                                                                                                                                                                                                                                       | G03–G09 and G13–G21 through compiling generated consumers.               |
-| Execution           | [execution.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/execution.rs) completes String/list/nullability cases, lacks general scalar/object completion, and rejects subscriptions.                                                                                                                                                                                                                                                                         | G03–G05 and G12–G21; reuse existing checks for supported paths.          |
+| Generated contracts | [codegen.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-build/src/codegen.rs) supports built-in scalar/enum results, ordinary/OneOf inputs, nullable/list wrappers, and recursive input layouts. Custom scalars, composite results, and generated mutation/subscription routing remain separate work.                                                                                                                                                                                                                                                                                       | G03–G09 and G13–G21 through compiling generated consumers.               |
+| Execution           | [execution.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/execution.rs) completes built-in scalar/enum results and nullable/list forms, retaining indexed leaf conversion errors. Composite output support and subscription execution remain separate work.                                                                                                                                                                                                                                                                         | G03–G05 and G12–G21; reuse existing checks for supported paths.          |
 | Defaults/coercion   | [request.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/request.rs) and [execution.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/execution.rs) now use the local Apollo patch for variable defaults and schema default cycles; [Cargo.toml](https://github.com/Necrass-Dev/NecrassRs/blob/main/Cargo.toml) overrides Apollo Compiler 1.33.0 with the maintained local source. Executor field-argument coercion remains local. | G08/G09/G11 at the dependency boundary and through consumers.            |
 | HTTP and streaming  | [shared HTTP](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-http/src/lib.rs), [Axum](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-axum/src/lib.rs), and [Actix](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-actix/src/lib.rs) need the selected request/response matrix and WS/SSE exchanges.                                                                                                                       | H01–H06, W01–W06, S01–S05; inspect each case before assigning pass/fail. |
 

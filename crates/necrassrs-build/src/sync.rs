@@ -39,6 +39,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 query.name.as_str(),
                 field.name.as_str(),
                 &field.ty,
+                &quote! { crate::generated::types },
             )
             .map_err(BuildError::Codegen)?;
             Ok(syn::parse_quote! {

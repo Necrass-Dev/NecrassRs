@@ -453,7 +453,13 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         let mut methods = Vec::new();
         for (field_name, field) in &object.fields {
             let method_name = format_ident!("r#{}", rust_name(field_name.as_str()));
-            let return_type = resolver_return_type(schema, type_name, field_name, &field.ty)?;
+            let return_type = resolver_return_type(
+                schema,
+                type_name,
+                field_name,
+                &field.ty,
+                &quote! { super::types },
+            )?;
             let message = format!("Resolver {type_name}.{field_name} is not implemented");
             methods.push(quote! {
                 fn #method_name<'a>(
@@ -612,8 +618,9 @@ pub(crate) fn resolver_return_type(
     type_name: &str,
     field_name: &str,
     ty: &Type,
+    types_path: &TokenStream,
 ) -> Result<TokenStream, CodegenError> {
-    output_type(schema, ty, &quote! { super::types }).ok_or_else(|| {
+    output_type(schema, ty, types_path).ok_or_else(|| {
         CodegenError::new(
             format!("Unsupported return type at {type_name}.{field_name}: {ty}"),
             schema,
@@ -836,13 +843,17 @@ fn named_input_value(
                 .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
         }),
         "ID" => Some(quote! {
-            (#value).as_str()
-                .map(::std::borrow::ToOwned::to_owned)
-                .or_else(|| {
-                    (#value).as_i64().map(|value| value.to_string())
-                })
-                .map(::necrassrs::Id::from)
-                .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+            {
+                let value = #value;
+                value.as_str()
+                    .map(::std::borrow::ToOwned::to_owned)
+                    .or_else(|| {
+                        value.as_i64().map(|value| value.to_string())
+                    })
+                    .or_else(|| value.as_u64().map(|value| value.to_string()))
+                    .map(::necrassrs::Id::from)
+                    .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
+            }
         }),
         _ => match schema.types.get(type_name)? {
             ExtendedType::Enum(enum_type) => {
@@ -1510,6 +1521,242 @@ mod test {
     }
 
     #[test]
+    fn documented_type_examples_compile_and_execute() {
+        let guide = include_str!("../../../docs/src/content/docs/docs/types.md");
+        let sdl = guide
+            .split_once("```graphql\n")
+            .unwrap()
+            .1
+            .split_once("\n```")
+            .unwrap()
+            .0;
+        let mut rust = guide
+            .split("```rust\n")
+            .skip(1)
+            .map(|block| block.split_once("\n```").unwrap().0);
+        let resolvers = rust.next().unwrap();
+        let main = rust.next().unwrap().split_once("fn main()").unwrap().1;
+        let schema = Schema::parse_and_validate(sdl, "example.graphql").unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &format!("pub mod generated {{ {generated} }}"),
+            &format!("mod resolvers {{ {resolvers} }} fn main(){main}"),
+            true,
+        );
+    }
+
+    #[test]
+    fn generated_consumer_executes_leaf_boundaries_and_variable_numbers() {
+        let schema = Schema::parse_and_validate(
+            "type Query { integer(value: Int!): Int! float(value: Float!): Float! text(value: String!): String! boolean(value: Boolean!): Boolean! id(value: ID!): ID! nullable(value: [Int]): [Int] required(value: [Int]!): [Int]! nitems(value: [Int!]): [Int!] strict(value: [Int!]!): [Int!]! }",
+            "schema.graphql",
+        ).unwrap();
+        let generated = super::generate(&schema).unwrap();
+        let consumer = r##"
+            use generated::{resolvers::QueryResolver, types};
+            struct Query;
+            macro_rules! echo {
+                ($method:ident, $ty:ty) => {
+                    async fn $method(&self, _: &(), args: types::Query::$method::Args)
+                        -> Result<$ty, necrassrs::ResolverError> { Ok(args.value) }
+                };
+            }
+            impl QueryResolver<()> for Query {
+                echo!(integer, i32);
+                echo!(float, f64);
+                echo!(text, String);
+                echo!(boolean, bool);
+                echo!(id, necrassrs::Id);
+                echo!(required, Vec<Option<i32>>);
+                echo!(strict, Vec<i32>);
+                async fn nullable(&self, _: &(), args: types::Query::nullable::Args)
+                    -> Result<Option<Vec<Option<i32>>>, necrassrs::ResolverError> {
+                    Ok(match args.value {
+                        necrassrs::GraphQLInput::Value(value) => Some(value),
+                        necrassrs::GraphQLInput::Undefined | necrassrs::GraphQLInput::Null => None,
+                    })
+                }
+                async fn nitems(&self, _: &(), args: types::Query::nitems::Args)
+                    -> Result<Option<Vec<i32>>, necrassrs::ResolverError> {
+                    Ok(match args.value {
+                        necrassrs::GraphQLInput::Value(value) => Some(value),
+                        necrassrs::GraphQLInput::Undefined | necrassrs::GraphQLInput::Null => None,
+                    })
+                }
+            }
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(generated::SDL, "schema.graphql").unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let run = |document: &str, variables: serde_json::Value| {
+                    let request = necrassrs::Request::new(document)
+                        .with_variables(serde_json::from_value(variables).unwrap());
+                    serde_json::to_value(futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &()),
+                    )).unwrap()
+                };
+                assert_eq!(run(r#"{ min: integer(value: -2147483648) max: integer(value: 2147483647) float(value: 2) text(value: "Sheri") boolean(value: true) id(value: "001") numeric: id(value: -42) }"#, serde_json::json!({})),
+                    serde_json::json!({"data": {"min": -2147483648i64, "max": 2147483647, "float": 2.0, "text": "Sheri", "boolean": true, "id": "001", "numeric": "-42"}}));
+                let document = "query($i: Int!, $f: Float!, $id: ID!) { integer(value: $i) float(value: $f) id(value: $id) }";
+                assert_eq!(run("{ nullable nitems required(value: [1, null]) strict(value: 2) }", serde_json::json!({})),
+                    serde_json::json!({"data": {"nullable": null, "nitems": null, "required": [1, null], "strict": [2]}}));
+                assert_eq!(run("{ nullable(value: [1, null]) nitems(value: 2) required(value: []) strict(value: []) }", serde_json::json!({})),
+                    serde_json::json!({"data": {"nullable": [1, null], "nitems": [2], "required": [], "strict": []}}));
+                assert_eq!(run("{ nullable(value: null) nitems(value: null) }", serde_json::json!({})),
+                    serde_json::json!({"data": {"nullable": null, "nitems": null}}));
+                for (variables, expected) in [
+                    (serde_json::json!({"i": 1, "f": 1, "id": 42}), serde_json::json!({"integer": 1, "float": 1.0, "id": "42"})),
+                    (serde_json::json!({"i": 1.0, "f": 1.5, "id": "00042"}), serde_json::json!({"integer": 1, "float": 1.5, "id": "00042"})),
+                    (serde_json::json!({"i": -2147483648.0, "f": 1.5, "id": 42.0}), serde_json::json!({"integer": -2147483648i64, "float": 1.5, "id": "42"})),
+                    (serde_json::json!({"i": 2147483647.0, "f": 1.5, "id": u64::MAX}), serde_json::json!({"integer": 2147483647, "float": 1.5, "id": u64::MAX.to_string()})),
+                ] {
+                    assert_eq!(run(document, variables), serde_json::json!({"data": expected}));
+                }
+                for document in [
+                    "{ integer(value: 2147483648) }", "{ integer(value: -2147483649) }",
+                    "{ integer(value: 1.0) }", "{ float(value: true) }",
+                    "{ id(value: 1.5) }", "{ boolean(value: 1) }", "{ text(value: 1) }",
+                    "{ required(value: null) }", "{ nitems(value: [null]) }", "{ strict(value: [null]) }",
+                ] {
+                    let response = run(document, serde_json::json!({}));
+                    assert!(response.get("data").is_none(), "{document}: {response}");
+                    assert!(!response["errors"].as_array().unwrap().is_empty());
+                }
+                for variables in [
+                    serde_json::json!({"i": 2147483648i64, "f": 1, "id": 1}),
+                    serde_json::json!({"i": 2147483648.0, "f": 1, "id": 1}),
+                    serde_json::json!({"i": -2147483649.0, "f": 1, "id": 1}),
+                    serde_json::json!({"i": 1.5, "f": 1, "id": 1}),
+                    serde_json::json!({"i": 1, "f": "1", "id": 1}),
+                    serde_json::json!({"i": 1, "f": 1, "id": true}),
+                    serde_json::json!({"i": 1, "f": 1, "id": 1.5}),
+                ] {
+                    let response = run(document, variables);
+                    assert!(response.get("data").is_none(), "{response}");
+                    assert!(!response["errors"].as_array().unwrap().is_empty());
+                }
+            }
+        "##;
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                enum Status { OPEN CLOSED }
+                input Filter {
+                    status: Status = OPEN
+                    optional: Int
+                    matrix: [[Int]] = 3
+                }
+                type Query {
+                    inspect(value: Int = 7, raw: Int, filter: Filter = {}): [String!]!
+                    echo(status: Status!): Status!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        let consumer = r##"
+            use generated::{resolvers::QueryResolver, types};
+            use necrassrs::GraphQLInput;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            struct Query;
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+            fn presence(value: GraphQLInput<i32>) -> String {
+                match value {
+                    GraphQLInput::Undefined => "undefined".into(),
+                    GraphQLInput::Null => "null".into(),
+                    GraphQLInput::Value(value) => value.to_string(),
+                }
+            }
+
+            impl QueryResolver<()> for Query {
+                async fn inspect(
+                    &self, _: &(), args: types::Query::inspect::Args,
+                ) -> Result<Vec<String>, necrassrs::ResolverError> {
+                    CALLS.fetch_add(1, Ordering::Relaxed);
+                    let mut result = vec![presence(args.value), presence(args.raw)];
+                    match args.filter {
+                        GraphQLInput::Undefined => result.push("undefined".into()),
+                        GraphQLInput::Null => result.push("null".into()),
+                        GraphQLInput::Value(filter) => {
+                            result.push(match filter.status {
+                                GraphQLInput::Value(types::Status::OPEN) => "OPEN",
+                                GraphQLInput::Value(types::Status::CLOSED) => "CLOSED",
+                                GraphQLInput::Null => "null",
+                                GraphQLInput::Undefined => "undefined",
+                            }.into());
+                            result.push(presence(filter.optional));
+                            result.push(match filter.matrix {
+                                GraphQLInput::Value(value) => format!("{value:?}"),
+                                GraphQLInput::Null => "null".into(),
+                                GraphQLInput::Undefined => "undefined".into(),
+                            });
+                        }
+                    }
+                    Ok(result)
+                }
+
+                async fn echo(
+                    &self, _: &(), args: types::Query::echo::Args,
+                ) -> Result<types::Status, necrassrs::ResolverError> {
+                    CALLS.fetch_add(1, Ordering::Relaxed);
+                    Ok(args.status)
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(generated::SDL, "schema.graphql").unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let run = |document: &str, variables: serde_json::Value| {
+                    let request = necrassrs::Request::new(document)
+                        .with_variables(serde_json::from_value(variables).unwrap());
+                    serde_json::to_value(futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &()),
+                    )).unwrap()
+                };
+                for (document, variables, expected) in [
+                    ("{ inspect }", serde_json::json!({}),
+                        serde_json::json!(["7", "undefined", "OPEN", "undefined", "[Some([Some(3)])]"])),
+                    ("{ inspect(value: null, raw: null, filter: null) }", serde_json::json!({}),
+                        serde_json::json!(["null", "null", "null"])),
+                    ("query($v: Int, $f: Filter) { inspect(value: $v, filter: $f) }", serde_json::json!({}),
+                        serde_json::json!(["7", "undefined", "OPEN", "undefined", "[Some([Some(3)])]"])),
+                    ("query($v: Int = 9, $f: Filter = {optional: 5, matrix: 4}) { inspect(value: $v, filter: $f) }", serde_json::json!({}),
+                        serde_json::json!(["9", "undefined", "OPEN", "5", "[Some([Some(4)])]"])),
+                    ("query($f: Filter) { inspect(filter: $f) }", serde_json::json!({"f": {"status": null, "optional": null, "matrix": null}}),
+                        serde_json::json!(["7", "undefined", "null", "null", "null"])),
+                    ("query($f: Filter) { inspect(filter: $f) }", serde_json::json!({"f": {"status": "CLOSED", "optional": 2, "matrix": [[1, null], null]}}),
+                        serde_json::json!(["7", "undefined", "CLOSED", "2", "[Some([Some(1), None]), None]"])),
+                ] {
+                    assert_eq!(run(document, variables), serde_json::json!({"data": {"inspect": expected}}), "{document}");
+                }
+                assert_eq!(run("{ echo(status: CLOSED) }", serde_json::json!({})), serde_json::json!({"data": {"echo": "CLOSED"}}));
+                assert_eq!(run("query($s: Status!) { echo(status: $s) }", serde_json::json!({"s": "OPEN"})), serde_json::json!({"data": {"echo": "OPEN"}}));
+                for (document, variables) in [
+                    (r#"{ echo(status: "OPEN") }"#, serde_json::json!({})),
+                    ("{ echo(status: UNKNOWN) }", serde_json::json!({})),
+                    ("query($s: Status!) { echo(status: $s) }", serde_json::json!({"s": "UNKNOWN"})),
+                    ("query($s: Status!) { echo(status: $s) }", serde_json::json!({"s": 1})),
+                    ("{ inspect(filter: {unknown: 1}) }", serde_json::json!({})),
+                    ("query($f: Filter) { inspect(filter: $f) }", serde_json::json!({"f": {"unknown": 1}})),
+                ] {
+                    let before = CALLS.load(Ordering::Relaxed);
+                    let response = run(document, variables);
+                    assert!(response.get("data").is_none(), "{document}: {response}");
+                    assert!(!response["errors"].as_array().unwrap().is_empty());
+                    assert_eq!(CALLS.load(Ordering::Relaxed), before);
+                }
+            }
+        "##;
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn embedded_sdl_preserves_definitions_and_extensions_from_multiple_sources() {
         let schema = Schema::builder()
             .parse(
@@ -1796,9 +2043,14 @@ mod test {
 
         for (field_name, expected) in cases {
             let field = &query.fields[field_name];
-            let actual =
-                super::resolver_return_type(&schema, query.name.as_str(), field_name, &field.ty)
-                    .unwrap_or_else(|error| panic!("{field_name}: {error}"));
+            let actual = super::resolver_return_type(
+                &schema,
+                query.name.as_str(),
+                field_name,
+                &field.ty,
+                &quote! { super::types },
+            )
+            .unwrap_or_else(|error| panic!("{field_name}: {error}"));
             assert_eq!(
                 normalize_type(actual),
                 normalize_type(expected),
