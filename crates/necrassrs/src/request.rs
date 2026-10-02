@@ -140,6 +140,55 @@ mod tests {
     }
 
     #[test]
+    fn one_of_schema_accepts_nullable_fields_without_defaults() {
+        Schema::parse_and_validate(
+            r#"
+                directive @oneOf on INPUT_OBJECT
+                input Nested { name: String! }
+                input Choice @oneOf {
+                    number: Int
+                    nested: Nested
+                    items: [Int!]
+                }
+                input Ordinary { required: Int! defaulted: Int = 1 }
+                type Query { inspect(choice: Choice, ordinary: Ordinary): String }
+            "#,
+            "schema.graphql",
+        )
+        .expect("nullable OneOf fields and ordinary input fields must remain valid");
+    }
+
+    #[test]
+    fn one_of_schema_rejects_non_null_fields() {
+        for field_type in ["Int!", "[Int]!", "[Int!]!"] {
+            let source = format!(
+                "directive @oneOf on INPUT_OBJECT \
+                 input Choice @oneOf {{ selected: {field_type} }} \
+                 type Query {{ inspect(choice: Choice): String }}"
+            );
+            let errors = Schema::parse_and_validate(source, "schema.graphql")
+                .err()
+                .unwrap_or_else(|| panic!("OneOf field type {field_type} must be rejected"));
+            assert!(!errors.errors.is_empty(), "{field_type}");
+        }
+    }
+
+    #[test]
+    fn one_of_schema_rejects_field_defaults_including_null() {
+        for default in ["null", "0", "1"] {
+            let source = format!(
+                "directive @oneOf on INPUT_OBJECT \
+                 input Choice @oneOf {{ selected: Int = {default} }} \
+                 type Query {{ inspect(choice: Choice): String }}"
+            );
+            let errors = Schema::parse_and_validate(source, "schema.graphql")
+                .err()
+                .unwrap_or_else(|| panic!("OneOf field default {default} must be rejected"));
+            assert!(!errors.errors.is_empty(), "default {default}");
+        }
+    }
+
+    #[test]
     fn cyclic_input_default_is_rejected_without_aborting() {
         const CHILD_ENV: &str = "NECRASSRS_CYCLIC_DEFAULT_TEST_CHILD";
 
