@@ -15,7 +15,10 @@ replacement described in [the patch guide](/docs/apollo-compiler/).
 Save this SDL under `schema/`, then run `cargo build`:
 
 ```graphql
-enum Status { OPEN CLOSED }
+enum Status {
+  OPEN
+  CLOSED
+}
 
 input Filter {
   status: Status = OPEN
@@ -111,14 +114,14 @@ Nullable arguments and ordinary nullable input fields use
 `GraphQLInput<T> { Undefined, Null, Value(T) }` **after defaults and coercion**.
 It describes the value the resolver receives, not the original request spelling.
 
-| Input | Resolver value |
-| --- | --- |
-| Omit `filter` | `Value(Filter { ... })`, from the argument default `{}` |
-| Omit `status` inside a supplied filter | `Value(Status::OPEN)`, from the field default |
-| Supply `status: null` | `Null`; the default does not replace explicit null |
-| Omit `limit` | `Undefined`, because it has no default |
-| Supply `limit: null` | `Null` |
-| Supply `limit: 5` | `Value(5)` |
+| Input                                  | Resolver value                                          |
+| -------------------------------------- | ------------------------------------------------------- |
+| Omit `filter`                          | `Value(Filter { ... })`, from the argument default `{}` |
+| Omit `status` inside a supplied filter | `Value(Status::OPEN)`, from the field default           |
+| Supply `status: null`                  | `Null`; the default does not replace explicit null      |
+| Omit `limit`                           | `Undefined`, because it has no default                  |
+| Supply `limit: null`                   | `Null`                                                  |
+| Supply `limit: 5`                      | `Value(5)`                                              |
 
 A variable default applies when that variable is absent. An explicit null variable
 does not activate its default. An absent argument variable permits an applicable
@@ -126,24 +129,24 @@ argument default. Unknown input fields are rejected before resolver dispatch.
 
 ## Rust mappings
 
-| SDL | Rust |
-| --- | --- |
-| `Int!` | `i32` |
-| `Float!` | `f64` |
-| `String!` | `String` |
-| `Boolean!` | `bool` |
-| `ID!` | `necrassrs::Id` |
-| `Status!` | `generated::types::Status` |
-| Nullable input `Int` | `GraphQLInput<i32>` |
-| Nullable result `Int` | `Option<i32>` |
-| Input `[Int]` | `GraphQLInput<Vec<Option<i32>>>` |
-| Input `[Int]!` | `Vec<Option<i32>>` |
-| Input `[Int!]` | `GraphQLInput<Vec<i32>>` |
-| Input `[Int!]!` | `Vec<i32>` |
-| Result `[Int]` | `Option<Vec<Option<i32>>>` |
-| Result `[Int]!` | `Vec<Option<i32>>` |
-| Result `[Int!]` | `Option<Vec<i32>>` |
-| Result `[Int!]!` | `Vec<i32>` |
+| SDL                   | Rust                             |
+| --------------------- | -------------------------------- |
+| `Int!`                | `i32`                            |
+| `Float!`              | `f64`                            |
+| `String!`             | `String`                         |
+| `Boolean!`            | `bool`                           |
+| `ID!`                 | `necrassrs::Id`                  |
+| `Status!`             | `generated::types::Status`       |
+| Nullable input `Int`  | `GraphQLInput<i32>`              |
+| Nullable result `Int` | `Option<i32>`                    |
+| Input `[Int]`         | `GraphQLInput<Vec<Option<i32>>>` |
+| Input `[Int]!`        | `Vec<Option<i32>>`               |
+| Input `[Int!]`        | `GraphQLInput<Vec<i32>>`         |
+| Input `[Int!]!`       | `Vec<i32>`                       |
+| Result `[Int]`        | `Option<Vec<Option<i32>>>`       |
+| Result `[Int]!`       | `Vec<Option<i32>>`               |
+| Result `[Int!]`       | `Option<Vec<i32>>`               |
+| Result `[Int!]!`      | `Vec<i32>`                       |
 
 List items have no undefined state. Input singleton coercion applies recursively:
 for `[[Int]]`, the input `3` becomes `[[3]]`. Enum literals are unquoted, as in
