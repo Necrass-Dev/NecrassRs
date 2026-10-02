@@ -189,6 +189,82 @@ mod tests {
     }
 
     #[test]
+    fn one_of_document_accepts_valid_selections() {
+        let schema = one_of_document_schema();
+        for source in [
+            "{ inspect(choice: {number: 1}) }",
+            "{ inspect(choice: {items: [1, null]}) }",
+            "{ inspect(choice: null) }",
+            "{ inspect }",
+            "{ inspect(wrapper: {choice: {number: 1}}) }",
+            "{ inspect(choices: [{number: 1}, {items: [null]}]) }",
+            "query($number: Int!) { inspect(choice: {number: $number}) }",
+            "query($items: [Int]!) { inspect(choice: {items: $items}) }",
+            "query($choice: Choice) { inspect(choice: $choice) }",
+            "query($number: Int = 1) { inspect(ordinary: {number: $number, other: null}) }",
+        ] {
+            let document = super::Document::parse(source, "request.graphql").unwrap();
+            document
+                .to_executable_validate(&schema)
+                .unwrap_or_else(|errors| {
+                    panic!("valid OneOf document rejected: {source}\n{errors}")
+                });
+        }
+    }
+
+    #[test]
+    fn one_of_document_rejects_invalid_selections_before_variable_coercion() {
+        let schema = one_of_document_schema();
+        let mut accepted = Vec::new();
+        for source in [
+            "{ inspect(choice: {}) }",
+            "{ inspect(choice: {number: 1, items: [2]}) }",
+            "{ inspect(choice: {number: 1, items: null}) }",
+            "{ inspect(choice: {number: null}) }",
+            "{ inspect(choice: {unknown: 1}) }",
+            "{ inspect(wrapper: {choice: {}}) }",
+            "{ inspect(choices: [{number: 1}, {}]) }",
+            "query($number: Int) { inspect(choice: {number: $number}) }",
+            "query($number: Int = 1) { inspect(choice: {number: $number}) }",
+            "query($items: [Int]) { inspect(choice: {items: $items}) }",
+            "query($items: [Int]) { inspect(choice: {number: 1, items: $items}) }",
+            "query($number: Int!) { inspect(choice: {items: $number}) }",
+        ] {
+            let document = super::Document::parse(source, "request.graphql").unwrap();
+            match document.to_executable_validate(&schema) {
+                Ok(_) => accepted.push(source),
+                Err(errors) => assert!(
+                    errors
+                        .errors
+                        .iter()
+                        .any(|error| !error.to_json().locations.is_empty()),
+                    "OneOf document errors must preserve source locations: {source}",
+                ),
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "invalid OneOf documents accepted: {accepted:#?}"
+        );
+    }
+
+    fn one_of_document_schema() -> Valid<Schema> {
+        Schema::parse_and_validate(
+            r#"
+                directive @oneOf on INPUT_OBJECT
+                input Choice @oneOf { number: Int items: [Int] }
+                input Wrapper { choice: Choice }
+                input Ordinary { number: Int other: Int }
+                type Query {
+                    inspect(choice: Choice, wrapper: Wrapper, choices: [Choice], ordinary: Ordinary): String
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap()
+    }
+
+    #[test]
     fn cyclic_input_default_is_rejected_without_aborting() {
         const CHILD_ENV: &str = "NECRASSRS_CYCLIC_DEFAULT_TEST_CHILD";
 
