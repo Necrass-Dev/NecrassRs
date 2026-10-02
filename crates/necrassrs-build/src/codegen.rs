@@ -54,8 +54,80 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
 }
 
 #[cfg(test)]
-fn kosaraju(_graph: &[Vec<usize>]) -> Vec<usize> {
-    todo!("implement iterative Kosaraju SCC analysis")
+fn kosaraju(graph: &[Vec<usize>]) -> Vec<usize> {
+    struct Frame {
+        node: usize,
+        next_neighbor: usize,
+    }
+
+    let mut visited = vec![false; graph.len()];
+    let mut order = Vec::with_capacity(graph.len());
+    let mut stack = Vec::<Frame>::new();
+
+    for start in 0..graph.len() {
+        if visited[start] {
+            continue;
+        }
+
+        visited[start] = true;
+        stack.push(Frame {
+            node: start,
+            next_neighbor: 0,
+        });
+
+        while let Some(frame) = stack.last_mut() {
+            if frame.next_neighbor < graph[frame.node].len() {
+                let neighbor = graph[frame.node][frame.next_neighbor];
+                frame.next_neighbor += 1;
+
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    stack.push(Frame {
+                        node: neighbor,
+                        next_neighbor: 0,
+                    });
+                }
+            } else {
+                let finished = frame.node;
+                stack.pop();
+                order.push(finished);
+            }
+        }
+    }
+
+    let mut reversed = vec![Vec::new(); graph.len()];
+
+    for (node, neighbors) in graph.iter().enumerate() {
+        for &neighbor in neighbors {
+            reversed[neighbor].push(node);
+        }
+    }
+
+    let mut components = vec![usize::MAX; graph.len()];
+    let mut component_id = 0;
+    let mut pending = Vec::new();
+
+    for &start in order.iter().rev() {
+        if components[start] != usize::MAX {
+            continue;
+        }
+
+        components[start] = component_id;
+        pending.push(start);
+
+        while let Some(node) = pending.pop() {
+            for &neighbor in &reversed[node] {
+                if components[neighbor] == usize::MAX {
+                    components[neighbor] = component_id;
+                    pending.push(neighbor);
+                }
+            }
+        }
+
+        component_id += 1;
+    }
+
+    components
 }
 
 fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
