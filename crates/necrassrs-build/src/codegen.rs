@@ -2009,6 +2009,89 @@ mod test {
     }
 
     #[test]
+    fn generated_recursive_inputs_box_fields_and_convert_finite_values() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                input Node {
+                    next: Node
+                    choice: Choice
+                    children: [Node!]
+                }
+                input Choice @oneOf { number: Int node: Node }
+                type Query { inspect(input: Node): String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the recursive input schema must be valid");
+        let generated = super::generate_types(&schema)
+            .expect("recursive input type generation must succeed")
+            .to_token_stream()
+            .to_string();
+        assert_consumer(
+            &generated,
+            r##"
+                use necrassrs::GraphQLInput;
+                use types::{Choice, Node};
+
+                fn parse_node(source: &str) -> Node {
+                    let value = serde_json::from_str::<necrassrs::JsonValue>(source).unwrap();
+                    Node::from_graphql_value(&value)
+                        .unwrap_or_else(|_| panic!("finite input must convert: {source}"))
+                }
+
+                fn main() {
+                    let node = parse_node("{}");
+                    let next: GraphQLInput<Box<Node>> = node.next;
+                    let choice: GraphQLInput<Box<Choice>> = node.choice;
+                    let children: GraphQLInput<Vec<Node>> = node.children;
+                    assert!(matches!(next, GraphQLInput::Undefined));
+                    assert!(matches!(choice, GraphQLInput::Undefined));
+                    assert!(matches!(children, GraphQLInput::Undefined));
+
+                    let node = parse_node(r#"{"next":null,"choice":null,"children":null}"#);
+                    assert!(matches!(node.next, GraphQLInput::Null));
+                    assert!(matches!(node.choice, GraphQLInput::Null));
+                    assert!(matches!(node.children, GraphQLInput::Null));
+
+                    let node = parse_node(r#"{
+                        "next": {},
+                        "choice": {"node": {"choice": {"number": 7}}},
+                        "children": [{}]
+                    }"#);
+                    let GraphQLInput::Value(next) = node.next else {
+                        panic!("supplied next must retain its presence");
+                    };
+                    let next: Box<Node> = next;
+                    assert!(matches!(next.next, GraphQLInput::Undefined));
+                    let GraphQLInput::Value(choice) = node.choice else {
+                        panic!("supplied choice must retain its presence");
+                    };
+                    let Choice::node(inner) = *choice else {
+                        panic!("OneOf must select the recursive node variant");
+                    };
+                    let inner: Box<Node> = inner;
+                    let GraphQLInput::Value(choice) = inner.choice else {
+                        panic!("nested choice must convert");
+                    };
+                    assert!(matches!(*choice, Choice::number(7)));
+                    let GraphQLInput::Value(children) = node.children else {
+                        panic!("supplied children must convert without boxing list items");
+                    };
+                    let children: Vec<Node> = children;
+                    assert_eq!(children.len(), 1);
+                    assert!(matches!(children[0].next, GraphQLInput::Undefined));
+
+                    let args = types::Query::inspect::Args {
+                        input: GraphQLInput::Value(parse_node("{}")),
+                    };
+                    let _: GraphQLInput<Node> = args.input;
+                }
+            "##,
+            true,
+        );
+    }
+
+    #[test]
     fn generated_dispatch_serializes_id_results_as_strings() {
         let schema = Schema::parse_and_validate("type Query { id: ID! }", "schema.graphql")
             .expect("the test schema must be valid");
