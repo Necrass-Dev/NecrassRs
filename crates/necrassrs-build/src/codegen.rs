@@ -132,9 +132,50 @@ fn kosaraju(graph: &[Vec<usize>]) -> Vec<usize> {
 
 #[cfg(test)]
 fn boxed_input_fields(
-    _schema: &Valid<Schema>,
+    schema: &Valid<Schema>,
 ) -> std::collections::HashSet<(apollo_compiler::Name, apollo_compiler::Name)> {
-    todo!("identify nullable singular input fields inside cyclic components")
+    use std::collections::{HashMap, HashSet};
+
+    let inputs: Vec<_> = schema
+        .types
+        .values()
+        .filter_map(|definition| match definition {
+            ExtendedType::InputObject(input) => Some(input.as_ref()),
+            _ => None,
+        })
+        .collect();
+    let indices: HashMap<_, _> = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| (input.name.clone(), index))
+        .collect();
+    let mut graph = vec![Vec::new(); inputs.len()];
+    for (source, input) in inputs.iter().enumerate() {
+        for field in input.fields.values() {
+            match field.ty.as_ref() {
+                Type::Named(target) | Type::NonNullNamed(target) => {
+                    if let Some(&target) = indices.get(target) {
+                        graph[source].push(target);
+                    }
+                }
+                Type::List(_) | Type::NonNullList(_) => {}
+            }
+        }
+    }
+
+    let components = kosaraju(&graph);
+    let mut boxed = HashSet::new();
+    for (source, input) in inputs.iter().enumerate() {
+        for field in input.fields.values() {
+            if let Type::Named(target) = field.ty.as_ref()
+                && let Some(&target) = indices.get(target)
+                && components[source] == components[target]
+            {
+                boxed.insert((input.name.clone(), field.name.clone()));
+            }
+        }
+    }
+    boxed
 }
 
 fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
