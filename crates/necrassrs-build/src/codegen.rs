@@ -53,6 +53,11 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     .to_string())
 }
 
+#[cfg(test)]
+fn kosaraju(_graph: &[Vec<usize>]) -> Vec<usize> {
+    todo!("implement iterative Kosaraju SCC analysis")
+}
+
 fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
     let mut named_types = Vec::new();
     let mut object_modules = Vec::new();
@@ -936,6 +941,151 @@ mod test {
             .expect("generated type must be valid Rust")
             .to_token_stream()
             .to_string()
+    }
+
+    #[test]
+    fn kosaraju_partitions_directed_graphs() {
+        let cases = [
+            ("empty", vec![], vec![]),
+            (
+                "isolated vertices",
+                vec![vec![], vec![], vec![]],
+                vec![vec![0], vec![1], vec![2]],
+            ),
+            ("self loops", vec![vec![0], vec![1]], vec![vec![0], vec![1]]),
+            (
+                "one-way chain",
+                vec![vec![1], vec![2], vec![]],
+                vec![vec![0], vec![1], vec![2]],
+            ),
+            (
+                "cycle",
+                vec![vec![1], vec![2], vec![0]],
+                vec![vec![0, 1, 2]],
+            ),
+            (
+                "cycles joined by one-way edges",
+                vec![vec![1], vec![0, 2], vec![3], vec![2, 4], vec![]],
+                vec![vec![0, 1], vec![2, 3], vec![4]],
+            ),
+            (
+                "disconnected cycles and duplicate edges",
+                vec![vec![1, 1], vec![0], vec![3], vec![2], vec![]],
+                vec![vec![0, 1], vec![2, 3], vec![4]],
+            ),
+            (
+                "sibling edges require DFS completion order",
+                vec![vec![1, 2], vec![2], vec![]],
+                vec![vec![0], vec![1], vec![2]],
+            ),
+            (
+                "connected cycles form one component",
+                vec![vec![1], vec![0, 2], vec![3], vec![2, 0]],
+                vec![vec![0, 1, 2, 3]],
+            ),
+        ];
+        for (case, graph, expected) in cases {
+            assert_scc_partition(case, &graph, expected);
+        }
+    }
+
+    #[test]
+    fn kosaraju_partition_is_independent_of_vertex_and_neighbor_order() {
+        let graph = vec![vec![1, 2], vec![0, 3], vec![3], vec![2, 4], vec![]];
+        assert_scc_partition("original", &graph, vec![vec![0, 1], vec![2, 3], vec![4]]);
+        let mut reordered = graph.clone();
+        for neighbors in &mut reordered {
+            neighbors.reverse();
+        }
+        assert_scc_partition(
+            "reversed neighbors",
+            &reordered,
+            vec![vec![0, 1], vec![2, 3], vec![4]],
+        );
+
+        let permutation = [2, 4, 0, 3, 1];
+        let mut renamed = vec![Vec::new(); graph.len()];
+        for (node, neighbors) in graph.iter().enumerate() {
+            renamed[permutation[node]] = neighbors
+                .iter()
+                .map(|&neighbor| permutation[neighbor])
+                .collect();
+        }
+        assert_scc_partition(
+            "renamed vertices",
+            &renamed,
+            vec![vec![2, 4], vec![0, 3], vec![1]],
+        );
+    }
+
+    fn assert_scc_partition(case: &str, graph: &[Vec<usize>], mut expected: Vec<Vec<usize>>) {
+        let components = super::kosaraju(graph);
+        assert_eq!(
+            components.len(),
+            graph.len(),
+            "{case}: every vertex needs a component"
+        );
+        let mut groups = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+        for (node, component) in components.into_iter().enumerate() {
+            groups.entry(component).or_default().push(node);
+        }
+        let mut actual: Vec<_> = groups.into_values().collect();
+        actual.sort_unstable();
+        for group in &mut expected {
+            group.sort_unstable();
+        }
+        expected.sort_unstable();
+        assert_eq!(actual, expected, "{case}");
+    }
+
+    #[test]
+    fn kosaraju_handles_deep_graphs_without_recursion() {
+        const CHILD_ENV: &str = "NECRASSRS_KOSARAJU_DEEP_GRAPH_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "codegen::test::kosaraju_handles_deep_graphs_without_recursion",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "deep graph analysis failed ({})\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
+        const NODES: usize = 100_000;
+        let mut graph: Vec<Vec<usize>> = (0..NODES)
+            .map(|node| {
+                if node + 1 < NODES {
+                    vec![node + 1]
+                } else {
+                    vec![]
+                }
+            })
+            .collect();
+        let mut components = super::kosaraju(&graph);
+        assert_eq!(components.len(), NODES);
+        components.sort_unstable();
+        components.dedup();
+        assert_eq!(components.len(), NODES, "a chain has no shared components");
+
+        graph[NODES - 1].push(0);
+        let components = super::kosaraju(&graph);
+        assert_eq!(components.len(), NODES);
+        assert!(
+            components
+                .iter()
+                .all(|component| *component == components[0]),
+            "a closed chain is one component"
+        );
     }
 
     #[test]
