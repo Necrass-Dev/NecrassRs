@@ -1521,6 +1521,45 @@ mod test {
     }
 
     #[test]
+    fn one_of_members_cannot_shadow_input_conversion() {
+        let schema = Schema::parse_and_validate(
+            "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",
+            "schema.graphql",
+        ).unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &generated,
+            r#"
+                struct Query;
+                impl resolvers::QueryResolver<()> for Query {
+                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<String, necrassrs::ResolverError> {
+                        Ok(match args.value {
+                            types::Choice::from_graphql_value(value)
+                            | types::Choice::__from_graphql_value(value) => value,
+                        })
+                    }
+                }
+                fn main() {
+                    let schema = necrassrs::Schema::parse_and_validate(SDL, "schema.graphql").unwrap();
+                    let dispatcher = dispatch::SchemaDispatcher::new(Query);
+                    for name in ["from_graphql_value", "_from_graphql_value"] {
+                        let request = necrassrs::Request::new(format!(
+                            "{{ echo(value: {{{name}: \"Sheri\"}}) }}",
+                        ));
+                        let response = futures::executor::block_on(necrassrs::execute(
+                            &schema, &request, &dispatcher, &(),
+                        ));
+                        assert_eq!(serde_json::to_value(response).unwrap(),
+                            serde_json::json!({"data": {"echo": "Sheri"}}));
+                    }
+                }
+            "#,
+            true,
+        );
+    }
+
+    #[test]
     fn documented_type_examples_compile_and_execute() {
         let guide = include_str!("../../../docs/src/content/docs/docs/types.md");
         let sdl = guide
