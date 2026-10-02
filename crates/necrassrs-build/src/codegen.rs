@@ -53,7 +53,6 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     .to_string())
 }
 
-#[cfg(test)]
 fn kosaraju(graph: &[Vec<usize>]) -> Vec<usize> {
     struct Frame {
         node: usize,
@@ -130,7 +129,6 @@ fn kosaraju(graph: &[Vec<usize>]) -> Vec<usize> {
     components
 }
 
-#[cfg(test)]
 fn boxed_input_fields(
     schema: &Valid<Schema>,
 ) -> std::collections::HashSet<(apollo_compiler::Name, apollo_compiler::Name)> {
@@ -179,6 +177,7 @@ fn boxed_input_fields(
 }
 
 fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
+    let boxed_fields = boxed_input_fields(schema);
     let mut named_types = Vec::new();
     let mut object_modules = Vec::new();
 
@@ -215,7 +214,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
 
                         // Only the selected payload's outermost type becomes non-null.
                         let payload_type = field.ty.as_ref().clone().non_null();
-                        let payload = input_type(schema, &payload_type, &quote! { self })
+                        let mut payload = input_type(schema, &payload_type, &quote! { self })
                             .ok_or_else(|| {
                                 CodegenError::new(
                                     format!(
@@ -229,7 +228,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
 
                         let graphql_name = field_name.as_str();
                         let coordinate = format!("{type_name}.{field_name}");
-                        let converted = list_item_value(
+                        let mut converted = list_item_value(
                             schema,
                             &payload_type,
                             &quote! { value },
@@ -246,6 +245,11 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                                 field.ty.location(),
                             )
                         })?;
+
+                        if boxed_fields.contains(&(type_name.clone(), field_name.clone())) {
+                            payload = quote! { ::std::boxed::Box<#payload> };
+                            converted = quote! { ::std::boxed::Box::new(#converted) };
+                        }
 
                         Ok((
                             quote! { #variant(#payload), },
@@ -296,8 +300,14 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                 .map(|(field_name, field)| {
                     let graphql_name = field_name.as_str();
                     let member = format_ident!("r#{}", rust_name(graphql_name));
-                    let field_type = input_type(schema, field.ty.as_ref(), &quote! { self })
-                        .ok_or_else(|| {
+                    let boxed = boxed_fields.contains(&(type_name.clone(), field_name.clone()));
+                    let ty = if boxed {
+                        field.ty.as_ref().clone().non_null()
+                    } else {
+                        field.ty.as_ref().clone()
+                    };
+                    let mut field_type =
+                        input_type(schema, &ty, &quote! { self }).ok_or_else(|| {
                             CodegenError::new(
                                 format!(
                                     "Unsupported input type at {type_name}.{field_name}: {}",
@@ -309,13 +319,23 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                         })?;
                     let coordinate = format!("{type_name}.{field_name}");
                     let lookup = quote! { object.get(#graphql_name) };
-                    let field_value = input_position_value(
-                        schema,
-                        field.ty.as_ref(),
-                        &lookup,
-                        &coordinate,
-                        &quote! { self },
-                    )
+                    let field_value = if boxed {
+                        field_type = quote! {
+                            ::necrassrs::GraphQLInput<::std::boxed::Box<#field_type>>
+                        };
+                        list_item_value(
+                            schema,
+                            &ty,
+                            &quote! { value },
+                            &coordinate,
+                            &quote! { self },
+                        )
+                        .map(|value| {
+                            nullable_input(&lookup, &quote! { ::std::boxed::Box::new(#value) })
+                        })
+                    } else {
+                        input_position_value(schema, &ty, &lookup, &coordinate, &quote! { self })
+                    }
                     .ok_or_else(|| {
                         CodegenError::new(
                             format!(
