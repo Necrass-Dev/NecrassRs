@@ -130,6 +130,13 @@ fn kosaraju(graph: &[Vec<usize>]) -> Vec<usize> {
     components
 }
 
+#[cfg(test)]
+fn boxed_input_fields(
+    _schema: &Valid<Schema>,
+) -> std::collections::HashSet<(apollo_compiler::Name, apollo_compiler::Name)> {
+    todo!("identify nullable singular input fields inside cyclic components")
+}
+
 fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
     let mut named_types = Vec::new();
     let mut object_modules = Vec::new();
@@ -1013,6 +1020,127 @@ mod test {
             .expect("generated type must be valid Rust")
             .to_token_stream()
             .to_string()
+    }
+
+    #[test]
+    fn boxed_input_fields_ignore_non_recursive_references() {
+        assert_boxed_input_fields("type Query { next: Query }", &[]);
+        assert_boxed_input_fields(
+            r#"
+                enum Status { OPEN CLOSED }
+                input Leaf { name: String! }
+                input Root { child: Leaf! optional: Leaf status: Status count: Int }
+                type Query { inspect(input: Root): String }
+            "#,
+            &[],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_include_all_nullable_self_edges_regardless_of_defaults() {
+        assert_boxed_input_fields(
+            r#"
+                input Node {
+                    next: Node = { next: null }
+                    other: Node
+                    name: String
+                }
+                type Query { inspect(input: Node): String }
+            "#,
+            &[("Node", "next"), ("Node", "other")],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_use_non_null_edges_for_component_analysis() {
+        assert_boxed_input_fields(
+            r#"
+                input A { b: B! }
+                input B { c: C! }
+                input C { a: A }
+                type Query { inspect(input: A): String }
+            "#,
+            &[("C", "a")],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_exclude_edges_between_distinct_components() {
+        assert_boxed_input_fields(
+            r#"
+                input A { b: B otherB: B d: D }
+                input B { a: A }
+                input C { d: D! }
+                input D { c: C }
+                type Query { inspect(input: A): String }
+            "#,
+            &[("A", "b"), ("A", "otherB"), ("B", "a"), ("D", "c")],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_exclude_all_list_edges_from_component_analysis() {
+        assert_boxed_input_fields(
+            r#"
+                input Node {
+                    nullable: [Node]
+                    requiredItems: [Node!]
+                    required: [Node]!
+                    requiredBoth: [Node!]!
+                    nested: [[Node!]!]!
+                }
+                input A { bs: [B]! }
+                input B { a: A }
+                input C { d: D! }
+                input D { cs: [[C!]!]! }
+                type Query { inspect(node: Node, a: A, c: C): String }
+            "#,
+            &[],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_use_original_one_of_member_nullability() {
+        assert_boxed_input_fields(
+            r#"
+                input Choice @oneOf {
+                    number: Int
+                    next: Choice
+                    holder: Holder
+                    children: [Choice]
+                }
+                input Holder { choice: Choice! }
+                type Query { inspect(input: Choice): String }
+            "#,
+            &[("Choice", "next"), ("Choice", "holder")],
+        );
+    }
+
+    #[test]
+    fn boxed_input_fields_preserve_graphql_names() {
+        assert_boxed_input_fields(
+            r#"
+                input self { type: self Type: self _type: self }
+                type Query { inspect(input: self): String }
+            "#,
+            &[("self", "type"), ("self", "Type"), ("self", "_type")],
+        );
+    }
+
+    fn assert_boxed_input_fields(source: &str, expected: &[(&str, &str)]) {
+        let schema = Schema::parse_and_validate(source, "schema.graphql")
+            .expect("boxing analysis fixtures must be valid schemas");
+        let mut actual: Vec<_> = super::boxed_input_fields(&schema)
+            .into_iter()
+            .map(|(ty, field)| (ty.as_str().to_owned(), field.as_str().to_owned()))
+            .collect();
+        let mut expected: Vec<_> = expected
+            .iter()
+            .map(|(ty, field)| ((*ty).to_owned(), (*field).to_owned()))
+            .collect();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected, "{source}");
     }
 
     #[test]
