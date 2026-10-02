@@ -269,7 +269,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                     }
 
                     impl #name {
-                        pub(super) fn from_graphql_value(
+                        pub(super) fn _from_graphql_value(
                             value: &::necrassrs::JsonValue,
                         ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
                             let object = value
@@ -360,7 +360,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                 }
 
                 impl #name {
-                    pub(super) fn from_graphql_value(
+                    pub(super) fn _from_graphql_value(
                         value: &::necrassrs::JsonValue,
                     ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
                         let object = value
@@ -881,7 +881,7 @@ fn named_input_value(
                 let name = format_ident!("r#{}", rust_name(type_name.as_str()));
 
                 Some(quote! {
-                    #types_path::#name::from_graphql_value(#value)?
+                    #types_path::#name::_from_graphql_value(#value)?
                 })
             }
 
@@ -2133,13 +2133,13 @@ mod test {
             "r#CLOSED",
             "pub struct r#Nested",
             "pub struct r#Filter",
-            "fn from_graphql_value",
+            "fn _from_graphql_value",
             "as_object",
             "object . get",
             "pub r#required : bool",
             "pub r#optionalId : :: necrassrs :: GraphQLInput < :: necrassrs :: Id >",
             "pub r#statuses : :: necrassrs :: GraphQLInput",
-            "self :: r#Nested :: from_graphql_value",
+            "self :: r#Nested :: _from_graphql_value",
             "pub r#status : super :: super :: r#Status",
             "pub r#optionalString : :: necrassrs :: GraphQLInput",
             "pub r#nullableList : :: necrassrs :: GraphQLInput",
@@ -2226,7 +2226,7 @@ mod test {
             &generated.to_string(),
             r#"
                 pub fn main() {
-                    let _ = types::Filter::from_graphql_value(&necrassrs::JsonValue::Null);
+                    let _ = types::Filter::_from_graphql_value(&necrassrs::JsonValue::Null);
                     let _: types::Choice = types::Choice::number(1);
                     let _: types::Choice = types::Choice::items(vec![Some(1), None]);
                     let _: types::Choice = types::Choice::requiredItems(vec![1]);
@@ -2285,16 +2285,16 @@ mod test {
                 }
 
                 fn main() {
-                    let value = types::Choice::from_graphql_value(&json!({"number": 7}));
+                    let value = types::Choice::_from_graphql_value(&json!({"number": 7}));
                     assert!(matches!(value, Ok(types::Choice::number(7))));
-                    let value = types::Choice::from_graphql_value(&json!({"status": "OPEN"}));
+                    let value = types::Choice::_from_graphql_value(&json!({"status": "OPEN"}));
                     assert!(matches!(value, Ok(types::Choice::status(types::Status::OPEN))));
-                    let value = types::Choice::from_graphql_value(&json!({"nested": {"name": "Sheri"}}));
+                    let value = types::Choice::_from_graphql_value(&json!({"nested": {"name": "Sheri"}}));
                     let Ok(types::Choice::nested(nested)) = value else {
                         panic!("nested input must select its variant");
                     };
                     assert_eq!(nested.name, "Sheri");
-                    let value = types::Choice::from_graphql_value(&json!({"items": [1, null, 2]}));
+                    let value = types::Choice::_from_graphql_value(&json!({"items": [1, null, 2]}));
                     let Ok(types::Choice::items(items)) = value else {
                         panic!("nullable list items must be preserved");
                     };
@@ -2309,7 +2309,7 @@ mod test {
                         json!({"nested": {}}), json!({"requiredItems": [null]}),
                     ] {
                         assert!(
-                            types::Choice::from_graphql_value(&invalid).is_err(),
+                            types::Choice::_from_graphql_value(&invalid).is_err(),
                             "invalid OneOf input was accepted: {invalid}",
                         );
                     }
@@ -2346,7 +2346,7 @@ mod test {
 
                 fn parse_node(source: &str) -> Node {
                     let value = serde_json::from_str::<necrassrs::JsonValue>(source).unwrap();
-                    Node::from_graphql_value(&value)
+                    Node::_from_graphql_value(&value)
                         .unwrap_or_else(|_| panic!("finite input must convert: {source}"))
                 }
 
