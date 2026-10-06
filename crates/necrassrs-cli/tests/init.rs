@@ -114,10 +114,13 @@ fn check_generated_consumer(framework: &str) {
     let other_framework = if framework == "axum" { "actix" } else { "axum" };
     assert!(!source.contains(&format!("necrassrs-{other_framework}")));
     assert!(source.contains("panic = \"abort\""));
+    assert!(!source.contains("rev ="));
+    assert!(!source.contains("branch ="));
+    assert!(!source.contains("tag ="));
     let adapter = format!("necrassrs-{framework}");
     for package in ["necrassrs", adapter.as_str(), "necrassrs-build"] {
         let git = format!(
-            "{package} = {{ git = \"https://github.com/Necrass-Dev/NecrassRs.git\", rev = \"ffd953c8c56496677f62583f96794396b5f126c9\", version = \"0.1.0\" }}"
+            "{package} = {{ git = \"https://github.com/Necrass-Dev/NecrassRs.git\", version = \"0.1.0\" }}"
         );
         let path = workspace
             .join("crates")
@@ -135,7 +138,7 @@ fn check_generated_consumer(framework: &str) {
         .join("vendor/apollo-compiler")
         .canonicalize()
         .unwrap();
-    let patch = r#"apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", rev = "ffd953c8c56496677f62583f96794396b5f126c9", version = "1.33.0" }"#;
+    let patch = r#"apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", version = "1.33.0" }"#;
     assert!(source.contains(patch));
     source = source.replace(patch, &format!("apollo-compiler = {{ path = {apollo:?} }}"));
     fs::write(manifest, source).unwrap();
