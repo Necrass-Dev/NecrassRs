@@ -142,6 +142,7 @@ fn check_generated_consumer(framework: &str) {
     assert!(source.contains(patch));
     source = source.replace(patch, &format!("apollo-compiler = {{ path = {apollo:?} }}"));
     fs::write(manifest, source).unwrap();
+    fs::copy(workspace.join("Cargo.lock"), project.join("Cargo.lock")).unwrap();
 
     let build = || {
         Command::new(env!("CARGO"))
