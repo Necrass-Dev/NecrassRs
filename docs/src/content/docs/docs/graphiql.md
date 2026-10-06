@@ -1,5 +1,5 @@
 ---
-title: "Introspection and GraphiQL"
+title: "GraphiQL"
 ---
 
 GraphQL schema introspection is enabled by default in `necrassrs::execute`. It returns metadata from the validated Apollo schema through `__schema` and `__type`, including the supported generated schema's fields, arguments, and type references. `__typename` remains available as part of ordinary GraphQL execution.

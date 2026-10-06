@@ -20,7 +20,14 @@ export default defineConfig({
       sidebar: [
         {
           label: "Introduction",
-          items: [{ label: "Introduction", slug: "docs" }, "docs/tutorial"],
+          items: [{
+            label: "What is NecrassRs ?",
+            slug: "docs"
+          }]
+        },
+        {
+          label: "Guide",
+          items: ["docs/installation", "docs/tutorial"],
         },
         { label: "Manual", items: ["docs/types", "docs/graphiql"] },
       ],
