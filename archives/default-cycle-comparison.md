@@ -18,7 +18,7 @@ They are not wired into NecrassRs or Apollo validation. Existing #23 Red tests
 remain failing. Variable-default coercion, dependency source overrides, Apollo
 error diagnostics, and removal of wrapper workarounds are separate pending work.
 No accepted representation or transport decision is changed. Working Draft and
-transport revision candidates remain unconfirmed as documented in [specs.md](/docs/specs/).
+transport revision candidates remain unconfirmed as documented in [specs.md](specs.md).
 
 ## Algorithms
 
@@ -93,7 +93,7 @@ run in a fixed order, without process isolation or CPU pinning. Tiny timings are
 especially noisy; counts and scaling are more useful evidence than speed ratios.
 This is a schema-validation microbenchmark, not request throughput measurement.
 
-[Raw results](/docs/experiments/default-cycle-results.csv) include SDL fragment bytes, default-node
+[Raw results](default-cycle-results.csv) include SDL fragment bytes, default-node
 count, median nanoseconds, field inspections, default expansions, stored edge
 occurrences, and maximum active default depth. SDL byte counts exclude the common
 query root appended by the harness. Depth does not count explicit literal nesting.

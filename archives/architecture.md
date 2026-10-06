@@ -78,7 +78,7 @@ The injective mapping is also the identity rule for source synchronization. Comp
 
 Resolver traits live in `generated::resolvers`. Append the fixed suffix `Resolver` to the mapped object name without changing case: `User`, `user`, and `UserResolver` become `UserResolver`, `userResolver`, and `UserResolverResolver`. Allow `non_camel_case_types` and `non_snake_case` on these generated traits. Each trait has a generic Context parameter, and each field produces a method using the same identifier mapping.
 
-Methods borrow `self` and Context for the call lifetime, take the field's generated `Args` by value, and return `impl Future<Output = Result<T, necrassrs::ResolverError>> + Send` with that lifetime. Fields without arguments use an empty `Args` struct. Default methods return a future that calls `unimplemented!()` when polled, allowing partial trait implementations to compile. Generated contract types cover built-in scalars, enums, ordinary and OneOf input objects, lists, nullable wrappers, and recursive input boxing. Custom scalars and composite output types produce generation errors. Query dispatch converts built-in scalar, enum, and input-object arguments and results for built-in scalars and enums, including nullable and list forms. See [generated type examples](/docs/types/) for the public Rust signatures.
+Methods borrow `self` and Context for the call lifetime, take the field's generated `Args` by value, and return `impl Future<Output = Result<T, necrassrs::ResolverError>> + Send` with that lifetime. Fields without arguments use an empty `Args` struct. Default methods return a future that calls `unimplemented!()` when polled, allowing partial trait implementations to compile. Generated contract types cover built-in scalars, enums, ordinary and OneOf input objects, lists, nullable wrappers, and recursive input boxing. Custom scalars and composite output types produce generation errors. Query dispatch converts built-in scalar, enum, and input-object arguments and results for built-in scalars and enums, including nullable and list forms. See [generated type examples](https://necrass.rs/docs/types/) for the public Rust signatures.
 
 Trait defaults are a low-level fallback, not the user-facing scaffolding workflow. The build integration must also create the concrete resolver struct and an explicit editable async method for every supported SDL field. Users replace the `unimplemented!()` body in that implementation; they do not have to copy trait signatures or write an empty trait implementation first. The generated implementation must satisfy the existing borrowing, Context, and `Send` contracts.
 
@@ -230,9 +230,9 @@ The diagrams in this document were drafted with Codex to explain the proposed ar
 
 The execution core accepts GraphQL request information and user Context, not an HTTP request object. Exact signatures remain open, but the API must support query, variables, operationName, and Context.
 
-`necrassrs-axum` and `necrassrs-actix` provide extraction and response conversion that users can compose in their handlers. Neither adapter requires a dedicated server runner, authentication middleware, or Context factory callback. Axum uses a route middleware for response negotiation while preserving its existing request/response wrappers; Actix handles negotiation through its native extractor and responder. See [Integration](/docs/integration/) for supported frameworks, adapter implementation guidance, the implemented status policy, the 200-versus-294 decision, and remaining conformance work.
+`necrassrs-axum` and `necrassrs-actix` provide extraction and response conversion that users can compose in their handlers. Neither adapter requires a dedicated server runner, authentication middleware, or Context factory callback. Axum uses a route middleware for response negotiation while preserving its existing request/response wrappers; Actix handles negotiation through its native extractor and responder. See [Integration](integration.md) for supported frameworks, adapter implementation guidance, the implemented status policy, the 200-versus-294 decision, and remaining conformance work.
 
-The runtime allows schema introspection by default and offers server-controlled execution options to disable `__schema` and `__type`. Applications may register an optional GraphiQL page with `necrassrs-axum::graphiql_html(endpoint_url)` on a route they own. The page uses the existing GraphQL endpoint and loads version-pinned browser assets from a CDN; see [Introspection and GraphiQL](/docs/graphiql/) for development and production policy.
+The runtime allows schema introspection by default and offers server-controlled execution options to disable `__schema` and `__type`. Applications may register an optional GraphiQL page with `necrassrs-axum::graphiql_html(endpoint_url)` on a route they own. The page uses the existing GraphQL endpoint and loads version-pinned browser assets from a CDN; see [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/) for development and production policy.
 
 | Application responsibility                 | NecrassRs responsibility                         |
 | ------------------------------------------ | ------------------------------------------------ |
@@ -254,7 +254,7 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 The first `necrass init` scope, tracked in issue #9 under #1, created a runnable Axum consumer project. Issue #39 adds clap-based parsing, interactive initialization, and Actix selection. Both starters supply a Cargo manifest, build script, SDL, generated-code inclusion, a server entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration remains deferred.
 
-The [getting-started guide](/docs/#install-the-cli) covers CLI installation, interactive and explicit initialization, server startup, and the first request. These flows are implemented in this checkout; the Git installation command uses the repository default branch.
+The [getting-started guide](https://necrass.rs/docs/#install-the-cli) covers CLI installation, interactive and explicit initialization, server startup, and the first request. These flows are implemented in this checkout; the Git installation command uses the repository default branch.
 
 For a local checkout, use `cargo install --path crates/necrassrs-cli --locked` from the repository root. The package is named `necrassrs-cli`; its installed executable is named `necrass`. It is a separately installed development tool, not a consumer `dev-dependency`. Adding a package to `[dev-dependencies]` does not install its executable as a shell command.
 
@@ -368,7 +368,16 @@ necrassrs/
 ├── docs/
 │   ├── package.json
 │   └── src/content/docs/docs/
-│       └── architecture.md
+│       ├── index.md
+│       ├── graphiql.md
+│       └── types.md
+├── archives/
+│   ├── architecture.md
+│   ├── integration.md
+│   ├── specs.md
+│   ├── apollo-compiler.md
+│   ├── default-cycle-comparison.md
+│   └── default-cycle-results.csv
 └── .github/
     └── workflows/
 ```
@@ -441,7 +450,7 @@ Existing runtime coverage beyond the generated MVP remains in place. Each expans
 2. **Execution details:** Field scheduling, recursive completion representation, and generated-dispatch handoff. Ownership of execution and reuse of Apollo validation are established.
 3. **Source synchronization implementation:** AST editing and diagnostics that realize section 7.3. Explicit stubs, identity-based updates, retained-body preservation, deletion, and rename-as-delete-plus-add are established requirements, not open product decisions.
 4. **Coverage beyond the greeting MVP:** Additional supported types/features, explicit rejection diagnostics, and custom scalar conversion. Do not reopen #1's agreed behavior as an executor-selection task.
-5. **Further HTTP adapters:** Support and shared behavior beyond the current Axum adapter. The current introspection and GraphiQL policy is documented in [Introspection and GraphiQL](/docs/graphiql/).
+5. **Further HTTP adapters:** Support and shared behavior beyond the current Axum adapter. The current introspection and GraphiQL policy is documented in [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/).
 6. **Release contract:** MSRV, default features, generator/runtime compatibility, and CLI initialization details.
 
 SQL generation, ORM integration, automatic batching, a separate non-`Send` mode, standalone watch, and performance optimization are not prerequisites for this architecture.

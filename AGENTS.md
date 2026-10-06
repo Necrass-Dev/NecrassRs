@@ -1,6 +1,6 @@
 # Agent instructions
 
-These instructions apply to AI agents working in the NecrassRs repository. See [AI_POLICY.md](AI_POLICY.md) for disclosure and contributor responsibilities, and [docs/src/content/docs/docs/architecture.md](docs/src/content/docs/docs/architecture.md) for product architecture and design decisions.
+These instructions apply to AI agents working in the NecrassRs repository. See [AI_POLICY.md](AI_POLICY.md) for disclosure and contributor responsibilities, and [archives/architecture.md](archives/architecture.md) for product architecture and design decisions.
 
 ## Before making changes
 
@@ -25,7 +25,7 @@ These instructions apply to AI agents working in the NecrassRs repository. See [
 - Use Apollo Compiler's models and validation. Do not duplicate its schema model or validator. Choosing an execution engine remains a separate decision.
 - Separate code generation, Cargo and filesystem integration, runtime execution, the Axum adapter, and the CLI as described in the architecture document.
 - Keep Axum, CLI, and build-tool dependencies out of the execution core. Applications own their Context types and construction.
-- Place disposable contracts and dispatch in `OUT_DIR`. Build integration creates and synchronizes the designated resolver implementation in `src` using the SDL-to-Rust naming rules: preserve retained method bodies and unrelated user code, add explicit stubs, and delete removed methods. A rename is deletion plus addition. Follow `docs/src/content/docs/docs/architecture.md` section 7.3; do not interpret user-code preservation as a ban on synchronizing SDL-owned declarations.
+- Place disposable contracts and dispatch in `OUT_DIR`. Build integration creates and synchronizes the designated resolver implementation in `src` using the SDL-to-Rust naming rules: preserve retained method bodies and unrelated user code, add explicit stubs, and delete removed methods. A rename is deletion plus addition. Follow `archives/architecture.md` section 7.3; do not interpret user-code preservation as a ban on synchronizing SDL-owned declarations.
 - Initialization must not overwrite existing files or symbolic links.
 - Do not copy prototype code. Implement from the observed behavior and validation scenarios.
 - Check existing code, the standard library, and existing dependencies first. Do not add abstractions, configuration, crates, or dependencies without a concrete requirement.
@@ -56,6 +56,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ## Language, review, and reporting
 
 Official repository documents must be written in English, including policies, architecture documents, READMEs, and contribution guides. Follow the user's requested language in conversation. Keep code, comments, documents, and other repository artifacts professional and free of conversational roleplay.
+
+The website keeps `index.md`, `graphiql.md`, and `types.md` in `docs/src/content/docs/docs/`. Keep integration records, design proposals, specification tracking, experiment articles, and their data in the repository-root `archives/` directory. Archives are independent of the documentation website: do not include them in its content collections, sidebar, public assets, or guide links. Use relative file links within archives and update repository source references when moving an article.
 
 In reviews, lead with reproducible defects and risks, identifying locations and impact. Distinguish findings from hypotheses.
 

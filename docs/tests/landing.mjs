@@ -10,8 +10,10 @@ const origin = "http://127.0.0.1:4322";
 const output = resolve("dist");
 const files = (await readdir(output, { recursive: true })).filter((file) => file.endsWith(".html"));
 assert(files.includes("docs/index.html"), "Build the site before running this check.");
+assert(!files.some((file) => file.startsWith("archives/")), "Archives must not be published.");
 for (const file of files) {
   const html = await readFile(resolve(output, file), "utf8");
+  assert(!/href="[^"]*\/archives\//.test(html), `Archive link in published page: ${file}`);
   const pageUrl = new URL(file.replace(/index\.html$/, ""), `${origin}/`);
   for (const [, href] of html.matchAll(/href="([^"]+)"/g)) {
     const url = new URL(href.replaceAll("&amp;", "&"), pageUrl);
@@ -238,29 +240,9 @@ try {
 
   await page.goto(`${origin}/docs/`);
   assert.equal(await page.locator("h1").innerText(), "Introduction");
-  await page.goto(`${origin}/docs/architecture/`);
-  assert.match(await page.locator("h1").innerText(), /architecture/);
+  await page.goto(`${origin}/docs/types/`);
+  assert.equal(await page.locator("h1").innerText(), "Generated types and inputs");
   await page.screenshot({ path: "test-results/docs.png" });
-  await page.goto(`${origin}/docs/integration/`);
-  const diagram = page.locator("pre.mermaid svg");
-  await diagram.waitFor();
-  assert.equal(await diagram.locator("title").textContent(), "GraphQL HTTP integration");
-  for (const theme of ["dark", "light"]) {
-    const previous = await diagram.evaluate((svg) => svg.outerHTML);
-    await page.locator("starlight-theme-select select").selectOption(theme);
-    await page.waitForFunction(
-      (old) => document.querySelector("pre.mermaid svg")?.outerHTML !== old,
-      previous,
-    );
-    await diagram.waitFor();
-    assert.match(await diagram.textContent(), /406 Not Acceptable/);
-  }
-  await page.screenshot({ path: "test-results/integration.png", fullPage: true });
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert(
-    await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-    "The integration diagram must not overflow the mobile page.",
-  );
   const noJS = await browser.newPage({ javaScriptEnabled: false });
   await noJS.goto(origin);
   assert.equal(await noJS.locator(".code-version:visible").count(), 4);

@@ -39,7 +39,7 @@ necrass
 
 It asks for a project directory, Cargo package name, and Backend framework. The
 default directory is `my-api`, and the package name defaults to the directory name.
-Choose a supported backend framework. See [Integration](/docs/integration/) for the supported frameworks.
+Choose a supported backend framework from the available options.
 
 For scripts or when you already know the settings, use an explicit command:
 
@@ -111,20 +111,12 @@ After initialization, ordinary builds and runs use Cargo; the CLI is not needed
 for schema changes. The starter configures `panic = "abort"` in development and
 release builds, so calling an unimplemented resolver terminates the process.
 Return `ResolverError` for ordinary application errors.
-See [source synchronization](/docs/architecture/#73-partial-implementations-and-contract-changes)
-for the full ownership contract.
 
 ## Explore the documentation
 
 - [Generated types and inputs](/docs/types/): executable resolver examples, defaults, lists, OneOf, and recursion.
-- [Integration](/docs/integration/): supported backend frameworks and request/response behavior.
 - [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
-- [Architecture](/docs/architecture/): crate responsibilities, source ownership, and planned work.
-- [Specification requirements](/docs/specs/): conformance targets and acceptance cases.
-- [Apollo Compiler patch](/docs/apollo-compiler/): the maintained dependency changes.
-- [Default-cycle experiment](/docs/experiments/default-cycle-comparison/): algorithms and measurements.
 
-These pages follow the source checkout from which this site is built. Dates and
-implementation status in the migrated documents are retained; they do not describe
-a versioned release. Rust API references are available locally with
+These pages follow the source checkout from which this site is built; they do not
+describe a versioned release. Rust API references are available locally with
 `cargo doc --workspace --no-deps --locked --open`.

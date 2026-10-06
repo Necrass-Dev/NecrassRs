@@ -25,7 +25,7 @@ curl -sS http://127.0.0.1:3001/graphql \
 
 The response is `{"data":{"hello":"Hello, Sheri"}}`. Names match `Sheri` and `Margot` exactly. An unknown name returns HTTP 200 with `data: null`, a field error, and the `USER_NOT_FOUND` extension. Subsequent requests remain available.
 
-Actix handles response negotiation through the adapter's extractor and responder. No Axum middleware is needed. See the [HTTP contract](../../docs/src/content/docs/docs/http.md) for request errors, media types, and configurable body limits.
+Actix handles response negotiation through the adapter's extractor and responder. No Axum middleware is needed.
 
 ## Application ownership
 

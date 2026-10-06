@@ -19,16 +19,7 @@ export default defineConfig({
       customCss: ["./src/styles/docs.css"],
       sidebar: [
         { label: "Start here", items: [{ label: "Introduction", slug: "docs" }] },
-        { label: "Server guides", items: ["docs/types", "docs/integration", "docs/graphiql"] },
-        {
-          label: "Design & development",
-          items: [
-            "docs/architecture",
-            "docs/specs",
-            "docs/apollo-compiler",
-            "docs/experiments/default-cycle-comparison",
-          ],
-        },
+        { label: "Server guides", items: ["docs/types", "docs/graphiql"] },
       ],
     }),
   ],

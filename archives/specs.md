@@ -81,7 +81,7 @@ This accepted representation preserves the distinction between GraphQL ID and St
 
 ### Custom scalar bindings
 
-Resolve each SDL custom scalar to the fixed consumer path `crate::scalars::<mapped SDL name>`. Reuse the existing injective identifier mapping in [codegen.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-build/src/codegen.rs) and the naming rules in [architecture.md](/docs/architecture/): preserve case, prefix `self`, `Self`, `super`, `crate`, and names already starting with an underscore with one additional underscore, and emit raw identifiers for other Rust keywords. Do not add a configurable name-to-type mapping.
+Resolve each SDL custom scalar to the fixed consumer path `crate::scalars::<mapped SDL name>`. Reuse the existing injective identifier mapping in [codegen.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-build/src/codegen.rs) and the naming rules in [architecture.md](architecture.md): preserve case, prefix `self`, `Self`, `super`, `crate`, and names already starting with an underscore with one additional underscore, and emit raw identifiers for other Rust keywords. Do not add a configurable name-to-type mapping.
 
 Examples:
 
@@ -184,13 +184,13 @@ Acceptance and test migration:
 
 Historical TDD Red checkpoint for #23: `cargo test -p necrassrs --locked cyclic_` fails both tests against unpatched Apollo 1.33.0. All six isolated reproductions fail the schema-rejection assertion without aborting. This records the validation gap, not completed conformance. That checkpoint preceded the local patch below; candidate specification revisions and accepted decisions above remain unchanged.
 
-The [default-cycle algorithm comparison](/docs/experiments/default-cycle-comparison/) retains executable path-DFS and dependency-graph candidates, measured results, and the rationale for reusing completed field-default dependency analysis. Its timings remain experimental evidence; the integrated patch uses the selected graph design with iterative traversal.
+The [default-cycle algorithm comparison](default-cycle-comparison.md) retains executable path-DFS and dependency-graph candidates, measured results, and the rationale for reusing completed field-default dependency analysis. Its timings remain experimental evidence; the integrated patch uses the selected graph design with iterative traversal.
 
 Nested variable-default normalization is a separate defect within the parent issue's Apollo deliverable, not implied by fixing schema cycles. Reuse `variable_list_default_is_coerced_to_a_list`, `variable_object_default_applies_input_field_defaults`, and `nested_list_default_is_coerced_to_a_list` from [execution.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/execution.rs), adding direct dependency-level assertions that pass without post-coercion wrapper repair. Its references remain [Input Coercion](https://spec.graphql.org/September2025/#sec-Input-Objects.Input-Coercion), [List Input Coercion](https://spec.graphql.org/September2025/#sec-List.Input-Coercion), and [Coercing Variable Values](https://spec.graphql.org/September2025/#sec-Coercing-Variable-Values).
 
 ### Local Apollo patch verification
 
-The [maintained local Apollo patch](/docs/apollo-compiler/) now supplies
+The [maintained local Apollo patch](apollo-compiler.md) now supplies
 schema default-cycle validation and nested variable-default coercion. Superseded
 NecrassRs variable normalization and active-default guards are removed. Legitimate
 executor argument coercion remains. These checks cover the released clauses below and their unchanged counterparts
@@ -198,13 +198,13 @@ in the selected Working Draft. The #23 reference comparison is recorded below;
 transport reference selection and the complete parent difference inventory remain
 separate work. No complete G08/G09/G11 or next-edition conformance is claimed.
 
-| Clause / level                                                             | Applicability and implementation                              | Executable evidence                                                                                                                                                | Status                                                                                                           |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| September 2025 §3.10 Type Validation, default-cycle prohibition (required) | Apollo field-default graph; distinct from type cycles         | Existing request cyclic subprocess tests; `graph_validation_distinguishes_defaults_from_type_recursion`; `graph_validation_handles_shared_and_long_default_chains` | Passed locally; includes diagnostics, extensions, finite recursion and shared/long chains                        |
-| September 2025 §3.10 Input Coercion and §6.1.2 (required)                  | Apollo variable and nested input-field defaults               | `variable_defaults_are_coerced_by_apollo`; `supplied_objects_apply_nested_defaults_without_replacing_null_or_values`                                               | Passed directly through Apollo without wrapper repair                                                            |
-| September 2025 §3.11 List Input Coercion (required)                        | Singleton and nested-list defaults in the public variable API | The same direct API tests and retained execution default regressions                                                                                               | Passed locally                                                                                                   |
-| September 2025 §6.4.1 (required; preserved boundary)                       | NecrassRs executor field-argument coercion                    | `input_object_defaults_and_single_value_list_coercion_are_applied`; finite-default reuse and existing alias/error/null propagation tests                           | Passed after removing only superseded guards                                                                     |
-| Cargo source selection (project integration requirement)                   | Workspace and external consumer roots, including CLI starter  | `consumer_root_resolves_patched_apollo_for_build_and_runtime`; `cyclic_defaults_fail_before_consumer_generation`; CLI generated-consumer check                     | Passed for local paths; pinned remote Git verification is recorded in [the patch record](/docs/apollo-compiler/) |
+| Clause / level                                                             | Applicability and implementation                              | Executable evidence                                                                                                                                                | Status                                                                                                       |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| September 2025 §3.10 Type Validation, default-cycle prohibition (required) | Apollo field-default graph; distinct from type cycles         | Existing request cyclic subprocess tests; `graph_validation_distinguishes_defaults_from_type_recursion`; `graph_validation_handles_shared_and_long_default_chains` | Passed locally; includes diagnostics, extensions, finite recursion and shared/long chains                    |
+| September 2025 §3.10 Input Coercion and §6.1.2 (required)                  | Apollo variable and nested input-field defaults               | `variable_defaults_are_coerced_by_apollo`; `supplied_objects_apply_nested_defaults_without_replacing_null_or_values`                                               | Passed directly through Apollo without wrapper repair                                                        |
+| September 2025 §3.11 List Input Coercion (required)                        | Singleton and nested-list defaults in the public variable API | The same direct API tests and retained execution default regressions                                                                                               | Passed locally                                                                                               |
+| September 2025 §6.4.1 (required; preserved boundary)                       | NecrassRs executor field-argument coercion                    | `input_object_defaults_and_single_value_list_coercion_are_applied`; finite-default reuse and existing alias/error/null propagation tests                           | Passed after removing only superseded guards                                                                 |
+| Cargo source selection (project integration requirement)                   | Workspace and external consumer roots, including CLI starter  | `consumer_root_resolves_patched_apollo_for_build_and_runtime`; `cyclic_defaults_fail_before_consumer_generation`; CLI generated-consumer check                     | Passed for local paths; pinned remote Git verification is recorded in [the patch record](apollo-compiler.md) |
 
 Validation: `cargo test --workspace --locked`, workspace all-target Clippy with
 warnings denied, and formatting pass. The root lockfile resolves Apollo from the
@@ -214,7 +214,7 @@ local maintained Apollo source. No protocol implementation changes are part of t
 
 The source checkout now generates and executes built-in scalar and enum query
 contracts, ordinary and OneOf inputs, nullable/list wrappers, and recursive input
-boxing. [The type guide](/docs/types/) contains schema, resolver, and executable
+boxing. [The type guide](https://necrass.rs/docs/types/) contains schema, resolver, and executable
 examples that are compiled and run by `documented_type_examples_compile_and_execute`.
 The following evidence covers #24's clauses against the immutable references
 recorded below; it does not establish complete GraphQL or Working Draft conformance.

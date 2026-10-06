@@ -43,9 +43,11 @@ support `.astro` templates; those are maintained manually and checked by
 - `src/pages/index.astro`: landing page, metadata, and build-time highlighting.
 - `src/components/Workflow.tsx`: Solid schema evolution scene.
 - `src/styles/landing.css`: responsive layout, color inversion, and motion.
-- `src/content/docs/docs/`: Markdown source for `/docs/` pages. The former
-  repository documents live here, with their implementation-status notes retained.
-- `public/docs/experiments/`: downloadable experiment data.
+- `src/content/docs/docs/`: introduction, GraphiQL, and type guides for `/docs/` pages.
+
+Design proposals, integration records, specification tracking, and experiments
+are stored independently in the repository-root `archives/` directory. They are
+not built or linked by the documentation website.
 
 The initial demo imports the real CLI starter's SDL and resolver source. Adding
 `version: String!` demonstrates a new resolver stub after `cargo build`, without
@@ -64,7 +66,7 @@ Clicking Define, Evolve, or Build scrolls to that point in the timeline. Reduced
 motion disables pinning and animated playback; the buttons switch code instantly.
 Without JavaScript, both before/after examples remain readable in document order.
 
-Use `/docs/page-name/` links between published pages and GitHub source links for
+Use `/docs/page-name/` links between published guides and GitHub source links for
 repository files. Keep design targets distinguished from implemented behavior.
 The site currently follows its source checkout; it does not publish release
 snapshots or claim that the complete scope of issue #21 is finished.

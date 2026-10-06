@@ -50,7 +50,7 @@ sequenceDiagram
 
 `necrassrs-build` generates resolver contracts and the dispatcher from SDL during the Cargo build; it is not part of the HTTP request flow. At startup, the application validates `generated::SDL` with `necrassrs::Schema::parse_and_validate` and stores the schema and dispatcher in shared state. Each handler borrows that state and supplies its own Context. Authentication, database connections, and other request-specific values remain application concerns.
 
-The execution core does not depend on an HTTP framework or on `necrassrs-http`. An adapter does not need to generate code or implement GraphQL execution. To configure introspection, the handler can call `execute_with_options`; see [Introspection and GraphiQL](/docs/graphiql/).
+The execution core does not depend on an HTTP framework or on `necrassrs-http`. An adapter does not need to generate code or implement GraphQL execution. To configure introspection, the handler can call `execute_with_options`; see [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/).
 
 ## Supported frameworks
 
@@ -61,9 +61,9 @@ The following adapters are maintained in this repository:
 | Axum              | `necrassrs-axum`  | `axum`                  | [Axum integration](#axum)           |
 | Actix Web         | `necrassrs-actix` | `actix`                 | [Actix Web integration](#actix-web) |
 
-For a new project, use `necrass init <PATH> --framework <FRAMEWORK>` with a value from the table. See [Create a project](/docs/#create-a-project) for package naming and interactive setup.
+For a new project, use `necrass init <PATH> --framework <FRAMEWORK>` with a value from the table. See [Create a project](https://necrass.rs/docs/#create-a-project) for package naming and interactive setup.
 
-For an existing application, add its adapter dependency and register a handler as shown below. The [Axum example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/axum-server) and [Actix Web example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/actix-server) include manifests, build scripts, SDL, and resolver implementations. Dependency placement and generated project files are documented in [Consumer project setup](/docs/architecture/#71-initial-cli-scope).
+For an existing application, add its adapter dependency and register a handler as shown below. The [Axum example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/axum-server) and [Actix Web example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/actix-server) include manifests, build scripts, SDL, and resolver implementations. Dependency placement and generated project files are documented in [Consumer project setup](architecture.md#71-initial-cli-scope).
 
 If your framework is not listed, you can [write an adapter](#writing-an-adapter) using the same public runtime API.
 
@@ -138,7 +138,7 @@ fn configure(cfg: &mut web::ServiceConfig) {
 
 Register `configure` on your `App` and attach state with `.app_data(web::Data::new(state))`. Consume the body only once: other handler extractors must not read it again.
 
-Both adapters also provide an optional `graphiql_html` helper. Register it on an application-owned GET route separately from GraphQL POST execution; see [Introspection and GraphiQL](/docs/graphiql/).
+Both adapters also provide an optional `graphiql_html` helper. Register it on an application-owned GET route separately from GraphQL POST execution; see [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/).
 
 ## HTTP behavior
 

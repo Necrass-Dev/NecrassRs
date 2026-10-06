@@ -8,7 +8,7 @@ nullable and list forms, and ordinary and OneOf input objects. Custom scalars,
 composite results, and generated mutation/subscription routing remain unsupported.
 These examples describe this checkout; a previously resolved Git dependency must
 be updated before it contains these changes. Use the maintained Apollo source
-replacement described in [the patch guide](/docs/apollo-compiler/).
+replacement configured in the repository's Cargo manifests.
 
 ## Define the schema
 
