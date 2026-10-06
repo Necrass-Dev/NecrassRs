@@ -245,7 +245,7 @@ try {
   );
 
   await page.goto(`${origin}/docs/`);
-  assert.equal(await page.locator("h1").innerText(), "Introduction");
+  assert.equal(await page.locator("h1").innerText(), "What is NecrassRS?");
   await page.goto(`${origin}/docs/tutorial/`);
   assert.equal(await page.locator("h1").innerText(), "Tutorial");
   await page.screenshot({ path: "test-results/docs.png" });

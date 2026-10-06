@@ -156,7 +156,7 @@ Current CLI templates use the repository default branch for NecrassRs dependenci
 and the Apollo patch. The generated consumer's first build records the resolved
 revisions in its lockfile. Local CLI checks validate both framework templates
 against the maintained checkout; they do not establish the behavior of a future
-remote revision. See [getting started](https://necrass.rs/docs/#create-a-project) for the current
+remote revision. See [getting started](https://necrass.rs/docs/installation/#create-a-project) for the current
 installation and dependency policy.
 
 ## Upstream PR scope

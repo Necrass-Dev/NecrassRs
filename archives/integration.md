@@ -61,7 +61,7 @@ The following adapters are maintained in this repository:
 | Axum              | `necrassrs-axum`  | `axum`                  | [Axum integration](#axum)           |
 | Actix Web         | `necrassrs-actix` | `actix`                 | [Actix Web integration](#actix-web) |
 
-For a new project, use `necrass init <PATH> --framework <FRAMEWORK>` with a value from the table. See [Create a project](https://necrass.rs/docs/#create-a-project) for package naming and interactive setup.
+For a new project, use `necrass init <PATH> --framework <FRAMEWORK>` with a value from the table. See [Create a project](https://necrass.rs/docs/installation/#create-a-project) for package naming and interactive setup.
 
 For an existing application, add its adapter dependency and register a handler as shown below. The [Axum example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/axum-server) and [Actix Web example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/actix-server) include manifests, build scripts, SDL, and resolver implementations. Dependency placement and generated project files are documented in [Consumer project setup](architecture.md#71-initial-cli-scope).
 

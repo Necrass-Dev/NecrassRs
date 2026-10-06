@@ -21,7 +21,7 @@ export default defineConfig({
         {
           label: "Introduction",
           items: [{
-            label: "What is NecrassRs ?",
+            label: "What is NecrassRs?",
             slug: "docs"
           }]
         },

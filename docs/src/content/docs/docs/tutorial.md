@@ -17,7 +17,7 @@ replacement configured in the repository's Cargo manifests.
 
 ## 1. Create a project
 
-Follow the [installation guide](/docs/#install-the-cli) to install the CLI, then
+Follow the [installation guide](/docs/installation/#install-the-cli) to install the CLI, then
 create a project:
 
 ```sh
@@ -138,7 +138,7 @@ Start the generated server:
 cargo run
 ```
 
-Keep this terminal running. The CLI starter listens on `127.0.0.1:3000` and serves
+Leave the server running in this terminal. The CLI starter listens on `127.0.0.1:3000` and serves
 GraphQL requests through POST `/graphql`. GET `/graphql` opens GraphiQL, an
 interactive interface for exploring the schema and sending queries.
 

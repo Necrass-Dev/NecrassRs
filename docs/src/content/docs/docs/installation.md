@@ -25,7 +25,7 @@ Run the CLI without arguments in a terminal:
 necrass
 ```
 
-It asks for a project directory, Cargo package name, and Backend framework. The
+It asks for a project directory, Cargo package name, and backend framework. The
 default directory is `my-api`, and the package name defaults to the directory name.
 Choose a supported backend framework from the available options.
 
