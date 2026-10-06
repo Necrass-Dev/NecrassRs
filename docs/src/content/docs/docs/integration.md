@@ -1,5 +1,5 @@
 ---
-title: "HTTP adapters and response negotiation"
+title: "Integration"
 ---
 
 Applications own routing, middleware, shared state, and per-request Context construction. `necrassrs-axum` and `necrassrs-actix` extract GraphQL requests and convert runtime responses. The execution core does not depend on either framework or on `necrassrs-http`.
