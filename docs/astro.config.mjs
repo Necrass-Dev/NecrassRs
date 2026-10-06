@@ -1,11 +1,13 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import solid from "@astrojs/solid-js";
+import mermaid from "astro-mermaid";
 
 export default defineConfig({
   site: "https://necrass.rs",
   trailingSlash: "always",
   integrations: [
+    mermaid({ enableLog: false }),
     solid(),
     starlight({
       title: "NecrassRs",
@@ -17,7 +19,7 @@ export default defineConfig({
       customCss: ["./src/styles/docs.css"],
       sidebar: [
         { label: "Start here", items: [{ label: "Introduction", slug: "docs" }] },
-        { label: "Server guides", items: ["docs/types", "docs/http", "docs/graphiql"] },
+        { label: "Server guides", items: ["docs/types", "docs/integration", "docs/graphiql"] },
         {
           label: "Design & development",
           items: [

@@ -241,6 +241,26 @@ try {
   await page.goto(`${origin}/docs/architecture/`);
   assert.match(await page.locator("h1").innerText(), /architecture/);
   await page.screenshot({ path: "test-results/docs.png" });
+  await page.goto(`${origin}/docs/integration/`);
+  const diagram = page.locator("pre.mermaid svg");
+  await diagram.waitFor();
+  assert.equal(await diagram.locator("title").textContent(), "GraphQL HTTP integration");
+  for (const theme of ["dark", "light"]) {
+    const previous = await diagram.evaluate((svg) => svg.outerHTML);
+    await page.locator("starlight-theme-select select").selectOption(theme);
+    await page.waitForFunction(
+      (old) => document.querySelector("pre.mermaid svg")?.outerHTML !== old,
+      previous,
+    );
+    await diagram.waitFor();
+    assert.match(await diagram.textContent(), /406 Not Acceptable/);
+  }
+  await page.screenshot({ path: "test-results/integration.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert(
+    await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    "The integration diagram must not overflow the mobile page.",
+  );
   const noJS = await browser.newPage({ javaScriptEnabled: false });
   await noJS.goto(origin);
   assert.equal(await noJS.locator(".code-version:visible").count(), 4);
