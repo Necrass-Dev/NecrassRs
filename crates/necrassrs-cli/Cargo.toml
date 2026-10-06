@@ -3,6 +3,10 @@ name = "necrassrs-cli"
 version.workspace = true
 edition.workspace = true
 
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+dialoguer = { version = "0.12", default-features = false }
+
 [[bin]]
 name = "necrass"
 path = "src/main.rs"
