@@ -269,6 +269,8 @@ The command is `necrass init [PATH] [--name NAME]`. `PATH` defaults to the curre
 
 The CLI writes the starter files directly. Invoking `cargo init` inside another workspace can rewrite its parent `Cargo.toml`, so the initializer must not use it there. The generated manifest contains its own `[workspace]` section to keep the new project independent of a parent workspace.
 
+CLI templates live in `crates/necrassrs-cli/templates`. The `axum/` and `actix/` directories contain framework-specific manifests and server entry points. The `shared/` directory contains the README, build script, SDL, generated-code inclusion, and resolver implementation used by both starters. Both server templates use port 3000. The CLI currently selects the Axum templates; Actix selection and interactive initialization are separate follow-up work.
+
 Generated starter source is ordinary application-owned source. The build library subsequently synchronizes SDL-owned resolver declarations while preserving retained business logic. The execution core remains independent of Axum. Existing projects can integrate `necrassrs`, `necrassrs-build`, and `necrassrs-axum` without using the CLI.
 
 ```text

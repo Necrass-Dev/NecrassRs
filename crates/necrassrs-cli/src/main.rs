@@ -30,28 +30,31 @@ fn create_package(path: &Path, name: &str) -> io::Result<()> {
     for (relative, contents) in [
         (
             "Cargo.toml",
-            include_str!("../templates/manifest.toml").replace("{{name}}", name),
+            include_str!("../templates/axum/manifest.toml").replace("{{name}}", name),
         ),
         (
             "README.md",
-            include_str!("../templates/README.md").to_owned(),
+            include_str!("../templates/shared/README.md").to_owned(),
         ),
-        ("build.rs", include_str!("../templates/build.rs").to_owned()),
+        (
+            "build.rs",
+            include_str!("../templates/shared/build.rs").to_owned(),
+        ),
         (
             "schema/schema.graphql",
-            include_str!("../templates/schema.graphql").to_owned(),
+            include_str!("../templates/shared/schema.graphql").to_owned(),
         ),
         (
             "src/main.rs",
-            include_str!("../templates/main.rs").to_owned(),
+            include_str!("../templates/axum/main.rs").to_owned(),
         ),
         (
             "src/generated.rs",
-            include_str!("../templates/generated.rs").to_owned(),
+            include_str!("../templates/shared/generated.rs").to_owned(),
         ),
         (
             "src/resolvers.rs",
-            include_str!("../templates/resolvers.rs").to_owned(),
+            include_str!("../templates/shared/resolvers.rs").to_owned(),
         ),
     ] {
         fs::OpenOptions::new()

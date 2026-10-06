@@ -55,6 +55,12 @@ fn init_creates_project_at_explicit_path_and_name() {
 
 #[test]
 fn generated_consumer_builds_and_rebuilds_without_the_cli() {
+    for framework in ["axum", "actix"] {
+        check_generated_consumer(framework);
+    }
+}
+
+fn check_generated_consumer(framework: &str) {
     let directory = TestDirectory::new();
     let project = directory.0.join("consumer");
     let init = Command::new(env!("CARGO_BIN_EXE_necrass"))
@@ -70,8 +76,21 @@ fn generated_consumer_builds_and_rebuilds_without_the_cli() {
 
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let manifest = project.join("Cargo.toml");
+    if framework == "actix" {
+        fs::write(
+            &manifest,
+            include_str!("../templates/actix/manifest.toml").replace("{{name}}", "consumer"),
+        )
+        .unwrap();
+        fs::write(
+            project.join("src/main.rs"),
+            include_str!("../templates/actix/main.rs"),
+        )
+        .unwrap();
+    }
     let mut source = fs::read_to_string(&manifest).unwrap();
-    for package in ["necrassrs", "necrassrs-axum", "necrassrs-build"] {
+    let adapter = format!("necrassrs-{framework}");
+    for package in ["necrassrs", adapter.as_str(), "necrassrs-build"] {
         let git = format!(
             "{package} = {{ git = \"https://github.com/Necrass-Dev/NecrassRs.git\", rev = \"ffd953c8c56496677f62583f96794396b5f126c9\", version = \"0.1.0\" }}"
         );
