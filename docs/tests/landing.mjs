@@ -10,8 +10,10 @@ const origin = "http://127.0.0.1:4322";
 const output = resolve("dist");
 const files = (await readdir(output, { recursive: true })).filter((file) => file.endsWith(".html"));
 assert(files.includes("docs/index.html"), "Build the site before running this check.");
+assert(!files.some((file) => file.startsWith("archives/")), "Archives must not be published.");
 for (const file of files) {
   const html = await readFile(resolve(output, file), "utf8");
+  assert(!/href="[^"]*\/archives\//.test(html), `Archive link in published page: ${file}`);
   const pageUrl = new URL(file.replace(/index\.html$/, ""), `${origin}/`);
   for (const [, href] of html.matchAll(/href="([^"]+)"/g)) {
     const url = new URL(href.replaceAll("&amp;", "&"), pageUrl);
@@ -69,6 +71,12 @@ try {
   assert.equal(await page.locator(".closing").count(), 0);
   assert.equal(await page.locator(".phase-indicators button").count(), 3);
   await page.screenshot({ path: "test-results/hero.png" });
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByRole("button", { name: "Copy installation command" }).click();
+  assert.equal(
+    await page.evaluate(() => navigator.clipboard.readText()),
+    "cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked",
+  );
   const expectPhase = async (phase) => {
     await page.waitForFunction(
       (expected) => document.querySelector(".story").dataset.phase === expected,
@@ -237,9 +245,9 @@ try {
   );
 
   await page.goto(`${origin}/docs/`);
-  assert.equal(await page.locator("h1").innerText(), "Introduction");
-  await page.goto(`${origin}/docs/architecture/`);
-  assert.match(await page.locator("h1").innerText(), /architecture/);
+  assert.equal(await page.locator("h1").innerText(), "What is NecrassRS?");
+  await page.goto(`${origin}/docs/tutorial/`);
+  assert.equal(await page.locator("h1").innerText(), "Tutorial");
   await page.screenshot({ path: "test-results/docs.png" });
   const noJS = await browser.newPage({ javaScriptEnabled: false });
   await noJS.goto(origin);

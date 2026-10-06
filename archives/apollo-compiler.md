@@ -18,7 +18,7 @@ path dependency of NecrassRs. The two repositories have different change scopes.
   README, and the single example embedded by the library's rustdoc. Upstream test
   fixtures, benches, other examples, and development dependencies are omitted.
   The build-only manifest is a packaging adaptation, not an upstream change.
-- [Algorithm experiments](/docs/experiments/default-cycle-comparison/) and their raw
+- [Algorithm experiments](default-cycle-comparison.md) and their raw
   results remain in NecrassRs as the implementation decision record.
 - Direct dependency regressions, subprocess checks, executor cases, external
   consumer tests, and Cargo/CLI wiring remain NecrassRs integration work.
@@ -156,7 +156,7 @@ Current CLI templates use the repository default branch for NecrassRs dependenci
 and the Apollo patch. The generated consumer's first build records the resolved
 revisions in its lockfile. Local CLI checks validate both framework templates
 against the maintained checkout; they do not establish the behavior of a future
-remote revision. See [getting started](/docs/#create-a-project) for the current
+remote revision. See [getting started](https://necrass.rs/docs/installation/#create-a-project) for the current
 installation and dependency policy.
 
 ## Upstream PR scope
@@ -198,6 +198,6 @@ cargo test -p apollo-compiler
 
 Remove the local patch/source override only after an upstream release passes the
 portable regressions and external consumer checks. Update the root lockfile and
-all root/template overrides together. The #23 pinned specification comparison is recorded in [specs.md](/docs/specs/).
+all root/template overrides together. The #23 pinned specification comparison is recorded in [specs.md](specs.md).
 Transport reference candidates and the complete parent difference inventory remain
 separate work; local patch verification is not full conformance.

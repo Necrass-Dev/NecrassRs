@@ -1,5 +1,5 @@
 ---
-title: "Introspection and GraphiQL"
+title: "GraphiQL"
 ---
 
 GraphQL schema introspection is enabled by default in `necrassrs::execute`. It returns metadata from the validated Apollo schema through `__schema` and `__type`, including the supported generated schema's fields, arguments, and type references. `__typename` remains available as part of ordinary GraphQL execution.
@@ -55,4 +55,4 @@ let app = App::new()
     .route("/graphiql", web::get().to(|| async { graphiql_html("/api/graphql") }));
 ```
 
-Both helpers use the same pinned browser asset versions and escape the configured endpoint. UI registration does not change the runtime's introspection setting. The [Actix consumer example](https://github.com/Necrass-Dev/NecrassRs/blob/main/examples/actix-server/README.md) serves the built-in UI on GET `/graphql` by default, with execution on POST `/graphql`. HTTP content negotiation applies to the GraphQL endpoint, not the HTML page; see [HTTP adapters and response negotiation](/docs/http/).
+Both helpers use the same pinned browser asset versions and escape the configured endpoint. UI registration does not change the runtime's introspection setting. The [Actix consumer example](https://github.com/Necrass-Dev/NecrassRs/blob/main/examples/actix-server/README.md) serves the built-in UI on GET `/graphql` by default, with execution on POST `/graphql`. HTTP content negotiation applies to the GraphQL endpoint, not the HTML page.

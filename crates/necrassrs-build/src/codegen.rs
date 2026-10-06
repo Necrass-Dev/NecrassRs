@@ -1737,31 +1737,6 @@ mod test {
     }
 
     #[test]
-    fn documented_type_examples_compile_and_execute() {
-        let guide = include_str!("../../../docs/src/content/docs/docs/types.md");
-        let sdl = guide
-            .split_once("```graphql\n")
-            .unwrap()
-            .1
-            .split_once("\n```")
-            .unwrap()
-            .0;
-        let mut rust = guide
-            .split("```rust\n")
-            .skip(1)
-            .map(|block| block.split_once("\n```").unwrap().0);
-        let resolvers = rust.next().unwrap();
-        let main = rust.next().unwrap().split_once("fn main()").unwrap().1;
-        let schema = Schema::parse_and_validate(sdl, "example.graphql").unwrap();
-        let generated = super::generate(&schema).unwrap();
-        assert_consumer(
-            &format!("pub mod generated {{ {generated} }}"),
-            &format!("mod resolvers {{ {resolvers} }} fn main(){main}"),
-            true,
-        );
-    }
-
-    #[test]
     fn generated_consumer_executes_leaf_boundaries_and_variable_numbers() {
         let schema = Schema::parse_and_validate(
             "type Query { integer(value: Int!): Int! float(value: Float!): Float! text(value: String!): String! boolean(value: Boolean!): Boolean! id(value: ID!): ID! nullable(value: [Int]): [Int] required(value: [Int]!): [Int]! nitems(value: [Int!]): [Int!] strict(value: [Int!]!): [Int!]! }",

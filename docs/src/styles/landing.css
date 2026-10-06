@@ -144,11 +144,47 @@ h1 {
 h1 span {
   color: var(--purple);
 }
-.hero-description {
-  font-size: 16px;
-  line-height: 1.8;
+.hero-install {
+  max-width: 860px;
+  margin: 26px auto 12px;
+}
+.install-command {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--lavender);
+  border-radius: 6px;
+  background: #eee9ff;
+}
+.install-command code {
+  flex: 1;
+  min-width: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  text-align: left;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.install-command button {
+  flex-shrink: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--purple);
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+}
+.install-command button:hover {
+  background: #4d2bc8;
+}
+#install-status {
+  min-height: 1.5em;
+  margin: 8px 0 0;
+  font-size: 12px;
   color: #6e6289;
-  margin: 26px 0 27px;
 }
 .button {
   display: inline-flex;
@@ -577,9 +613,6 @@ h2 {
     font-size: 9px;
     letter-spacing: 1.5px;
     margin-bottom: 28px;
-  }
-  .hero-description {
-    font-size: 14px;
   }
   .hero-bottom {
     font-size: 9px;

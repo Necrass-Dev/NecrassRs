@@ -14,6 +14,7 @@ const [schemaBefore, schemaAfter, resolverBefore, resolverAfter] = await Promise
   codeToHtml(evolvedResolver, { lang: "rust", theme: "vesper" }),
 ]);
 const repository = "https://github.com/Necrass-Dev/NecrassRs";
+const installCommand = "cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked";
 ---
 
 <!doctype html>
@@ -57,7 +58,13 @@ const repository = "https://github.com/Necrass-Dev/NecrassRs";
             <p class="eyebrow">NecrassRS</p>
           </div>
           <h1 id="hero-title">Your schema leads.<br /><span>Rust delivers.</span></h1>
-          <p class="hero-description">Start with the API you mean.<br />Let Rust carry it through.</p>
+          <div class="hero-install">
+            <div class="install-command">
+              <code id="install-command">{installCommand}</code>
+              <button id="copy-install" type="button" aria-label="Copy installation command" hidden>Copy</button>
+            </div>
+            <p id="install-status" role="status"></p>
+          </div>
           <a class="button" href="/docs/">Meet NecrassRs <span aria-hidden="true">↗</span></a>
         </div>
         <div class="hero-bottom">
@@ -74,5 +81,19 @@ const repository = "https://github.com/Necrass-Dev/NecrassRs";
       <p>Your schema leads. Rust delivers.</p>
       <a href={repository}>Open source on GitHub <span aria-hidden="true">↗</span></a>
     </footer>
+    <script>
+      const copyButton = document.querySelector<HTMLButtonElement>("#copy-install")!;
+      const command = document.querySelector<HTMLElement>("#install-command")!;
+      const status = document.querySelector<HTMLElement>("#install-status")!;
+      copyButton.hidden = false;
+      copyButton.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(command.textContent!);
+          status.textContent = "Copied to clipboard.";
+        } catch {
+          status.textContent = "Copy failed. Select the command and copy it manually.";
+        }
+      });
+    </script>
   </body>
 </html>
