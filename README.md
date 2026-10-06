@@ -29,6 +29,8 @@ cargo run
 
 The target directory must be new or empty. The starter uses Git dependencies for NecrassRs. After initialization, ordinary builds and runs only require Cargo; no separate generation command is needed.
 
+Run `necrass` without arguments in a terminal to choose the project directory, package name, and HTTP framework interactively. Explicit `init` commands do not prompt: Axum is the default, and `necrass init my-api --framework actix` selects Actix Web. Use `necrass --help` or `necrass init --help` for usage. Without a terminal, supply an explicit command.
+
 The starter's NecrassRs dependencies are not pinned to the CLI's revision. The first build resolves them from the Git repository's default branch and records the resolved revision in the project's `Cargo.lock`.
 
 Open [GraphiQL](http://127.0.0.1:3000/graphql) and run:
@@ -118,7 +120,7 @@ The starter configures `panic = "abort"` for development and release builds. Cal
 | `necrassrs` | GraphQL requests, execution, resolver errors, and responses |
 | `necrassrs-build` | SDL validation, Rust generation, and resolver source synchronization |
 | `necrassrs-axum` | Axum request extraction, response conversion, and GraphiQL |
-| `necrassrs-actix` | Actix Web request extraction, response conversion, and GraphiQL; CLI selection remains in development |
+| `necrassrs-actix` | Actix Web request extraction, response conversion, and GraphiQL |
 | `necrassrs-http` | Framework-independent response media-type negotiation shared by the Axum and Actix adapters |
 | `necrassrs-cli` | The `necrass init` project initializer |
 

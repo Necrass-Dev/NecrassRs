@@ -7,6 +7,39 @@ use std::{
 };
 
 #[test]
+fn help_version_and_invalid_invocations_do_not_create_files() {
+    let directory = TestDirectory::new();
+    for args in [vec!["--help"], vec!["init", "--help"], vec!["--version"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_necrass"))
+            .current_dir(&directory.0)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(!output.stdout.is_empty());
+    }
+    for args in [
+        vec![],
+        vec!["init", "new-project", "--framework", "unknown"],
+        vec!["init", "new-project", "--name", "bad name"],
+        vec!["init", "--unknown"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_necrass"))
+            .current_dir(&directory.0)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if args.is_empty() {
+            assert!(stderr.contains("requires a terminal"), "{stderr}");
+        }
+        assert!(!output.stderr.is_empty());
+    }
+    assert!(fs::read_dir(&directory.0).unwrap().next().is_none());
+}
+
+#[test]
 fn init_creates_project_at_explicit_path_and_name() {
     let directory = TestDirectory::new();
     let project = directory.0.join("my-api");
@@ -66,6 +99,7 @@ fn check_generated_consumer(framework: &str) {
     let init = Command::new(env!("CARGO_BIN_EXE_necrass"))
         .arg("init")
         .arg(&project)
+        .args(["--framework", framework])
         .output()
         .unwrap();
     assert!(
@@ -76,19 +110,10 @@ fn check_generated_consumer(framework: &str) {
 
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let manifest = project.join("Cargo.toml");
-    if framework == "actix" {
-        fs::write(
-            &manifest,
-            include_str!("../templates/actix/manifest.toml").replace("{{name}}", "consumer"),
-        )
-        .unwrap();
-        fs::write(
-            project.join("src/main.rs"),
-            include_str!("../templates/actix/main.rs"),
-        )
-        .unwrap();
-    }
     let mut source = fs::read_to_string(&manifest).unwrap();
+    let other_framework = if framework == "axum" { "actix" } else { "axum" };
+    assert!(!source.contains(&format!("necrassrs-{other_framework}")));
+    assert!(source.contains("panic = \"abort\""));
     let adapter = format!("necrassrs-{framework}");
     for package in ["necrassrs", adapter.as_str(), "necrassrs-build"] {
         let git = format!(

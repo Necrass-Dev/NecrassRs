@@ -161,7 +161,7 @@ necrassrs-build/src/
 └── codegen.rs   # Validated schema to Rust code
 ```
 
-The CLI creates a starter Cargo project, including SDL, a build script, generated-code inclusion, an Axum entry point, and an initial resolver implementation. Subsequent SDL-driven resolver synchronization is the build library's responsibility, triggered by Cargo. The CLI does not parse SDL or duplicate generation logic.
+The CLI creates a starter Cargo project, including SDL, a build script, generated-code inclusion, an Axum or Actix entry point, and an initial resolver implementation. Subsequent SDL-driven resolver synchronization is the build library's responsibility, triggered by Cargo. The CLI does not parse SDL or duplicate generation logic. Command parsing uses clap, and interactive prompts use dialoguer; both dependencies remain confined to the CLI crate.
 
 `necrassrs-http` now shares concrete `Accept` negotiation behavior needed by both adapters. It depends on MIME parsing, not on the runtime or either HTTP framework. Keep framework extraction and response construction in their adapters; do not expand this package into a generic server framework. Do not add a facade that only re-exports the runtime or a generic executor-backend trait without a concrete requirement.
 
@@ -252,7 +252,7 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 ### 7.1 Initial CLI scope
 
-The first `necrass init` scope, tracked in issue #9 under #1, creates a new, runnable consumer project based on the axum-server example. It supplies a Cargo manifest, build script, SDL, generated-code inclusion, an Axum entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration and additional framework choices are deferred.
+The first `necrass init` scope, tracked in issue #9 under #1, created a runnable Axum consumer project. Issue #39 adds clap-based parsing, interactive initialization, and Actix selection. Both starters supply a Cargo manifest, build script, SDL, generated-code inclusion, a server entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration remains deferred.
 
 The intended installation and initialization flow is shown below. These commands describe the planned product, not an available release:
 
@@ -265,11 +265,13 @@ cargo run
 
 For a local checkout, use `cargo install --path crates/necrassrs-cli --locked` from the repository root. The package is named `necrassrs-cli`; its installed executable is named `necrass`. It is a separately installed development tool, not a consumer `dev-dependency`. Adding a package to `[dev-dependencies]` does not install its executable as a shell command.
 
-The command is `necrass init [PATH] [--name NAME]`. `PATH` defaults to the current directory; a missing target directory is created, and an existing empty directory is accepted. The Cargo package name defaults to the target directory's final component, with `--name` as an override. Refuse nonempty targets, existing Cargo projects, and symbolic-link targets without modifying them. There is no overwrite mode. Existing applications follow manual integration instructions; merging into an existing `Cargo.toml` remains deferred.
+The command is `necrass init [PATH] [--name NAME] [--framework axum|actix]`. Explicit commands never prompt and default to Axum. `PATH` defaults to the current directory; a missing target directory is created, and an existing empty directory is accepted. The Cargo package name defaults to the target directory's final component, with `--name` as an override. Refuse nonempty targets, existing Cargo projects, and symbolic-link targets without modifying them. There is no overwrite mode. Existing applications follow manual integration instructions; merging into an existing `Cargo.toml` remains deferred.
+
+Running `necrass` without arguments starts interactive initialization when standard input and standard error are terminals. It asks for a project directory (default `my-api`), package name (default directory name), and HTTP framework (default Axum). Cancellation or input failure before the prompts complete writes no project files. Both input modes use the same name validation and project creation logic. Without a terminal, no-argument invocation prints help and fails immediately rather than waiting for input. clap handles help, version output, invalid commands, and invalid framework values before project creation.
 
 The CLI writes the starter files directly. Invoking `cargo init` inside another workspace can rewrite its parent `Cargo.toml`, so the initializer must not use it there. The generated manifest contains its own `[workspace]` section to keep the new project independent of a parent workspace.
 
-CLI templates live in `crates/necrassrs-cli/templates`. The `axum/` and `actix/` directories contain framework-specific manifests and server entry points. The `shared/` directory contains the README, build script, SDL, generated-code inclusion, and resolver implementation used by both starters. Both server templates use port 3000. The CLI currently selects the Axum templates; Actix selection and interactive initialization are separate follow-up work.
+CLI templates live in `crates/necrassrs-cli/templates`. The `axum/` and `actix/` directories contain framework-specific manifests and server entry points. The `shared/` directory contains the README, build script, SDL, generated-code inclusion, and resolver implementation used by both starters. Both server templates use port 3000, and each manifest includes only its selected framework's adapter and server dependencies.
 
 Generated starter source is ordinary application-owned source. The build library subsequently synchronizes SDL-owned resolver declarations while preserving retained business logic. The execution core remains independent of Axum. Existing projects can integrate `necrassrs`, `necrassrs-build`, and `necrassrs-axum` without using the CLI.
 
