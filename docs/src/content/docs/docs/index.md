@@ -114,7 +114,8 @@ Return `ResolverError` for ordinary application errors.
 
 ## Explore the documentation
 
-- [Generated types and inputs](/docs/types/): executable resolver examples, defaults, lists, OneOf, and recursion.
+- [Tutorial](/docs/tutorial/): build a web server and query it with GraphiQL or HTTP.
+- [Types](/docs/types/): Rust type mappings, input presence, defaults, OneOf, and recursion.
 - [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
 
 These pages follow the source checkout from which this site is built; they do not

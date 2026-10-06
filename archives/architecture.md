@@ -78,7 +78,7 @@ The injective mapping is also the identity rule for source synchronization. Comp
 
 Resolver traits live in `generated::resolvers`. Append the fixed suffix `Resolver` to the mapped object name without changing case: `User`, `user`, and `UserResolver` become `UserResolver`, `userResolver`, and `UserResolverResolver`. Allow `non_camel_case_types` and `non_snake_case` on these generated traits. Each trait has a generic Context parameter, and each field produces a method using the same identifier mapping.
 
-Methods borrow `self` and Context for the call lifetime, take the field's generated `Args` by value, and return `impl Future<Output = Result<T, necrassrs::ResolverError>> + Send` with that lifetime. Fields without arguments use an empty `Args` struct. Default methods return a future that calls `unimplemented!()` when polled, allowing partial trait implementations to compile. Generated contract types cover built-in scalars, enums, ordinary and OneOf input objects, lists, nullable wrappers, and recursive input boxing. Custom scalars and composite output types produce generation errors. Query dispatch converts built-in scalar, enum, and input-object arguments and results for built-in scalars and enums, including nullable and list forms. See [generated type examples](https://necrass.rs/docs/types/) for the public Rust signatures.
+Methods borrow `self` and Context for the call lifetime, take the field's generated `Args` by value, and return `impl Future<Output = Result<T, necrassrs::ResolverError>> + Send` with that lifetime. Fields without arguments use an empty `Args` struct. Default methods return a future that calls `unimplemented!()` when polled, allowing partial trait implementations to compile. Generated contract types cover built-in scalars, enums, ordinary and OneOf input objects, lists, nullable wrappers, and recursive input boxing. Custom scalars and composite output types produce generation errors. Query dispatch converts built-in scalar, enum, and input-object arguments and results for built-in scalars and enums, including nullable and list forms. See [the tutorial](https://necrass.rs/docs/tutorial/) for the public Rust signatures.
 
 Trait defaults are a low-level fallback, not the user-facing scaffolding workflow. The build integration must also create the concrete resolver struct and an explicit editable async method for every supported SDL field. Users replace the `unimplemented!()` body in that implementation; they do not have to copy trait signatures or write an empty trait implementation first. The generated implementation must satisfy the existing borrowing, Context, and `Send` contracts.
 
@@ -370,7 +370,7 @@ necrassrs/
 │   └── src/content/docs/docs/
 │       ├── index.md
 │       ├── graphiql.md
-│       └── types.md
+│       └── tutorial.md
 ├── archives/
 │   ├── architecture.md
 │   ├── integration.md

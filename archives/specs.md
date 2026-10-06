@@ -214,7 +214,7 @@ local maintained Apollo source. No protocol implementation changes are part of t
 
 The source checkout now generates and executes built-in scalar and enum query
 contracts, ordinary and OneOf inputs, nullable/list wrappers, and recursive input
-boxing. [The type guide](https://necrass.rs/docs/types/) contains schema, resolver, and executable
+boxing. [The tutorial](https://necrass.rs/docs/tutorial/) contains schema, resolver, and executable
 examples that are compiled and run by `documented_type_examples_compile_and_execute`.
 The following evidence covers #24's clauses against the immutable references
 recorded below; it does not establish complete GraphQL or Working Draft conformance.

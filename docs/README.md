@@ -43,7 +43,7 @@ support `.astro` templates; those are maintained manually and checked by
 - `src/pages/index.astro`: landing page, metadata, and build-time highlighting.
 - `src/components/Workflow.tsx`: Solid schema evolution scene.
 - `src/styles/landing.css`: responsive layout, color inversion, and motion.
-- `src/content/docs/docs/`: introduction, GraphiQL, and type guides for `/docs/` pages.
+- `src/content/docs/docs/`: introduction, tutorial, and Types/GraphiQL manual pages for `/docs/` pages.
 
 Design proposals, integration records, specification tracking, and experiments
 are stored independently in the repository-root `archives/` directory. They are

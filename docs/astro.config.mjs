@@ -18,8 +18,11 @@ export default defineConfig({
       ],
       customCss: ["./src/styles/docs.css"],
       sidebar: [
-        { label: "Start here", items: [{ label: "Introduction", slug: "docs" }] },
-        { label: "Server guides", items: ["docs/types", "docs/graphiql"] },
+        {
+          label: "Introduction",
+          items: [{ label: "Introduction", slug: "docs" }, "docs/tutorial"],
+        },
+        { label: "Manual", items: ["docs/types", "docs/graphiql"] },
       ],
     }),
   ],

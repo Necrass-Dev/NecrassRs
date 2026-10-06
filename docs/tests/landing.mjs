@@ -240,8 +240,8 @@ try {
 
   await page.goto(`${origin}/docs/`);
   assert.equal(await page.locator("h1").innerText(), "Introduction");
-  await page.goto(`${origin}/docs/types/`);
-  assert.equal(await page.locator("h1").innerText(), "Generated types and inputs");
+  await page.goto(`${origin}/docs/tutorial/`);
+  assert.equal(await page.locator("h1").innerText(), "Tutorial");
   await page.screenshot({ path: "test-results/docs.png" });
   const noJS = await browser.newPage({ javaScriptEnabled: false });
   await noJS.goto(origin);

@@ -1,131 +1,16 @@
 ---
-title: Generated types and inputs
-description: Built-in scalars, enums, input presence, lists, OneOf, and recursive inputs.
+title: Types
+description: GraphQL-to-Rust type mappings, input presence, defaults, OneOf, and recursive inputs.
 ---
 
-The source checkout supports built-in scalar and enum query results, including
-nullable and list forms, and ordinary and OneOf input objects. Custom scalars,
-composite results, and generated mutation/subscription routing remain unsupported.
-These examples describe this checkout; a previously resolved Git dependency must
-be updated before it contains these changes. Use the maintained Apollo source
-replacement configured in the repository's Cargo manifests.
+NecrassRs generates Rust argument and result types from your GraphQL SDL. This
+page describes those types and the values a resolver receives. For a complete
+web server example, follow the [Tutorial](/docs/tutorial/).
 
-## Define the schema
-
-Save this SDL under `schema/`, then run `cargo build`:
-
-```graphql
-enum Status {
-  OPEN
-  CLOSED
-}
-
-input Filter {
-  status: Status = OPEN
-  limit: Int
-  next: Filter
-  children: [Filter!]
-}
-
-input Locator @oneOf {
-  id: ID
-  name: String
-}
-
-type Query {
-  statuses(filter: Filter = {}): [Status!]!
-  label(locator: Locator!): String!
-}
-```
-
-Cargo creates the declarations in `src/resolvers.rs`. Replace their stub bodies
-with the following implementation. In an existing file, keep unrelated methods
-and application state.
-
-```rust
-use crate::generated::{resolvers::QueryResolver, types};
-use necrassrs::{GraphQLInput, ResolverError};
-
-pub struct Query;
-
-impl<C: Sync> QueryResolver<C> for Query {
-    async fn statuses(
-        &self,
-        _context: &C,
-        args: types::Query::statuses::Args,
-    ) -> Result<Vec<types::Status>, ResolverError> {
-        let GraphQLInput::Value(filter) = args.filter else {
-            return Ok(Vec::new());
-        };
-        match filter.status {
-            GraphQLInput::Value(status) => Ok(vec![status]),
-            GraphQLInput::Undefined | GraphQLInput::Null => Ok(Vec::new()),
-        }
-    }
-
-    async fn label(
-        &self,
-        _context: &C,
-        args: types::Query::label::Args,
-    ) -> Result<String, ResolverError> {
-        match args.locator {
-            types::Locator::id(id) => Ok(id.as_str().to_owned()),
-            types::Locator::name(name) => Ok(name),
-        }
-    }
-}
-```
-
-For a standalone executable, put the implementation above in `src/resolvers.rs`
-and use this `src/main.rs`. The build script calls `necrassrs_build::build("schema")`;
-the application depends on `necrassrs`, `serde_json`, and `futures`, with
-`necrassrs-build` as a build dependency. No HTTP server is needed for this example.
-
-```rust
-mod generated {
-    include!(concat!(env!("OUT_DIR"), "/necrassrs.rs"));
-}
-mod resolvers;
-
-fn main() {
-    let schema = necrassrs::Schema::parse_and_validate(generated::SDL, "schema.graphql")
-        .unwrap();
-    let dispatcher = generated::dispatch::SchemaDispatcher::new(resolvers::Query);
-    let request = necrassrs::Request::new(
-        "{ defaults: statuses nullFilter: statuses(filter: null) \
-           closed: statuses(filter: {status: CLOSED}) label(locator: {id: 42}) }",
-    );
-    let response = futures::executor::block_on(necrassrs::execute(
-        &schema, &request, &dispatcher, &(),
-    ));
-    let json = serde_json::to_value(response).unwrap();
-    assert_eq!(json, serde_json::json!({"data": {
-        "defaults": ["OPEN"], "nullFilter": [], "closed": ["CLOSED"], "label": "42"
-    }}));
-    println!("{json}");
-}
-```
-
-The test suite compiles and executes these schema/resolver/main examples together.
-
-## Input presence and defaults
-
-Nullable arguments and ordinary nullable input fields use
-`GraphQLInput<T> { Undefined, Null, Value(T) }` **after defaults and coercion**.
-It describes the value the resolver receives, not the original request spelling.
-
-| Input                                  | Resolver value                                          |
-| -------------------------------------- | ------------------------------------------------------- |
-| Omit `filter`                          | `Value(Filter { ... })`, from the argument default `{}` |
-| Omit `status` inside a supplied filter | `Value(Status::OPEN)`, from the field default           |
-| Supply `status: null`                  | `Null`; the default does not replace explicit null      |
-| Omit `limit`                           | `Undefined`, because it has no default                  |
-| Supply `limit: null`                   | `Null`                                                  |
-| Supply `limit: 5`                      | `Value(5)`                                              |
-
-A variable default applies when that variable is absent. An explicit null variable
-does not activate its default. An absent argument variable permits an applicable
-argument default. Unknown input fields are rejected before resolver dispatch.
+The generated API currently supports built-in scalar and enum results, ordinary
+and OneOf input objects, nullable and list forms, and recursive inputs. Custom
+scalars, composite results, and generated mutation/subscription routing remain
+unsupported.
 
 ## Rust mappings
 
@@ -148,6 +33,10 @@ argument default. Unknown input fields are rejected before resolver dispatch.
 | Result `[Int!]`       | `Option<Vec<i32>>`               |
 | Result `[Int!]!`      | `Vec<i32>`                       |
 
+`GraphQLInput` is available from `necrassrs`. Generated field argument structs
+live at `generated::types::<Object>::<field>::Args`; generated enums and input
+objects live under `generated::types`.
+
 List items have no undefined state. Input singleton coercion applies recursively:
 for `[[Int]]`, the input `3` becomes `[[3]]`. Enum literals are unquoted, as in
 `status: CLOSED`; JSON enum variables use strings, such as `{"status":"CLOSED"}`.
@@ -160,27 +49,59 @@ integers; a GraphQL floating-point literal remains a different literal kind.
 Non-finite Float results produce execution errors; nullable list items preserve
 valid siblings and report the failed item's index.
 
-## OneOf and recursion
+## GraphQLInput
 
-`Locator` is generated as an enum with `id(Id)` and `name(String)` variants. The
-selected payload has no `GraphQLInput` wrapper. Exactly one non-null entry is
-required: `{id: "001"}` is valid, while `{}`, `{id: null}`, and
-`{id: "001", name: "Sheri"}` are invalid. OneOf schema fields cannot be non-null
-or have defaults. A variable used directly as a member value must have a
-compatible non-null variable type.
+Nullable arguments and ordinary nullable input-object fields use the
+`necrassrs::GraphQLInput<T>` enum:
 
-In `Filter`, `next` uses `GraphQLInput<Box<Filter>>`; `children` uses
-`GraphQLInput<Vec<Filter>>`. Lists already provide indirection. The generator
+```rust
+pub enum GraphQLInput<T> {
+    Undefined,
+    Null,
+    Value(T),
+}
+```
+
+`Undefined` means the input was omitted and no applicable default supplied a
+value. `Null` means the caller explicitly supplied null. `Value(T)` contains a
+non-null value. This distinction lets resolvers treat an omitted input differently
+from an explicit null, which `Option<T>` alone cannot represent.
+
+These states describe the value **after defaults and coercion**, not the original
+request spelling. Nullable results use `Option<T>` because output values have no
+undefined state.
+
+### Input presence and defaults
+
+Using the `Filter` and `statuses` definitions from the tutorial:
+
+| Input                                  | Resolver value                                          |
+| -------------------------------------- | ------------------------------------------------------- |
+| Omit `filter`                          | `Value(Filter { ... })`, from the argument default `{}` |
+| Omit `status` inside a supplied filter | `Value(Status::OPEN)`, from the field default           |
+| Supply `status: null`                  | `Null`; the default does not replace explicit null      |
+| Omit `limit`                           | `Undefined`, because it has no default                  |
+| Supply `limit: null`                   | `Null`                                                  |
+| Supply `limit: 5`                      | `Value(5)`                                              |
+
+A variable default applies when that variable is absent. An explicit null variable
+does not activate its default. An absent argument variable permits an applicable
+argument default. Unknown input fields are rejected before resolver dispatch.
+
+## OneOf inputs
+
+The tutorial's `Locator` input is generated as an enum with `id(Id)` and
+`name(String)` variants. The selected payload has no `GraphQLInput` wrapper.
+Exactly one non-null entry is required: `{id: "001"}` is valid, while `{}`,
+`{id: null}`, and `{id: "001", name: "Sheri"}` are invalid. OneOf schema fields
+cannot be non-null or have defaults. A variable used directly as a member value
+must have a compatible non-null variable type.
+
+## Recursive inputs
+
+In the tutorial's `Filter`, `next` uses `GraphQLInput<Box<Filter>>`; `children`
+uses `GraphQLInput<Vec<Filter>>`. Lists already provide indirection. The generator
 boxes nullable singular edges within recursive components, including mutual
 recursion and OneOf payloads. Non-null and non-cyclic edges stay inline. Recursive
 OneOf payloads use `Box<T>`, without another presence wrapper. GraphQL schema and
 default-cycle validation are separate from this Rust layout analysis.
-
-## Changing SDL
-
-Rebuilding adds new method stubs and retains existing method bodies. Argument
-changes update generated `Args`; bodies that depend on removed or changed fields
-need manual edits. Retained methods keep their written return-type spelling, so
-changing an SDL return type may also require editing the Rust return signature.
-New enum-return methods use `crate::generated::types::<Enum>`. Deleting or renaming
-a field removes its old method and body.

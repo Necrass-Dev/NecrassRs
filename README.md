@@ -71,7 +71,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {
 
 Your application owns routing and request Context construction. At runtime, NecrassRs validates the request, dispatches selected fields to your resolvers, and builds the GraphQL response. Return `ResolverError` for ordinary application errors.
 
-See [Generated types and inputs](docs/src/content/docs/docs/types.md) for executable schema/resolver examples, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
+See [Tutorial](docs/src/content/docs/docs/tutorial.md) for executable schema/resolver examples, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
 
 ## Everyday development
 
