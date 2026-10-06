@@ -37,10 +37,9 @@ Run the CLI without arguments in a terminal:
 necrass
 ```
 
-It asks for a project directory, Cargo package name, and HTTP framework. The
-suggested directory is `my-api`, the package name defaults to the directory name,
-and Axum is the default framework. Select Actix to create an Actix Web server.
-Cancelling before the questions finish creates no project files.
+It asks for a project directory, Cargo package name, and Backend framework. The
+default directory is `my-api`, and the package name defaults to the directory name.
+Choose a supported backend framework. See [Integration](/docs/integration/) for the supported frameworks.
 
 For scripts or when you already know the settings, use an explicit command:
 
@@ -48,15 +47,10 @@ For scripts or when you already know the settings, use an explicit command:
 necrass init my-api
 ```
 
-This creates an Axum project without asking questions. To select Actix instead:
+This creates a project without asking questions. Use `--name <NAME>` to override
+the Cargo package name and `--framework <FRAMEWORK>` to select a backend framework.
 
-```sh
-necrass init my-api --framework actix
-```
-
-Choose one of these commands for a given directory. `--framework axum` selects
-Axum explicitly, and `--name custom-api` overrides the package name. Without a
-path, `necrass init` uses the current directory. Targets must be new or empty;
+Without a path, `necrass init` uses the current directory. Targets must be new or empty;
 existing projects, nonempty directories, and symbolic-link targets are rejected.
 
 Use `necrass --help` and `necrass init --help` for command usage. Without a terminal,
@@ -123,7 +117,7 @@ for the full ownership contract.
 ## Explore the documentation
 
 - [Generated types and inputs](/docs/types/): executable resolver examples, defaults, lists, OneOf, and recursion.
-- [HTTP adapters](/docs/http/): Axum and Actix request/response behavior.
+- [Integration](/docs/integration/): supported backend frameworks and request/response behavior.
 - [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
 - [Architecture](/docs/architecture/): crate responsibilities, source ownership, and planned work.
 - [Specification requirements](/docs/specs/): conformance targets and acceptance cases.
