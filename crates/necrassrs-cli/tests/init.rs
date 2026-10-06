@@ -7,6 +7,39 @@ use std::{
 };
 
 #[test]
+fn help_version_and_invalid_invocations_do_not_create_files() {
+    let directory = TestDirectory::new();
+    for args in [vec!["--help"], vec!["init", "--help"], vec!["--version"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_necrass"))
+            .current_dir(&directory.0)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(!output.stdout.is_empty());
+    }
+    for args in [
+        vec![],
+        vec!["init", "new-project", "--framework", "unknown"],
+        vec!["init", "new-project", "--name", "bad name"],
+        vec!["init", "--unknown"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_necrass"))
+            .current_dir(&directory.0)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if args.is_empty() {
+            assert!(stderr.contains("requires a terminal"), "{stderr}");
+        }
+        assert!(!output.stderr.is_empty());
+    }
+    assert!(fs::read_dir(&directory.0).unwrap().next().is_none());
+}
+
+#[test]
 fn init_creates_project_at_explicit_path_and_name() {
     let directory = TestDirectory::new();
     let project = directory.0.join("my-api");
@@ -55,11 +88,18 @@ fn init_creates_project_at_explicit_path_and_name() {
 
 #[test]
 fn generated_consumer_builds_and_rebuilds_without_the_cli() {
+    for framework in ["axum", "actix"] {
+        check_generated_consumer(framework);
+    }
+}
+
+fn check_generated_consumer(framework: &str) {
     let directory = TestDirectory::new();
     let project = directory.0.join("consumer");
     let init = Command::new(env!("CARGO_BIN_EXE_necrass"))
         .arg("init")
         .arg(&project)
+        .args(["--framework", framework])
         .output()
         .unwrap();
     assert!(
@@ -71,9 +111,16 @@ fn generated_consumer_builds_and_rebuilds_without_the_cli() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let manifest = project.join("Cargo.toml");
     let mut source = fs::read_to_string(&manifest).unwrap();
-    for package in ["necrassrs", "necrassrs-axum", "necrassrs-build"] {
+    let other_framework = if framework == "axum" { "actix" } else { "axum" };
+    assert!(!source.contains(&format!("necrassrs-{other_framework}")));
+    assert!(source.contains("panic = \"abort\""));
+    assert!(!source.contains("rev ="));
+    assert!(!source.contains("branch ="));
+    assert!(!source.contains("tag ="));
+    let adapter = format!("necrassrs-{framework}");
+    for package in ["necrassrs", adapter.as_str(), "necrassrs-build"] {
         let git = format!(
-            "{package} = {{ git = \"https://github.com/Necrass-Dev/NecrassRs.git\", rev = \"ffd953c8c56496677f62583f96794396b5f126c9\", version = \"0.1.0\" }}"
+            "{package} = {{ git = \"https://github.com/Necrass-Dev/NecrassRs.git\", version = \"0.1.0\" }}"
         );
         let path = workspace
             .join("crates")
@@ -91,10 +138,11 @@ fn generated_consumer_builds_and_rebuilds_without_the_cli() {
         .join("vendor/apollo-compiler")
         .canonicalize()
         .unwrap();
-    let patch = r#"apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", rev = "ffd953c8c56496677f62583f96794396b5f126c9", version = "1.33.0" }"#;
+    let patch = r#"apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", version = "1.33.0" }"#;
     assert!(source.contains(patch));
     source = source.replace(patch, &format!("apollo-compiler = {{ path = {apollo:?} }}"));
     fs::write(manifest, source).unwrap();
+    fs::copy(workspace.join("Cargo.lock"), project.join("Cargo.lock")).unwrap();
 
     let build = || {
         Command::new(env!("CARGO"))

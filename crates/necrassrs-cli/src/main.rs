@@ -1,12 +1,47 @@
 use std::{
-    ffi::{OsStr, OsString},
     fs, io,
-    io::Write,
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: necrass init [PATH] [--name NAME]";
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use dialoguer::{Input, Select};
+
+#[derive(Parser)]
+#[command(
+    name = "necrass",
+    version,
+    about = "Create a NecrassRs GraphQL project"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Create a project in a new or empty directory.
+    Init(InitArgs),
+}
+
+#[derive(clap::Args)]
+struct InitArgs {
+    /// Target directory (defaults to the current directory).
+    path: Option<PathBuf>,
+    /// Cargo package name (defaults to the directory name).
+    #[arg(long, value_parser = validate_name)]
+    name: Option<String>,
+    /// HTTP framework for the generated server.
+    #[arg(long, value_enum, default_value = "axum")]
+    framework: Framework,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Framework {
+    Axum,
+    Actix,
+}
 
 fn prepare_target(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
@@ -23,35 +58,42 @@ fn prepare_target(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn create_package(path: &Path, name: &str) -> io::Result<()> {
+fn create_package(path: &Path, name: &str, framework: Framework) -> io::Result<()> {
+    let (manifest, main) = match framework {
+        Framework::Axum => (
+            include_str!("../templates/axum/manifest.toml"),
+            include_str!("../templates/axum/main.rs"),
+        ),
+        Framework::Actix => (
+            include_str!("../templates/actix/manifest.toml"),
+            include_str!("../templates/actix/main.rs"),
+        ),
+    };
     prepare_target(path)?;
     fs::create_dir(path.join("src"))?;
     fs::create_dir(path.join("schema"))?;
     for (relative, contents) in [
-        (
-            "Cargo.toml",
-            include_str!("../templates/manifest.toml").replace("{{name}}", name),
-        ),
+        ("Cargo.toml", manifest.replace("{{name}}", name)),
         (
             "README.md",
-            include_str!("../templates/README.md").to_owned(),
+            include_str!("../templates/shared/README.md").to_owned(),
         ),
-        ("build.rs", include_str!("../templates/build.rs").to_owned()),
+        (
+            "build.rs",
+            include_str!("../templates/shared/build.rs").to_owned(),
+        ),
         (
             "schema/schema.graphql",
-            include_str!("../templates/schema.graphql").to_owned(),
+            include_str!("../templates/shared/schema.graphql").to_owned(),
         ),
-        (
-            "src/main.rs",
-            include_str!("../templates/main.rs").to_owned(),
-        ),
+        ("src/main.rs", main.to_owned()),
         (
             "src/generated.rs",
-            include_str!("../templates/generated.rs").to_owned(),
+            include_str!("../templates/shared/generated.rs").to_owned(),
         ),
         (
             "src/resolvers.rs",
-            include_str!("../templates/resolvers.rs").to_owned(),
+            include_str!("../templates/shared/resolvers.rs").to_owned(),
         ),
     ] {
         fs::OpenOptions::new()
@@ -63,41 +105,24 @@ fn create_package(path: &Path, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn parse_args(
-    mut args: impl Iterator<Item = OsString>,
+fn resolve_init(
+    init: InitArgs,
     current_dir: &Path,
-) -> Result<(PathBuf, String), String> {
-    if args.next().as_deref() != Some(OsStr::new("init")) {
-        return Err(USAGE.into());
-    }
-    let mut path = None;
-    let mut name = None;
-    while let Some(arg) = args.next() {
-        if arg == "--name" {
-            if name.is_some() {
-                return Err(USAGE.into());
-            }
-            name = Some(
-                args.next()
-                    .ok_or(USAGE)?
-                    .into_string()
-                    .map_err(|_| "Project name must be valid UTF-8.")?,
-            );
-        } else if arg.to_string_lossy().starts_with('-') || path.is_some() {
-            return Err(USAGE.into());
-        } else {
-            path = Some(PathBuf::from(arg));
-        }
-    }
-    let path = path.unwrap_or_else(|| current_dir.to_path_buf());
+) -> Result<(PathBuf, String, Framework), String> {
+    let path = init.path.unwrap_or_else(|| current_dir.to_path_buf());
     let path = if path == Path::new(".") {
         current_dir.to_path_buf()
     } else {
         path
     };
-    let name = name
+    let name = init
+        .name
         .or_else(|| path.file_name()?.to_str().map(str::to_owned))
         .ok_or("Could not derive a project name from the target directory.")?;
+    Ok((path, validate_name(&name)?, init.framework))
+}
+
+fn validate_name(name: &str) -> Result<String, String> {
     let mut characters = name.chars();
     if !characters
         .next()
@@ -108,13 +133,61 @@ fn parse_args(
     {
         return Err("Project name must start with a letter or underscore and contain only ASCII letters, digits, hyphens, or underscores.".into());
     }
-    Ok((path, name))
+    Ok(name.to_owned())
 }
 
-fn run() -> Result<(), String> {
+fn interactive_init(current_dir: &Path) -> Result<InitArgs, String> {
+    let path: String = Input::new()
+        .with_prompt("Project directory")
+        .default("my-api".into())
+        .interact_text()
+        .map_err(|error| error.to_string())?;
+    let path = PathBuf::from(path);
+    let name_path = if path == Path::new(".") {
+        current_dir
+    } else {
+        &path
+    };
+    let mut prompt = Input::<String>::new()
+        .with_prompt("Package name")
+        .validate_with(|value: &String| validate_name(value).map(|_| ()));
+    if let Some(name) = name_path.file_name().and_then(std::ffi::OsStr::to_str) {
+        prompt = prompt.default(name.to_owned());
+    }
+    let name = prompt.interact_text().map_err(|error| error.to_string())?;
+    let frameworks = Framework::value_variants();
+    let choices: Vec<_> = frameworks
+        .iter()
+        .map(|framework| framework.to_possible_value().unwrap().get_name().to_owned())
+        .collect();
+    let selected = Select::new()
+        .with_prompt("HTTP framework")
+        .items(&choices)
+        .default(0)
+        .interact_opt()
+        .map_err(|error| error.to_string())?
+        .ok_or("Initialization cancelled.")?;
+    Ok(InitArgs {
+        path: Some(path),
+        name: Some(name),
+        framework: frameworks[selected],
+    })
+}
+
+fn run(cli: Cli) -> Result<(), String> {
+    if cli.command.is_none() && !(io::stdin().is_terminal() && io::stderr().is_terminal()) {
+        Cli::command()
+            .print_help()
+            .map_err(|error| error.to_string())?;
+        return Err("Interactive initialization requires a terminal. Use necrass init [PATH] [--name NAME] [--framework axum|actix].".into());
+    }
     let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
-    let (path, name) = parse_args(std::env::args_os().skip(1), &current_dir)?;
-    create_package(&path, &name).map_err(|error| {
+    let init = match cli.command {
+        Some(Commands::Init(init)) => init,
+        None => interactive_init(&current_dir)?,
+    };
+    let (path, name, framework) = resolve_init(init, &current_dir)?;
+    create_package(&path, &name, framework).map_err(|error| {
         format!(
             "Could not initialize project at {}: {error}",
             path.display()
@@ -123,7 +196,7 @@ fn run() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -154,23 +227,256 @@ mod tests {
                 "custom",
             ),
         ] {
-            let parsed = parse_args(args.into_iter().map(OsString::from), cwd).unwrap();
-            assert_eq!(parsed, (path, name.to_owned()));
+            let cli = Cli::try_parse_from(std::iter::once("necrass").chain(args)).unwrap();
+            let Some(Commands::Init(init)) = cli.command else {
+                panic!("expected init")
+            };
+            assert_eq!(
+                resolve_init(init, cwd).unwrap(),
+                (path, name.to_owned(), Framework::Axum)
+            );
         }
     }
 
     #[test]
     fn rejects_invalid_invocations() {
         for args in [
-            vec![],
             vec!["unknown"],
             vec!["init", "--name"],
             vec!["init", "first", "second"],
             vec!["init", "--name", "one", "--name", "two"],
             vec!["init", "--name", "bad name"],
+            vec!["init", "--framework", "unknown"],
+            vec!["init", "--unknown"],
         ] {
-            assert!(parse_args(args.into_iter().map(OsString::from), Path::new("/tmp")).is_err());
+            assert!(Cli::try_parse_from(std::iter::once("necrass").chain(args)).is_err());
         }
+    }
+
+    #[test]
+    fn validates_package_name_boundaries() {
+        for name in ["a", "_", "API_2", "my-api", "my_api"] {
+            assert_eq!(validate_name(name).unwrap(), name);
+        }
+        for name in ["", "2-api", "-api", "bad.name", "bad name", "한글", "api\n"] {
+            assert!(validate_name(name).is_err(), "accepted {name:?}");
+        }
+    }
+
+    #[test]
+    fn requires_a_valid_derived_name_unless_overridden() {
+        let cwd = Path::new("/tmp/current-project");
+        for path in [Path::new("/"), Path::new("bad name")] {
+            let init = || InitArgs {
+                path: Some(path.to_owned()),
+                name: None,
+                framework: Framework::Actix,
+            };
+            assert!(resolve_init(init(), cwd).is_err());
+            assert_eq!(
+                resolve_init(
+                    InitArgs {
+                        name: Some("valid-api".into()),
+                        ..init()
+                    },
+                    cwd
+                )
+                .unwrap(),
+                (path.to_owned(), "valid-api".into(), Framework::Actix)
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_directory_requires_an_explicit_package_name() {
+        use std::os::unix::ffi::OsStringExt;
+        let path = PathBuf::from(std::ffi::OsString::from_vec(b"api-\xff".to_vec()));
+        let init = |name| InitArgs {
+            path: Some(path.clone()),
+            name,
+            framework: Framework::Axum,
+        };
+        assert!(resolve_init(init(None), Path::new(".")).is_err());
+        assert_eq!(
+            resolve_init(init(Some("my-api".into())), Path::new(".")).unwrap(),
+            (path, "my-api".into(), Framework::Axum)
+        );
+    }
+
+    #[test]
+    fn runs_explicit_initialization_for_each_framework_and_preserves_existing_files() {
+        use std::ffi::OsStr;
+        let directory = TestDirectory::new();
+        for framework in ["axum", "actix"] {
+            let project = directory.0.join(framework);
+            let cli = || {
+                Cli::try_parse_from([
+                    OsStr::new("necrass"),
+                    OsStr::new("init"),
+                    project.as_os_str(),
+                    OsStr::new("--name"),
+                    OsStr::new("custom-api"),
+                    OsStr::new("--framework"),
+                    OsStr::new(framework),
+                ])
+                .unwrap()
+            };
+            run(cli()).unwrap();
+            let manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+            assert!(manifest.contains("name = \"custom-api\""));
+            assert!(manifest.contains(&format!("necrassrs-{framework}")));
+            let other = if framework == "axum" { "actix" } else { "axum" };
+            assert!(!manifest.contains(&format!("necrassrs-{other}")));
+            let main = fs::read_to_string(project.join("src/main.rs")).unwrap();
+            let import = if framework == "axum" {
+                "axum::"
+            } else {
+                "actix_web::"
+            };
+            assert!(main.contains(import));
+            fs::write(project.join("src/resolvers.rs"), "user implementation").unwrap();
+            let error = run(cli()).unwrap_err();
+            assert!(error.contains("Could not initialize project at"), "{error}");
+            assert!(
+                error.contains("target is not an empty directory"),
+                "{error}"
+            );
+            assert_eq!(
+                fs::read_to_string(project.join("Cargo.toml")).unwrap(),
+                manifest
+            );
+            assert_eq!(
+                fs::read_to_string(project.join("src/resolvers.rs")).unwrap(),
+                "user implementation"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_initialization_handles_defaults_selection_validation_and_cancellation() {
+        use std::os::unix::process::CommandExt;
+        const CHILD: &str = "NECRASSRS_CLI_WIZARD_TEST";
+        if let Ok(expected_error) = std::env::var(CHILD) {
+            let result = run(Cli { command: None });
+            if expected_error.is_empty() {
+                result.unwrap();
+            } else {
+                assert_eq!(result.unwrap_err(), expected_error);
+            }
+            return;
+        }
+        for (input, path, name, framework) in [
+            (&b"\r\r\r"[..], "my-api", Some("my-api"), "axum"),
+            (&b".\r\r\x1b[B\r"[..], ".", None, "actix"),
+            (
+                &b"nested/api\rwrong name\rvalid-api\r\x1b[B\r"[..],
+                "nested/api",
+                Some("valid-api"),
+                "actix",
+            ),
+            (&b"\r\r\x1b"[..], "", None, ""),
+        ] {
+            let directory = TestDirectory::new();
+            let (mut keyboard, terminal) = test_terminal();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "tests::interactive_initialization_handles_defaults_selection_validation_and_cancellation"])
+                .env(CHILD, if path.is_empty() { "Initialization cancelled." } else { "" })
+                .env("TERM", "xterm")
+                .current_dir(&directory.0)
+                .stdin(terminal.try_clone().unwrap())
+                .stderr(terminal)
+                .stdout(std::process::Stdio::piped());
+            // SAFETY: only async-signal-safe system calls run between fork and exec.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut child = command.spawn().unwrap();
+            keyboard.write_all(input).unwrap();
+            let started = std::time::Instant::now();
+            let mut transcript = Vec::new();
+            while child.try_wait().unwrap().is_none() {
+                let mut buffer = [0; 1024];
+                if let Ok(count) = std::io::Read::read(&mut keyboard, &mut buffer) {
+                    transcript.extend_from_slice(&buffer[..count]);
+                }
+                if started.elapsed() > std::time::Duration::from_secs(10) {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    let output = child.wait_with_output().unwrap();
+                    panic!(
+                        "interactive initialization timed out for {input:?}: {}; {}",
+                        String::from_utf8_lossy(&transcript),
+                        String::from_utf8_lossy(&output.stdout)
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            if path.is_empty() {
+                assert!(fs::read_dir(&directory.0).unwrap().next().is_none());
+                continue;
+            }
+            let manifest = fs::read_to_string(directory.0.join(path).join("Cargo.toml")).unwrap();
+            let name = name.unwrap_or_else(|| directory.0.file_name().unwrap().to_str().unwrap());
+            assert!(manifest.contains(&format!("name = \"{name}\"")));
+            assert!(manifest.contains(&format!("necrassrs-{framework}")));
+            assert!(directory.0.join(path).join("src/resolvers.rs").is_file());
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_terminal() -> (fs::File, fs::File) {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let (mut master, mut slave) = (-1, -1);
+        let mut size = libc::winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: openpty receives valid output pointers and an initialized window size.
+        let result = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut size,
+            )
+        };
+        assert_eq!(result, 0, "{}", io::Error::last_os_error());
+        // SAFETY: successful openpty transfers ownership of two distinct file descriptors.
+        let (master, slave) =
+            unsafe { (fs::File::from_raw_fd(master), fs::File::from_raw_fd(slave)) };
+        let mut settings = std::mem::MaybeUninit::uninit();
+        // SAFETY: tcgetattr initializes settings before it is read or passed to tcsetattr.
+        unsafe {
+            assert_eq!(libc::tcgetattr(slave.as_raw_fd(), settings.as_mut_ptr()), 0);
+            let mut settings = settings.assume_init();
+            libc::cfmakeraw(&mut settings);
+            assert_eq!(
+                libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &settings),
+                0
+            );
+            assert_eq!(
+                libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK),
+                0
+            );
+        }
+        (master, slave)
     }
 
     #[test]
@@ -221,7 +527,7 @@ mod tests {
         fs::write(&parent_manifest, original).unwrap();
 
         let child = directory.0.join("child");
-        create_package(&child, "child").unwrap();
+        create_package(&child, "child", Framework::Axum).unwrap();
 
         assert_eq!(fs::read_to_string(parent_manifest).unwrap(), original);
         assert!(

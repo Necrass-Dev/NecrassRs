@@ -149,10 +149,15 @@ It also rejects invalid explicitly supplied values on each path. The TDD Red
 checkpoint is commit `57308d8`; the local fix preserves validated scalar literals
 instead of applying JSON variable numeric restrictions to them.
 
-The CLI source pins now select the numeric fix. The recorded remote checks above
-remain historical evidence for the original patch; repeat them after publishing
-the new pinned commit. Local CLI checks validate the updated manifest and build
-against the corrected maintained source.
+At the numeric-fix checkpoint, CLI templates pinned the corrected source. The
+recorded remote checks above remain historical evidence for those pinned revisions.
+
+Current CLI templates use the repository default branch for NecrassRs dependencies
+and the Apollo patch. The generated consumer's first build records the resolved
+revisions in its lockfile. Local CLI checks validate both framework templates
+against the maintained checkout; they do not establish the behavior of a future
+remote revision. See [getting started](/docs/#create-a-project) for the current
+installation and dependency policy.
 
 ## Upstream PR scope
 
