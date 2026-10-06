@@ -197,7 +197,7 @@ The complete workflow is:
 ```text
 cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked
   → Install the necrass executable
-  → necrass init [PATH] [--name NAME]
+  → necrass init [PATH] [--name NAME] [--framework axum|actix]
   → Create a new consumer project without overwriting existing content
 
 Edit SDL
@@ -254,14 +254,7 @@ Avoiding per-field spawning does not mean serializing all fields. Define within-
 
 The first `necrass init` scope, tracked in issue #9 under #1, created a runnable Axum consumer project. Issue #39 adds clap-based parsing, interactive initialization, and Actix selection. Both starters supply a Cargo manifest, build script, SDL, generated-code inclusion, a server entry point, an initial resolver implementation, and short usage instructions. Cargo invokes the build library on later builds to generate contracts and synchronize resolver declarations. Existing-project integration remains deferred.
 
-The intended installation and initialization flow is shown below. These commands describe the planned product, not an available release:
-
-```sh
-cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked
-necrass init my-api
-cd my-api
-cargo run
-```
+The [getting-started guide](/docs/#install-the-cli) covers CLI installation, interactive and explicit initialization, server startup, and the first request. These flows are implemented in this checkout; the Git installation command uses the repository default branch.
 
 For a local checkout, use `cargo install --path crates/necrassrs-cli --locked` from the repository root. The package is named `necrassrs-cli`; its installed executable is named `necrass`. It is a separately installed development tool, not a consumer `dev-dependency`. Adding a package to `[dev-dependencies]` does not install its executable as a shell command.
 

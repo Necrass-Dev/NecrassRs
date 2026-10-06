@@ -30,7 +30,7 @@ Without this middleware, `GraphQLResponse` preserves the existing `application/j
 
 Use `web::Data` for application state and construct Context inside the handler. Configure JSON limits with `web::JsonConfig::limit`. Standard JSON extraction errors are mapped to the status codes below; custom JSON error handlers returning other error types retain their own responses.
 
-The [Actix consumer example](https://github.com/Necrass-Dev/NecrassRs/blob/main/examples/actix-server/README.md) connects Cargo generation and user resolvers to an application-owned server. CLI framework selection remains follow-up work.
+The [Actix consumer example](https://github.com/Necrass-Dev/NecrassRs/blob/main/examples/actix-server/README.md) connects Cargo generation and user resolvers to an application-owned server. Create the same server setup with `necrass init my-api --framework actix`; see the [getting-started guide](/docs/#create-a-project).
 
 ## Media types
 

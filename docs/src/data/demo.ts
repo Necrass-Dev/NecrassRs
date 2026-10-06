@@ -1,5 +1,5 @@
-import schema from "../../../crates/necrassrs-cli/templates/schema.graphql?raw";
-import resolver from "../../../crates/necrassrs-cli/templates/resolvers.rs?raw";
+import schema from "../../../crates/necrassrs-cli/templates/shared/schema.graphql?raw";
+import resolver from "../../../crates/necrassrs-cli/templates/shared/resolvers.rs?raw";
 
 export const initialSchema = schema.trim();
 export const initialResolver = resolver.trim();

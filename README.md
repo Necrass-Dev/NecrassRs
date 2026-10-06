@@ -33,28 +33,10 @@ Run `necrass` without arguments in a terminal to choose the project directory, p
 
 The starter's NecrassRs dependencies are not pinned to the CLI's revision. The first build resolves them from the Git repository's default branch and records the resolved revision in the project's `Cargo.lock`.
 
-Open [GraphiQL](http://127.0.0.1:3000/graphql) and run:
+Open [GraphiQL](http://127.0.0.1:3000/graphql) and run `{ hello(name: "Sheri") }`.
+The response is `{"data":{"hello":"Hello, Sheri"}}`.
 
-```graphql
-{
-  hello(name: "Sheri")
-}
-```
-
-```json
-{"data":{"hello":"Hello, Sheri"}}
-```
-
-You can also send the request from another terminal:
-
-```sh
-curl -sS http://127.0.0.1:3000/graphql \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/graphql-response+json' \
-  --data '{"query":"{ hello(name: \"Sheri\") }"}'
-```
-
-The starter serves GraphiQL on GET `/graphql` and accepts GraphQL requests on POST `/graphql`. GraphiQL loads browser assets from `esm.sh` and requires network access. See [Introspection and GraphiQL](docs/src/content/docs/docs/graphiql.md) for deployment settings.
+Follow the [installation and first-request guide](https://necrass.rs/docs/#install-the-cli) for prerequisites, interactive setup, Axum/Actix selection, and curl examples. See [Introspection and GraphiQL](docs/src/content/docs/docs/graphiql.md) for deployment settings.
 
 ## From schema to resolver
 
