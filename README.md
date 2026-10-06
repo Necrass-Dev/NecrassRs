@@ -36,7 +36,7 @@ The starter's NecrassRs dependencies are not pinned to the CLI's revision. The f
 Open [GraphiQL](http://127.0.0.1:3000/graphql) and run `{ hello(name: "Sheri") }`.
 The response is `{"data":{"hello":"Hello, Sheri"}}`.
 
-Follow the [installation and first-request guide](https://necrass.rs/docs/#install-the-cli) for prerequisites, interactive setup, Axum/Actix selection, and curl examples. See [Introspection and GraphiQL](docs/src/content/docs/docs/graphiql.md) for deployment settings.
+Follow the [installation and first-request guide](https://necrass.rs/docs/installation/#install-the-cli) for prerequisites, interactive setup, framework selection, and curl examples. See [Introspection and GraphiQL](docs/src/content/docs/docs/graphiql.md) for deployment settings.
 
 ## From schema to resolver
 
@@ -71,7 +71,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {
 
 Your application owns routing and request Context construction. At runtime, NecrassRs validates the request, dispatches selected fields to your resolvers, and builds the GraphQL response. Return `ResolverError` for ordinary application errors.
 
-See [Tutorial](docs/src/content/docs/docs/tutorial.md) for executable schema/resolver examples, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
+Follow the [Tutorial](docs/src/content/docs/docs/tutorial.md) to define a schema, implement resolvers, and query a running web server. See [Types](docs/src/content/docs/docs/types.md) for Rust type mappings, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
 
 ## Everyday development
 
