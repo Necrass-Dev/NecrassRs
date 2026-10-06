@@ -454,7 +454,7 @@ mod tests {
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut size,
+                &raw mut size,
             )
         };
         assert_eq!(result, 0, "{}", io::Error::last_os_error());
