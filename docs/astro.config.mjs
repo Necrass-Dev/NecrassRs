@@ -20,10 +20,12 @@ export default defineConfig({
       sidebar: [
         {
           label: "Introduction",
-          items: [{
-            label: "What is NecrassRs?",
-            slug: "docs"
-          }]
+          items: [
+            {
+              label: "What is NecrassRs?",
+              slug: "docs",
+            },
+          ],
         },
         {
           label: "Guide",

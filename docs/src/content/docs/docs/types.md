@@ -69,11 +69,11 @@ pub enum GraphQLInput<T> {
 
 For a nullable input field `nickname: String` with no default:
 
-| GraphQL input literal | Meaning | Rust value |
-| --------------------- | ------- | ---------- |
-| `{}` | The caller did not supply `nickname`. | `GraphQLInput::Undefined` |
-| `{ nickname: null }` | The caller explicitly supplied a null value. | `GraphQLInput::Null` |
-| `{ nickname: "Tachibana Sheri" }` | The caller supplied a non-null string. | `GraphQLInput::Value(String::from("Tachibana Sheri"))` |
+| GraphQL input literal             | Meaning                                      | Rust value                                             |
+| --------------------------------- | -------------------------------------------- | ------------------------------------------------------ |
+| `{}`                              | The caller did not supply `nickname`.        | `GraphQLInput::Undefined`                              |
+| `{ nickname: null }`              | The caller explicitly supplied a null value. | `GraphQLInput::Null`                                   |
+| `{ nickname: "Tachibana Sheri" }` | The caller supplied a non-null string.       | `GraphQLInput::Value(String::from("Tachibana Sheri"))` |
 
 GraphQL has no `undefined` input literal. `Undefined` represents absence: an
 argument or input-object field is missing, or a variable has no entry in the JSON
