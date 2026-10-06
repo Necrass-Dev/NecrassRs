@@ -51,6 +51,11 @@ valid siblings and report the failed item's index.
 
 ## GraphQLInput
 
+GraphQL distinguishes an input that was not supplied from an input explicitly
+set to `null`. "No value" is therefore ambiguous: the caller may have omitted
+the input entirely, or supplied `null` as its value. A supplied non-null value
+is a third state. Resolvers need to preserve all three meanings.
+
 Nullable arguments and ordinary nullable input-object fields use the
 `necrassrs::GraphQLInput<T>` enum:
 
@@ -62,13 +67,38 @@ pub enum GraphQLInput<T> {
 }
 ```
 
-`Undefined` means the input was omitted and no applicable default supplied a
-value. `Null` means the caller explicitly supplied null. `Value(T)` contains a
-non-null value. This distinction lets resolvers treat an omitted input differently
-from an explicit null, which `Option<T>` alone cannot represent.
+For a nullable input field `nickname: String` with no default:
+
+| GraphQL input literal | Meaning | Rust value |
+| --------------------- | ------- | ---------- |
+| `{}` | The caller did not supply `nickname`. | `GraphQLInput::Undefined` |
+| `{ nickname: null }` | The caller explicitly supplied a null value. | `GraphQLInput::Null` |
+| `{ nickname: "Tachibana Sheri" }` | The caller supplied a non-null string. | `GraphQLInput::Value(String::from("Tachibana Sheri"))` |
+
+GraphQL has no `undefined` input literal. `Undefined` represents absence: an
+argument or input-object field is missing, or a variable has no entry in the JSON
+variables object, with no applicable default supplying a value. A JSON entry
+whose value is `null` is present and explicitly null.
+
+An empty string, an empty list, zero, and `false` are supplied values, not omitted
+inputs or nulls. When valid for the declared type, they become `Value(T)` just
+like any other non-null value.
+
+This matters when an application interprets an optional field as an update.
+A resolver can treat `Undefined` as "leave the existing nickname unchanged",
+`Null` as "clear the nickname", and `Value(name)` as "set the nickname to name".
+These are application decisions; NecrassRs preserves the distinction so your
+resolver can make them.
+
+`Option<T>` only has `None` and `Some(T)`. Mapping both omission and explicit null
+to `None` would lose the caller's intent. `GraphQLInput<T>` adds the separate
+`Undefined` state while keeping `Null` and the supplied `T` in `Value(T)` distinct.
 
 These states describe the value **after defaults and coercion**, not the original
-request spelling. Nullable results use `Option<T>` because output values have no
+request spelling. Omission can become `Value(T)` when a default supplies a value,
+or `Null` when that default is null. Explicit null does not activate a default.
+Non-null inputs reject null, and omission is an error when no applicable default
+supplies a value. Nullable results use `Option<T>` because output values have no
 undefined state.
 
 ### Input presence and defaults

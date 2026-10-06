@@ -71,6 +71,12 @@ try {
   assert.equal(await page.locator(".closing").count(), 0);
   assert.equal(await page.locator(".phase-indicators button").count(), 3);
   await page.screenshot({ path: "test-results/hero.png" });
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByRole("button", { name: "Copy installation command" }).click();
+  assert.equal(
+    await page.evaluate(() => navigator.clipboard.readText()),
+    "cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked",
+  );
   const expectPhase = async (phase) => {
     await page.waitForFunction(
       (expected) => document.querySelector(".story").dataset.phase === expected,
