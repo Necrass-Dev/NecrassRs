@@ -151,7 +151,7 @@ fn interactive_init(current_dir: &Path) -> Result<InitArgs, String> {
     let mut prompt = Input::<String>::new()
         .with_prompt("Package name")
         .validate_with(|value: &String| validate_name(value).map(|_| ()));
-    if let Some(name) = name_path.file_name().and_then(|name| name.to_str()) {
+    if let Some(name) = name_path.file_name().and_then(std::ffi::OsStr::to_str) {
         prompt = prompt.default(name.to_owned());
     }
     let name = prompt.interact_text().map_err(|error| error.to_string())?;
