@@ -21,7 +21,6 @@ unsupported.
 | `String!`             | `String`                         |
 | `Boolean!`            | `bool`                           |
 | `ID!`                 | `necrassrs::Id`                  |
-| `Status!`             | `generated::types::Status`       |
 | Nullable input `Int`  | `GraphQLInput<i32>`              |
 | Nullable result `Int` | `Option<i32>`                    |
 | Input `[Int]`         | `GraphQLInput<Vec<Option<i32>>>` |
