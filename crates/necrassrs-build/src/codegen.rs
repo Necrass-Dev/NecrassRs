@@ -25,9 +25,9 @@ use quote::{format_ident, quote};
 ///
 /// Returns [`CodegenError`] for unsupported types or mutation and subscription
 /// roots. Generated contracts support built-in scalars, enums, ordinary input
-/// objects, lists, nullable wrappers, and owned non-null Object results, including
-/// non-null lists, with leaf fields. Custom scalars, nullable, borrowed, or recursive
-/// Objects, and abstract output types are not yet supported.
+/// objects, lists, nullable wrappers, and owned Object results with nullable/list
+/// wrappers and leaf fields. Custom scalars, borrowed or recursive Objects, and
+/// abstract output types are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
@@ -543,7 +543,6 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
     })
 }
 
-// ponytail: Add nullable Object wrappers with their acceptance test.
 fn object_output_shape(schema: &Schema, ty: &Type) -> Option<TokenStream> {
     match ty {
         Type::NonNullNamed(name)
@@ -555,6 +554,14 @@ fn object_output_shape(schema: &Schema, ty: &Type) -> Option<TokenStream> {
         Type::NonNullList(item) => {
             let item = object_output_shape(schema, item)?;
             Some(quote! { ObjectListShape<#item> })
+        }
+        Type::Named(name) if matches!(schema.types.get(name), Some(ExtendedType::Object(_))) => {
+            let shape = format_ident!("{}ObjectShape", rust_name(name.as_str()));
+            Some(quote! { ObjectNullableShape<#shape> })
+        }
+        Type::List(item) => {
+            let item = object_output_shape(schema, item)?;
+            Some(quote! { ObjectNullableShape<ObjectListShape<#item>> })
         }
         _ => None,
     }
@@ -871,6 +878,9 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             #[allow(dead_code)]
             struct ObjectListShape<S>(::core::marker::PhantomData<S>);
 
+            #[allow(dead_code)]
+            struct ObjectNullableShape<S>(::core::marker::PhantomData<S>);
+
             impl<C, S, T> IntoResolvedObject<C, ObjectListShape<S>> for ::std::vec::Vec<T>
             where
                 T: IntoResolvedObject<C, S>,
@@ -881,6 +891,19 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                             .map(IntoResolvedObject::<C, S>::into_resolved_object)
                             .collect()
                     )
+                }
+            }
+
+            impl<C, S, T> IntoResolvedObject<C, ObjectNullableShape<S>>
+                for ::core::option::Option<T>
+            where
+                T: IntoResolvedObject<C, S>,
+            {
+                fn into_resolved_object(self) -> ::necrassrs::ResolvedValue<C> {
+                    match self {
+                        Some(value) => IntoResolvedObject::<C, S>::into_resolved_object(value),
+                        None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
+                    }
                 }
             }
 
@@ -1956,6 +1979,132 @@ mod test {
                                 { "greeting": "Hello, Sheri!" },
                                 { "greeting": "Hello, Riri!" },
                             ],
+                        },
+                    }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_preserves_nullable_object_containers_and_items() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query {
+                    present: User
+                    missing: User
+                    users: [User]
+                    missingUsers: [User]
+                }
+                type User { name: String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("nullable Object generation must succeed");
+        let consumer = r#"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User { name: String }
+
+            impl<C: Sync> Resolver<fields::Query::present, C> for Query {
+                type Output = Option<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::present as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(User { name: String::from("Sheri") }))
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::Query::missing, C> for Query {
+                type Output = Option<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::missing as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(None)
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::Query::users, C> for Query {
+                type Output = Option<Vec<Option<User>>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::users as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(vec![
+                        Some(User { name: String::from("Sheri") }),
+                        None,
+                        Some(User { name: String::from("Riri") }),
+                    ]))
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::Query::missingUsers, C> for Query {
+                type Output = Option<Vec<Option<User>>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::missingUsers as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(None)
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::User::name, C> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.name.clone())
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let request = necrassrs::Request::new(
+                    "{ present { name } missing { name } users { name } missingUsers { name } }",
+                );
+                let future = necrassrs::execute(
+                    &schema,
+                    &request,
+                    &dispatcher,
+                    &(),
+                );
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": {
+                            "present": { "name": "Sheri" },
+                            "missing": null,
+                            "users": [
+                                { "name": "Sheri" },
+                                null,
+                                { "name": "Riri" },
+                            ],
+                            "missingUsers": null,
                         },
                     }),
                 );

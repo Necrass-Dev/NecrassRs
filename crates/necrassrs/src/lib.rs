@@ -22,12 +22,11 @@
 //!
 //! Generated query contracts support built-in scalar and enum results, ordinary
 //! and OneOf input objects, nullable/list forms, recursive input boxing, and owned
-//! non-null Object results, including non-null lists, with leaf fields. The runtime
-//! preserves Object parents, list-item conversion errors, and nullability during
-//! completion. Custom scalar conversion, nullable, borrowed, or recursive Object
-//! results, abstract results, and generated mutation/subscription routing remain
-//! unsupported. Runtime subscriptions are rejected. Schema introspection is enabled
-//! by default; use
+//! Object results with nullable/list wrappers and leaf fields. The runtime preserves
+//! Object parents, list-item conversion errors, and nullability during completion.
+//! Custom scalar conversion, borrowed or recursive Object results, abstract results,
+//! and generated mutation/subscription routing remain unsupported. Runtime
+//! subscriptions are rejected. Schema introspection is enabled by default; use
 //! [`execute_with_options`] to disable it independently of any UI.
 
 use apollo_compiler::response::ExecutionResponse;
