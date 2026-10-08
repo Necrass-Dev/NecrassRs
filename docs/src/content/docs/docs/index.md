@@ -14,14 +14,17 @@ endpoint, and supplies the Context that resolvers need for each request.
 
 ## Why NecrassRs?
 
-A GraphQL schema and its server implementation describe the same API from two
-perspectives. Maintaining their declarations by hand creates repetitive work
-whenever a field, argument, or type changes.
+GraphQL is most useful when frontend and backend developers can read the same
+public API contract: what data is available, how it is shaped, and which
+constraints apply. When that contract is inferred from Rust code, its source is
+tied to the host language instead of being expressed in GraphQL's own schema
+language.
 
-NecrassRs makes SDL the source of those declarations. Edit the schema and build
-with Cargo to generate the Rust contracts and synchronize the resolver methods.
-This keeps schema changes connected to the code you implement, while letting you
-work with ordinary Rust methods and your application's existing server setup.
+NecrassRs makes GraphQL SDL the source of truth. Cargo builds turn that
+language-independent contract into Rust types, resolver contracts, and dispatch
+code. This reduces repetitive declarations and catches mismatches between the
+schema and its Rust implementation at compile time, while leaving application
+developers to write the business logic in ordinary Rust methods.
 
 ## Key features
 
@@ -53,11 +56,13 @@ Git dependency.
 
 NecrassRs is named after [Eblana Dublin (Necrass)](https://www.youtube.com/watch?v=X7vXSke1xFw), an operator in the game Arknights.
 
+## Special Thanks
+
+Special thanks to [XiNiHa](https://xiniha.dev/#about) for his contributions to NecrassRs: sparking the initial idea by highlighting gaps in Rust’s GraphQL ecosystem, introducing tonic as a valuable reference point, creating solid-relay, and continually helping shape the API through thoughtful discussions.
+
 ## Next steps
 
 - [Tutorial](/docs/tutorial/): build a GraphQL web server and query it with
   GraphiQL or HTTP.
 - [Types](/docs/types/): Rust type mappings, input presence, defaults, and
   generated input types.
-- [Introspection and GraphiQL](/docs/graphiql/): configure schema discovery and
-  the interactive query interface.
