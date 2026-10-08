@@ -25,9 +25,9 @@ use quote::{format_ident, quote};
 ///
 /// Returns [`CodegenError`] for unsupported types or mutation and subscription
 /// roots. Generated contracts support built-in scalars, enums, ordinary input
-/// objects, lists, nullable wrappers, and direct owned non-null Object results with
-/// leaf fields. Custom scalars, wrapped, borrowed, or recursive Objects, and
-/// abstract output types are not yet supported.
+/// objects, lists, nullable wrappers, and owned non-null Object results, including
+/// non-null lists, with leaf fields. Custom scalars, nullable, borrowed, or recursive
+/// Objects, and abstract output types are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
@@ -502,7 +502,7 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         let resolver_name = format_ident!("{}Resolver", rust_name(type_name.as_str()));
         let mut methods = Vec::new();
         for (field_name, field) in &object.fields {
-            if direct_object_output(schema, &field.ty).is_some() {
+            if object_output_shape(schema, &field.ty).is_some() {
                 continue;
             }
 
@@ -543,13 +543,21 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
     })
 }
 
-// ponytail: Add nullable and list Object wrappers with their acceptance tests.
-fn direct_object_output<'a>(schema: &Schema, ty: &'a Type) -> Option<&'a NamedType> {
-    let Type::NonNullNamed(name) = ty else {
-        return None;
-    };
-
-    matches!(schema.types.get(name), Some(ExtendedType::Object(_))).then_some(name)
+// ponytail: Add nullable Object wrappers with their acceptance test.
+fn object_output_shape(schema: &Schema, ty: &Type) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name)
+            if matches!(schema.types.get(name), Some(ExtendedType::Object(_))) =>
+        {
+            let shape = format_ident!("{}ObjectShape", rust_name(name.as_str()));
+            Some(quote! { #shape })
+        }
+        Type::NonNullList(item) => {
+            let item = object_output_shape(schema, item)?;
+            Some(quote! { ObjectListShape<#item> })
+        }
+        _ => None,
+    }
 }
 
 fn object_value_name(type_name: &str) -> proc_macro2::Ident {
@@ -578,6 +586,7 @@ fn generate_object_dispatchers(
             let graphql_type_name = type_name.as_str();
             let object_name = format_ident!("r#{}", rust_name(graphql_type_name));
             let value_name = object_value_name(graphql_type_name);
+            let shape_name = format_ident!("{}ObjectShape", rust_name(graphql_type_name));
             let mut bounds = Vec::new();
             let mut branches = Vec::new();
 
@@ -661,6 +670,21 @@ fn generate_object_dispatchers(
                 #[allow(dead_code, non_camel_case_types)]
                 struct #value_name<T> {
                     value: T,
+                }
+
+                #[allow(dead_code, non_camel_case_types)]
+                struct #shape_name;
+
+                impl<C, T> IntoResolvedObject<C, #shape_name> for T
+                where
+                    C: ::core::marker::Sync,
+                    // ponytail: Add a value lifetime when borrowed Object outputs are required.
+                    T: ::core::marker::Send + ::core::marker::Sync + 'static,
+                    #(#bounds,)*
+                {
+                    fn into_resolved_object(self) -> ::necrassrs::ResolvedValue<C> {
+                        ::necrassrs::ResolvedValue::Object(Box::new(#value_name { value: self }))
+                    }
                 }
 
                 impl<C, T> ::necrassrs::ResolvedObject<C> for #value_name<T>
@@ -769,42 +793,17 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             .collect::<Result<Vec<_>, CodegenError>>()?;
 
         let coordinate = format!("{type_name}.{field_name}");
-        if let Some(target_type) = direct_object_output(schema, &field.ty) {
-            let target_name = target_type.as_str();
-            let target_object = schema
-                .get_object(target_name)
-                .expect("Object result type must exist in a validated schema");
-            let target_object_name = format_ident!("r#{}", rust_name(target_name));
-            let target_value_name = object_value_name(target_name);
+        if let Some(output_shape) = object_output_shape(schema, &field.ty) {
             let field_type = quote! { super::fields::#object_name::#method_name };
+            let output_type = quote! {
+                <Q as ::necrassrs::Resolver<#field_type, C>>::Output
+            };
 
             dispatcher_bounds.push(quote! {
                 Q: ::necrassrs::Resolver<#field_type, C>
             });
-            for (target_field_name, target_field) in &target_object.fields {
-                let target_field_name =
-                    format_ident!("r#{}", rust_name(target_field_name.as_str()));
-                let target_field_type =
-                    quote! { super::fields::#target_object_name::#target_field_name };
-                let target_return_type = resolver_return_type(
-                    schema,
-                    target_name,
-                    target_field.name.as_str(),
-                    &target_field.ty,
-                    &quote! { super::types },
-                )?;
-                dispatcher_bounds.push(quote! {
-                    <Q as ::necrassrs::Resolver<#field_type, C>>::Output:
-                        ::necrassrs::Resolver<
-                            #target_field_type,
-                            C,
-                            Output = #target_return_type,
-                        >
-                });
-            }
             dispatcher_bounds.push(quote! {
-                <Q as ::necrassrs::Resolver<#field_type, C>>::Output:
-                    ::core::marker::Send + ::core::marker::Sync + 'static
+                #output_type: IntoResolvedObject<C, #output_shape>
             });
 
             branches.push(quote! {
@@ -818,9 +817,8 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                         args,
                     )
                     .await?;
-                    Ok(::necrassrs::ResolvedValue::Object(Box::new(
-                        #target_value_name { value },
-                    )))
+                    Ok(<#output_type as IntoResolvedObject<C, #output_shape>>::
+                        into_resolved_object(value))
                 }
             });
         } else {
@@ -865,6 +863,27 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
 
     Ok(quote! {
         pub mod dispatch {
+            #[allow(dead_code)]
+            trait IntoResolvedObject<C, S>: Sized {
+                fn into_resolved_object(self) -> ::necrassrs::ResolvedValue<C>;
+            }
+
+            #[allow(dead_code)]
+            struct ObjectListShape<S>(::core::marker::PhantomData<S>);
+
+            impl<C, S, T> IntoResolvedObject<C, ObjectListShape<S>> for ::std::vec::Vec<T>
+            where
+                T: IntoResolvedObject<C, S>,
+            {
+                fn into_resolved_object(self) -> ::necrassrs::ResolvedValue<C> {
+                    ::necrassrs::ResolvedValue::List(
+                        self.into_iter()
+                            .map(IntoResolvedObject::<C, S>::into_resolved_object)
+                            .collect()
+                    )
+                }
+            }
+
             #(#object_dispatchers)*
 
             pub struct SchemaDispatcher<Q> {
