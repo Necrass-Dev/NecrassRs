@@ -1521,6 +1521,66 @@ mod test {
     }
 
     #[test]
+    fn generated_consumer_resolves_a_nested_field_against_its_parent_object() {
+        let schema = Schema::parse_and_validate(
+            "type Query { viewer: User! } type User { name: String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("composite generation must succeed");
+        let consumer = r#"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User { name: String }
+
+            impl<C: Sync> Resolver<fields::Query::viewer, C> for Query {
+                type Output = User;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::viewer as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(User { name: String::from("Sheri") })
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::User::name, C> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.name.clone())
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let request = necrassrs::Request::new("{ viewer { name } }");
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &());
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "viewer": { "name": "Sheri" } } }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn one_of_members_cannot_shadow_input_conversion() {
         let schema = Schema::parse_and_validate(
             "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",
