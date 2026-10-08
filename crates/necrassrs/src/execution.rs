@@ -43,7 +43,7 @@ pub trait Dispatcher<C> {
         context: &'a C,
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
-    ) -> impl Future<Output = Result<ResolvedValue, ResolverError>> + Send + 'a;
+    ) -> impl Future<Output = Result<ResolvedValue<C>, ResolverError>> + Send + 'a;
 }
 
 /// Server-controlled execution settings.
@@ -79,7 +79,7 @@ impl Default for ExecutionOptions {
 ///     async fn resolve<'a>(
 ///         &'a self, _context: &'a (), coordinate: FieldCoordinate<'a>,
 ///         _arguments: &'a JsonMap,
-///     ) -> Result<ResolvedValue, ResolverError> {
+///     ) -> Result<ResolvedValue<()>, ResolverError> {
 ///         match (coordinate.parent_type, coordinate.field) {
 ///             ("Query", "hello") => Ok(ResolvedValue::Json("Hello, Sheri".into())),
 ///             _ => Err(ResolverError::new("Unknown field")),
@@ -269,9 +269,12 @@ where
             field,
             &definition.ty,
             value,
+            context,
             &mut path,
             &mut errors,
-        ) {
+        )
+        .await
+        {
             Ok(value) => value,
             Err(PropagateNull) => return Response::execution(None, errors),
         };
@@ -588,60 +591,252 @@ fn new_execution_error(
 
 struct PropagateNull;
 
-fn complete_value(
-    schema: &Valid<Schema>,
-    prepared: &PreparedRequest,
-    field: &Field,
-    ty: &Type,
-    value: ResolvedValue,
-    path: &mut Vec<ResponseDataPathSegment>,
-    errors: &mut Vec<GraphQLError>,
-) -> Result<JsonValue, PropagateNull> {
-    let value = match value {
-        ResolvedValue::Error(error) => {
-            errors.push(*resolver_error_to_graphql_error(
-                prepared, field, path, error,
-            ));
+#[allow(clippy::too_many_arguments)]
+fn complete_value<'a, C>(
+    schema: &'a Valid<Schema>,
+    prepared: &'a PreparedRequest,
+    field: &'a Field,
+    ty: &'a Type,
+    value: ResolvedValue<C>,
+    context: &'a C,
+    path: &'a mut Vec<ResponseDataPathSegment>,
+    errors: &'a mut Vec<GraphQLError>,
+) -> ::core::pin::Pin<Box<dyn Future<Output = Result<JsonValue, PropagateNull>> + Send + 'a>>
+where
+    C: Sync + 'a,
+{
+    Box::pin(async move {
+        let value = match value {
+            ResolvedValue::Error(error) => {
+                errors.push(*resolver_error_to_graphql_error(
+                    prepared, field, path, error,
+                ));
 
+                return if ty.is_non_null() {
+                    Err(PropagateNull)
+                } else {
+                    Ok(JsonValue::Null)
+                };
+            }
+            value => value,
+        };
+
+        if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
             return if ty.is_non_null() {
+                errors.push(*new_execution_error(
+                    prepared,
+                    path,
+                    format!(
+                        "Cannot return null for non-nullable field '{}'.",
+                        field.name
+                    ),
+                    field.name.location(),
+                ));
+
                 Err(PropagateNull)
             } else {
                 Ok(JsonValue::Null)
             };
         }
-        value => value,
-    };
 
-    if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
-        return if ty.is_non_null() {
-            errors.push(*new_execution_error(
-                prepared,
-                path,
-                format!(
-                    "Cannot return null for non-nullable field '{}'.",
-                    field.name
-                ),
-                field.name.location(),
-            ));
+        match ty {
+            Type::List(item_type) | Type::NonNullList(item_type) => {
+                let values = match value {
+                    ResolvedValue::List(values) => values,
+                    ResolvedValue::Json(JsonValue::Array(values)) => {
+                        values.into_iter().map(ResolvedValue::Json).collect()
+                    }
+                    _ => {
+                        errors.push(*new_execution_error(
+                            prepared,
+                            path,
+                            format!("Expected field '{}' to return a list.", field.name),
+                            field.name.location(),
+                        ));
 
-            Err(PropagateNull)
-        } else {
-            Ok(JsonValue::Null)
-        };
-    }
+                        return if ty.is_non_null() {
+                            Err(PropagateNull)
+                        } else {
+                            Ok(JsonValue::Null)
+                        };
+                    }
+                };
 
-    match ty {
-        Type::List(item_type) | Type::NonNullList(item_type) => {
-            let values = match value {
-                ResolvedValue::List(values) => values,
-                ResolvedValue::Json(JsonValue::Array(values)) => {
-                    values.into_iter().map(ResolvedValue::Json).collect()
+                let mut completed = Vec::with_capacity(values.len());
+                for (index, value) in values.into_iter().enumerate() {
+                    path.push(ResponseDataPathSegment::ListIndex(index));
+                    let item = complete_value(
+                        schema, prepared, field, item_type, value, context, path, errors,
+                    )
+                    .await;
+                    path.pop();
+
+                    match item {
+                        Ok(value) => completed.push(value),
+                        Err(PropagateNull) if ty.is_non_null() => return Err(PropagateNull),
+                        Err(PropagateNull) => return Ok(JsonValue::Null),
+                    }
                 }
-                _ => {
+
+                Ok(completed.into())
+            }
+            Type::Named(name) | Type::NonNullNamed(name) => {
+                if let Some(ExtendedType::Object(declared_type)) = schema.types.get(name) {
+                    let ResolvedValue::Object(object) = value else {
+                        errors.push(*new_execution_error(
+                            prepared,
+                            path,
+                            format!("Expected field '{}' to return an Object value.", field.name),
+                            field.name.location(),
+                        ));
+
+                        return if ty.is_non_null() {
+                            Err(PropagateNull)
+                        } else {
+                            Ok(JsonValue::Null)
+                        };
+                    };
+
+                    let Some(object_type) = schema.get_object(object.type_name()) else {
+                        errors.push(*new_execution_error(
+                            prepared,
+                            path,
+                            format!("Unknown runtime Object type '{}'.", object.type_name()),
+                            field.name.location(),
+                        ));
+
+                        return if ty.is_non_null() {
+                            Err(PropagateNull)
+                        } else {
+                            Ok(JsonValue::Null)
+                        };
+                    };
+
+                    if object_type.name != declared_type.name {
+                        errors.push(*new_execution_error(
+                            prepared,
+                            path,
+                            format!(
+                                "Runtime Object type '{}' is not valid for '{name}'.",
+                                object_type.name
+                            ),
+                            field.name.location(),
+                        ));
+
+                        return if ty.is_non_null() {
+                            Err(PropagateNull)
+                        } else {
+                            Ok(JsonValue::Null)
+                        };
+                    }
+
+                    let mut fields = IndexMap::default();
+                    let mut visited_fragments = HashSet::default();
+                    collect_selections(
+                        schema,
+                        object_type,
+                        prepared,
+                        &field.selection_set.selections,
+                        &mut visited_fragments,
+                        &mut fields,
+                    );
+
+                    let mut completed = JsonMap::new();
+                    for (response_key, fields) in fields {
+                        let selected_field = fields[0];
+                        path.push(ResponseDataPathSegment::Field(response_key.clone()));
+
+                        if selected_field.name.as_str() == "__typename" {
+                            completed.insert(
+                                response_key.as_str(),
+                                JsonValue::from(object_type.name.as_str()),
+                            );
+                            path.pop();
+                            continue;
+                        }
+
+                        let definition = schema
+                            .type_field(object_type.name.as_str(), selected_field.name.as_str())
+                            .expect("validated Object selection must have a field definition");
+                        let (field_value, has_error) = match coerce_argument_values(
+                            schema,
+                            prepared,
+                            path,
+                            selected_field,
+                            definition,
+                        ) {
+                            Ok(arguments) => match object
+                                .resolve(
+                                    context,
+                                    FieldCoordinate {
+                                        parent_type: object_type.name.as_str(),
+                                        field: selected_field.name.as_str(),
+                                    },
+                                    &arguments,
+                                )
+                                .await
+                            {
+                                Ok(value) => (value, false),
+                                Err(error) => {
+                                    errors.push(*resolver_error_to_graphql_error(
+                                        prepared,
+                                        selected_field,
+                                        path,
+                                        error,
+                                    ));
+                                    (ResolvedValue::Json(JsonValue::Null), true)
+                                }
+                            },
+                            Err(error) => {
+                                errors.push(*error);
+                                (ResolvedValue::Json(JsonValue::Null), true)
+                            }
+                        };
+
+                        if has_error
+                            && matches!(&field_value, ResolvedValue::Json(value) if value.is_null())
+                            && definition.ty.is_non_null()
+                        {
+                            path.pop();
+                            return if ty.is_non_null() {
+                                Err(PropagateNull)
+                            } else {
+                                Ok(JsonValue::Null)
+                            };
+                        }
+
+                        let field_value = complete_value(
+                            schema,
+                            prepared,
+                            selected_field,
+                            &definition.ty,
+                            field_value,
+                            context,
+                            path,
+                            errors,
+                        )
+                        .await;
+                        path.pop();
+
+                        match field_value {
+                            Ok(value) => {
+                                completed.insert(response_key.as_str(), value);
+                            }
+                            Err(PropagateNull) if ty.is_non_null() => {
+                                return Err(PropagateNull);
+                            }
+                            Err(PropagateNull) => return Ok(JsonValue::Null),
+                        }
+                    }
+
+                    return Ok(completed.into());
+                }
+
+                let ResolvedValue::Json(value) = value else {
                     errors.push(*new_execution_error(
                         prepared,
                         path,
-                        format!("Expected field '{}' to return a list.", field.name),
+                        format!("Expected field '{}' to return a leaf value.", field.name),
                         field.name.location(),
                     ));
 
@@ -650,100 +845,66 @@ fn complete_value(
                     } else {
                         Ok(JsonValue::Null)
                     };
-                }
-            };
+                };
 
-            let completed = values
-                .into_iter()
-                .enumerate()
-                .map(|(index, value)| {
-                    path.push(ResponseDataPathSegment::ListIndex(index));
+                let message = match schema.types.get(name) {
+                    Some(ExtendedType::Scalar(_))
+                        if match name.as_str() {
+                            "Int" => value
+                                .as_i64()
+                                .is_some_and(|value| i32::try_from(value).is_ok()),
+                            "Float" => value.as_f64().is_some_and(f64::is_finite),
+                            "String" | "ID" => value.is_string(),
+                            "Boolean" => value.as_bool().is_some(),
+                            _ => false,
+                        } =>
+                    {
+                        return Ok(value);
+                    }
+                    Some(ExtendedType::Scalar(_))
+                        if matches!(
+                            name.as_str(),
+                            "Int" | "Float" | "String" | "Boolean" | "ID"
+                        ) =>
+                    {
+                        format!("Expected field '{}' to return a {name}.", field.name)
+                    }
+                    Some(ExtendedType::Enum(enum_type))
+                        if value
+                            .as_str()
+                            .is_some_and(|value| enum_type.values.contains_key(value)) =>
+                    {
+                        return Ok(value);
+                    }
+                    Some(ExtendedType::Enum(_)) => {
+                        format!(
+                            "Expected field '{}' to return a {name} enum value.",
+                            field.name
+                        )
+                    }
+                    Some(_) => {
+                        format!("Result completion for type '{name}' is not supported.")
+                    }
+                    None => {
+                        format!("Unknown output type '{name}'.")
+                    }
+                };
 
-                    let completed =
-                        complete_value(schema, prepared, field, item_type, value, path, errors);
-
-                    path.pop();
-
-                    completed
-                })
-                .collect::<Result<Vec<_>, _>>();
-
-            match completed {
-                Ok(values) => Ok(values.into()),
-                Err(PropagateNull) if ty.is_non_null() => Err(PropagateNull),
-                Err(PropagateNull) => Ok(JsonValue::Null),
-            }
-        }
-        Type::Named(name) | Type::NonNullNamed(name) => {
-            let ResolvedValue::Json(value) = value else {
                 errors.push(*new_execution_error(
                     prepared,
                     path,
-                    format!("Expected field '{}' to return a leaf value.", field.name),
+                    message,
                     field.name.location(),
                 ));
 
-                return if ty.is_non_null() {
+                if ty.is_non_null() {
                     Err(PropagateNull)
                 } else {
                     Ok(JsonValue::Null)
-                };
-            };
-
-            let message = match schema.types.get(name) {
-                Some(ExtendedType::Scalar(_))
-                    if match name.as_str() {
-                        "Int" => value
-                            .as_i64()
-                            .is_some_and(|value| i32::try_from(value).is_ok()),
-                        "Float" => value.as_f64().is_some_and(f64::is_finite),
-                        "String" | "ID" => value.is_string(),
-                        "Boolean" => value.as_bool().is_some(),
-                        _ => false,
-                    } =>
-                {
-                    return Ok(value);
                 }
-                Some(ExtendedType::Scalar(_))
-                    if matches!(name.as_str(), "Int" | "Float" | "String" | "Boolean" | "ID") =>
-                {
-                    format!("Expected field '{}' to return a {name}.", field.name)
-                }
-                Some(ExtendedType::Enum(enum_type))
-                    if value
-                        .as_str()
-                        .is_some_and(|value| enum_type.values.contains_key(value)) =>
-                {
-                    return Ok(value);
-                }
-                Some(ExtendedType::Enum(_)) => {
-                    format!(
-                        "Expected field '{}' to return a {name} enum value.",
-                        field.name
-                    )
-                }
-                Some(_) => {
-                    format!("Result completion for type '{name}' is not supported.")
-                }
-                None => {
-                    format!("Unknown output type '{name}'.")
-                }
-            };
-
-            errors.push(*new_execution_error(
-                prepared,
-                path,
-                message,
-                field.name.location(),
-            ));
-
-            if ty.is_non_null() {
-                Err(PropagateNull)
-            } else {
-                Ok(JsonValue::Null)
             }
         }
-    }
+    })
 }
 
 fn directive_condition(selection: &Selection, name: &str, variables: &JsonMap) -> Option<bool> {
@@ -804,7 +965,7 @@ mod tests {
             context: &'a TestContext<'context>,
             coordinate: FieldCoordinate<'a>,
             arguments: &'a JsonMap,
-        ) -> Result<ResolvedValue, ResolverError> {
+        ) -> Result<ResolvedValue<TestContext<'context>>, ResolverError> {
             tokio::task::yield_now().await;
 
             assert_eq!(coordinate.field, "hello");

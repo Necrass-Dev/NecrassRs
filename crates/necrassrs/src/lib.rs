@@ -21,12 +21,12 @@
 //! # Current scope
 //!
 //! Generated query contracts support built-in scalar and enum results, ordinary
-//! and OneOf input objects, nullable/list forms, and recursive input boxing.
-//! The runtime completes built-in scalar and enum results, preserving list-item
-//! conversion errors and nullability. Custom scalar conversion, composite output
-//! generation/completion, and generated mutation/subscription routing remain
-//! unsupported. Runtime subscriptions are rejected. Schema introspection is
-//! enabled by default; use
+//! and OneOf input objects, nullable/list forms, recursive input boxing, and direct
+//! owned non-null Object results with leaf fields. The runtime preserves Object
+//! parents, list-item conversion errors, and nullability during completion. Custom
+//! scalar conversion, wrapped, borrowed, or recursive Object results, abstract
+//! results, and generated mutation/subscription routing remain unsupported. Runtime
+//! subscriptions are rejected. Schema introspection is enabled by default; use
 //! [`execute_with_options`] to disable it independently of any UI.
 
 use apollo_compiler::response::ExecutionResponse;
@@ -42,12 +42,36 @@ mod input;
 
 pub use execution::{Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options};
 
-/// A resolved value tree retaining conversion errors at their response positions.
-pub enum ResolvedValue {
+/// A resolved Object value that dispatches fields against its parent instance.
+pub trait ResolvedObject<C>: Send + Sync {
+    /// Returns the concrete GraphQL Object type name.
+    fn type_name(&self) -> &'static str;
+
+    /// Resolves one selected field against this Object value.
+    ///
+    /// The boxed future keeps recursive Object completion finite at the type level.
+    fn resolve<'a>(
+        &'a self,
+        context: &'a C,
+        coordinate: FieldCoordinate<'a>,
+        arguments: &'a JsonMap,
+    ) -> ::core::pin::Pin<
+        Box<
+            dyn ::core::future::Future<Output = Result<ResolvedValue<C>, ResolverError>>
+                + Send
+                + 'a,
+        >,
+    >;
+}
+
+/// A resolved value tree retaining Object parents and conversion errors.
+pub enum ResolvedValue<C = ()> {
     /// A JSON value, including explicit null and JSON arrays from custom dispatchers.
     Json(JsonValue),
     /// List items that may independently contain values or conversion errors.
-    List(Vec<ResolvedValue>),
+    List(Vec<ResolvedValue<C>>),
+    /// A concrete Object value used to resolve its selected subfields.
+    Object(Box<dyn ResolvedObject<C>>),
     /// A conversion failure completed according to this position's nullability.
     Error(ResolverError),
 }

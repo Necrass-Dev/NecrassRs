@@ -25,8 +25,9 @@ use quote::{format_ident, quote};
 ///
 /// Returns [`CodegenError`] for unsupported types or mutation and subscription
 /// roots. Generated contracts support built-in scalars, enums, ordinary input
-/// objects, lists, and nullable wrappers. Custom scalars and composite output
-/// types are not yet supported.
+/// objects, lists, nullable wrappers, and direct owned non-null Object results with
+/// leaf fields. Custom scalars, wrapped, borrowed, or recursive Objects, and
+/// abstract output types are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
@@ -501,6 +502,10 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         let resolver_name = format_ident!("{}Resolver", rust_name(type_name.as_str()));
         let mut methods = Vec::new();
         for (field_name, field) in &object.fields {
+            if direct_object_output(schema, &field.ty).is_some() {
+                continue;
+            }
+
             let method_name = format_ident!("r#{}", rust_name(field_name.as_str()));
             let return_type = resolver_return_type(
                 schema,
@@ -524,7 +529,7 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         }
 
         resolvers.push(quote! {
-            #[allow(non_camel_case_types, non_snake_case)]
+            #[allow(dead_code, non_camel_case_types, non_snake_case)]
             pub trait #resolver_name<C> {
                 #(#methods)*
             }
@@ -536,6 +541,167 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
             #(#resolvers)*
         }
     })
+}
+
+// ponytail: Add nullable and list Object wrappers with their acceptance tests.
+fn direct_object_output<'a>(schema: &Schema, ty: &'a Type) -> Option<&'a NamedType> {
+    let Type::NonNullNamed(name) = ty else {
+        return None;
+    };
+
+    matches!(schema.types.get(name), Some(ExtendedType::Object(_))).then_some(name)
+}
+
+fn object_value_name(type_name: &str) -> proc_macro2::Ident {
+    format_ident!("{}ObjectValue", rust_name(type_name))
+}
+
+fn generate_object_dispatchers(
+    schema: &Valid<Schema>,
+    query_type: &str,
+) -> Result<Vec<TokenStream>, CodegenError> {
+    schema
+        .types
+        .iter()
+        .filter_map(|(type_name, definition)| {
+            if type_name.as_str().starts_with("__") || type_name.as_str() == query_type {
+                return None;
+            }
+
+            let ExtendedType::Object(object) = definition else {
+                return None;
+            };
+
+            Some((type_name, object))
+        })
+        .map(|(type_name, object)| {
+            let graphql_type_name = type_name.as_str();
+            let object_name = format_ident!("r#{}", rust_name(graphql_type_name));
+            let value_name = object_value_name(graphql_type_name);
+            let mut bounds = Vec::new();
+            let mut branches = Vec::new();
+
+            for (field_name, field) in &object.fields {
+                let graphql_field_name = field_name.as_str();
+                let field_name = format_ident!("r#{}", rust_name(graphql_field_name));
+                let field_type = quote! { super::fields::#object_name::#field_name };
+                let return_type = resolver_return_type(
+                    schema,
+                    graphql_type_name,
+                    graphql_field_name,
+                    &field.ty,
+                    &quote! { super::types },
+                )?;
+                bounds.push(quote! {
+                    T: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
+                });
+
+                let arguments = field
+                    .arguments
+                    .iter()
+                    .map(|argument| {
+                        let name = argument.name.as_str();
+                        let member = format_ident!("r#{}", rust_name(name));
+                        let coordinate =
+                            format!("{graphql_type_name}.{graphql_field_name}({name})");
+                        let value = argument_value(
+                            schema,
+                            argument.ty.as_ref(),
+                            name,
+                            &coordinate,
+                            &quote! { super::types },
+                        )
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                format!(
+                                    "Unsupported argument type at {coordinate}: {}",
+                                    argument.ty
+                                ),
+                                schema,
+                                argument.ty.location(),
+                            )
+                        })?;
+
+                        Ok(quote! { #member: #value, })
+                    })
+                    .collect::<Result<Vec<_>, CodegenError>>()?;
+                let coordinate = format!("{graphql_type_name}.{graphql_field_name}");
+                let conversion = output_value(
+                    schema,
+                    &field.ty,
+                    &quote! { value },
+                    &coordinate,
+                    &quote! { super::types },
+                )
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        format!("Unsupported result type at {coordinate}: {}", field.ty),
+                        schema,
+                        field.ty.inner_named_type().location(),
+                    )
+                })?;
+
+                branches.push(quote! {
+                    #graphql_field_name => {
+                        let args = super::types::#object_name::#field_name::Args {
+                            #(#arguments)*
+                        };
+                        let value = <T as ::necrassrs::Resolver<#field_type, C>>::resolve(
+                            &self.value,
+                            context,
+                            args,
+                        )
+                        .await?;
+                        Ok(#conversion)
+                    }
+                });
+            }
+
+            Ok(quote! {
+                #[allow(dead_code, non_camel_case_types)]
+                struct #value_name<T> {
+                    value: T,
+                }
+
+                impl<C, T> ::necrassrs::ResolvedObject<C> for #value_name<T>
+                where
+                    C: ::core::marker::Sync,
+                    // ponytail: Add a value lifetime when borrowed Object outputs are required.
+                    T: ::core::marker::Send + ::core::marker::Sync + 'static,
+                    #(#bounds,)*
+                {
+                    fn type_name(&self) -> &'static str {
+                        #graphql_type_name
+                    }
+
+                    fn resolve<'a>(
+                        &'a self,
+                        context: &'a C,
+                        coordinate: ::necrassrs::FieldCoordinate<'a>,
+                        _arguments: &'a ::necrassrs::JsonMap,
+                    ) -> ::core::pin::Pin<Box<
+                        dyn ::core::future::Future<
+                            Output = ::core::result::Result<
+                                ::necrassrs::ResolvedValue<C>,
+                                ::necrassrs::ResolverError,
+                            >,
+                        > + ::core::marker::Send + 'a,
+                    >> {
+                        Box::pin(async move {
+                            match coordinate.field {
+                                #(#branches,)*
+                                _ => Err(::necrassrs::ResolverError::new(::std::format!(
+                                    "Unknown field {}.{}",
+                                    coordinate.parent_type,
+                                    coordinate.field,
+                                ))),
+                            }
+                        })
+                    }
+                }
+            })
+        })
+        .collect()
 }
 
 fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
@@ -566,7 +732,10 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
     let type_name = query.name.as_str();
     let object_name = format_ident!("r#{}", rust_name(type_name));
     let resolver_name = format_ident!("{}Resolver", rust_name(type_name));
+    let object_dispatchers = generate_object_dispatchers(schema, type_name)?;
     let mut branches = Vec::new();
+    let mut dispatcher_bounds = Vec::new();
+    let mut uses_root_resolver = false;
 
     for (field_name, field) in &query.fields {
         let field_name = field_name.as_str();
@@ -600,35 +769,104 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             .collect::<Result<Vec<_>, CodegenError>>()?;
 
         let coordinate = format!("{type_name}.{field_name}");
-        let conversion = output_value(
-            schema,
-            &field.ty,
-            &quote! { value },
-            &coordinate,
-            &quote! { super::types },
-        )
-        .ok_or_else(|| {
-            CodegenError::new(
-                format!("Unsupported result type at {coordinate}: {}", field.ty),
-                schema,
-                field.ty.inner_named_type().location(),
-            )
-        })?;
+        if let Some(target_type) = direct_object_output(schema, &field.ty) {
+            let target_name = target_type.as_str();
+            let target_object = schema
+                .get_object(target_name)
+                .expect("Object result type must exist in a validated schema");
+            let target_object_name = format_ident!("r#{}", rust_name(target_name));
+            let target_value_name = object_value_name(target_name);
+            let field_type = quote! { super::fields::#object_name::#method_name };
 
-        branches.push(quote! {
-            (#type_name, #field_name) => {
-                let args = super::types::#object_name::#method_name::Args {
-                    #(#arguments)*
-                };
-                let value = super::resolvers::#resolver_name::#method_name(&self.query, context, args)
-                    .await?;
-                Ok(#conversion)
+            dispatcher_bounds.push(quote! {
+                Q: ::necrassrs::Resolver<#field_type, C>
+            });
+            for (target_field_name, target_field) in &target_object.fields {
+                let target_field_name =
+                    format_ident!("r#{}", rust_name(target_field_name.as_str()));
+                let target_field_type =
+                    quote! { super::fields::#target_object_name::#target_field_name };
+                let target_return_type = resolver_return_type(
+                    schema,
+                    target_name,
+                    target_field.name.as_str(),
+                    &target_field.ty,
+                    &quote! { super::types },
+                )?;
+                dispatcher_bounds.push(quote! {
+                    <Q as ::necrassrs::Resolver<#field_type, C>>::Output:
+                        ::necrassrs::Resolver<
+                            #target_field_type,
+                            C,
+                            Output = #target_return_type,
+                        >
+                });
             }
+            dispatcher_bounds.push(quote! {
+                <Q as ::necrassrs::Resolver<#field_type, C>>::Output:
+                    ::core::marker::Send + ::core::marker::Sync + 'static
+            });
+
+            branches.push(quote! {
+                (#type_name, #field_name) => {
+                    let args = super::types::#object_name::#method_name::Args {
+                        #(#arguments)*
+                    };
+                    let value = <Q as ::necrassrs::Resolver<#field_type, C>>::resolve(
+                        &self.query,
+                        context,
+                        args,
+                    )
+                    .await?;
+                    Ok(::necrassrs::ResolvedValue::Object(Box::new(
+                        #target_value_name { value },
+                    )))
+                }
+            });
+        } else {
+            uses_root_resolver = true;
+            let conversion = output_value(
+                schema,
+                &field.ty,
+                &quote! { value },
+                &coordinate,
+                &quote! { super::types },
+            )
+            .ok_or_else(|| {
+                CodegenError::new(
+                    format!("Unsupported result type at {coordinate}: {}", field.ty),
+                    schema,
+                    field.ty.inner_named_type().location(),
+                )
+            })?;
+
+            branches.push(quote! {
+                (#type_name, #field_name) => {
+                    let args = super::types::#object_name::#method_name::Args {
+                        #(#arguments)*
+                    };
+                    let value = super::resolvers::#resolver_name::#method_name(
+                        &self.query,
+                        context,
+                        args,
+                    )
+                    .await?;
+                    Ok(#conversion)
+                }
+            });
+        }
+    }
+
+    if uses_root_resolver {
+        dispatcher_bounds.push(quote! {
+            Q: super::resolvers::#resolver_name<C>
         });
     }
 
     Ok(quote! {
         pub mod dispatch {
+            #(#object_dispatchers)*
+
             pub struct SchemaDispatcher<Q> {
                 query: Q,
             }
@@ -642,14 +880,18 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             impl<C, Q> ::necrassrs::Dispatcher<C> for SchemaDispatcher<Q>
             where
                 C: ::core::marker::Sync,
-                Q: super::resolvers::#resolver_name<C> + ::core::marker::Sync,
+                Q: ::core::marker::Sync,
+                #(#dispatcher_bounds,)*
             {
                 async fn resolve<'a>(
                     &'a self,
                     context: &'a C,
                     coordinate: ::necrassrs::FieldCoordinate<'a>,
                     _arguments: &'a ::necrassrs::JsonMap,
-                ) -> ::core::result::Result<::necrassrs::ResolvedValue, ::necrassrs::ResolverError> {
+                ) -> ::core::result::Result<
+                    ::necrassrs::ResolvedValue<C>,
+                    ::necrassrs::ResolverError,
+                > {
                     match (coordinate.parent_type, coordinate.field) {
                         #(#branches,)*
                         _ => Err(::necrassrs::ResolverError::new(::std::format!(
@@ -1119,7 +1361,7 @@ fn output_list_value(
 
     Some(quote! {
         {
-            let mut items = ::std::vec::Vec::<::necrassrs::ResolvedValue>::new();
+            let mut items = ::std::vec::Vec::new();
 
             for item in #value {
                 items.push(#converted_item);

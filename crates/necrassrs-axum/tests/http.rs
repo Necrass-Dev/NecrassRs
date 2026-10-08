@@ -32,7 +32,7 @@ impl Dispatcher<Context> for GreetingDispatcher {
         context: &'a Context,
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
-    ) -> Result<ResolvedValue, ResolverError> {
+    ) -> Result<ResolvedValue<Context>, ResolverError> {
         assert!(matches!(coordinate.field, "hello" | "nullableHello"));
         let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
