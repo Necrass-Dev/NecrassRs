@@ -1872,6 +1872,81 @@ mod test {
     }
 
     #[test]
+    fn generated_consumer_resolves_object_list_items_against_each_parent() {
+        let schema = Schema::parse_and_validate(
+            "type Query { users: [User!]! } type User { greeting(prefix: String!): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Object list generation must succeed");
+        let consumer = r#"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User { name: String }
+            struct Context<'a> { punctuation: &'a str }
+
+            impl<C: Sync> Resolver<fields::Query::users, C> for Query {
+                type Output = Vec<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::users as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(vec![
+                        User { name: String::from("Sheri") },
+                        User { name: String::from("Riri") },
+                    ])
+                }
+            }
+
+            impl<'ctx> Resolver<fields::User::greeting, Context<'ctx>> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    args: <fields::User::greeting as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(format!("{}, {}{}", args.prefix, self.name, context.punctuation))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let punctuation = String::from("!");
+                let context = Context { punctuation: &punctuation };
+                let request = necrassrs::Request::new(
+                    "{ users { greeting(prefix: \"Hello\") } }",
+                );
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &context);
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": {
+                            "users": [
+                                { "greeting": "Hello, Sheri!" },
+                                { "greeting": "Hello, Riri!" },
+                            ],
+                        },
+                    }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn one_of_members_cannot_shadow_input_conversion() {
         let schema = Schema::parse_and_validate(
             "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",
