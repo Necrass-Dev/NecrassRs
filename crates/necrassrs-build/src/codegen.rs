@@ -39,6 +39,7 @@ use quote::{format_ident, quote};
 /// ```
 pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     let types = generate_types(schema)?;
+    let fields = generate_fields(schema);
     let resolvers = generate_resolvers(schema)?;
     let dispatch = generate_dispatch(schema)?;
     let sdl = schema.to_string();
@@ -47,6 +48,7 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
         pub const SDL: &str = #sdl;
 
         #types
+        #fields
         #resolvers
         #dispatch
     }
@@ -435,6 +437,53 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
             #(#object_modules)*
         }
     })
+}
+
+fn generate_fields(schema: &Valid<Schema>) -> impl quote::ToTokens {
+    let object_modules = schema
+        .types
+        .iter()
+        .filter_map(|(type_name, definition)| {
+            if type_name.as_str().starts_with("__") {
+                return None;
+            }
+
+            let ExtendedType::Object(object) = definition else {
+                return None;
+            };
+
+            let object_name = format_ident!("r#{}", rust_name(type_name.as_str()));
+            let fields = object
+                .fields
+                .keys()
+                .map(|field_name| {
+                    let field_name = format_ident!("r#{}", rust_name(field_name.as_str()));
+
+                    quote! {
+                        pub struct #field_name;
+
+                        impl ::necrassrs::Field for #field_name {
+                            type Args =
+                                super::super::types::#object_name::#field_name::Args;
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            Some(quote! {
+                pub mod #object_name {
+                    #(#fields)*
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    quote! {
+        #[allow(dead_code, non_snake_case, non_camel_case_types)]
+        pub mod fields {
+            #(#object_modules)*
+        }
+    }
 }
 
 fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
@@ -3355,5 +3404,47 @@ mod test {
             .expect("rustc must be available");
         write!(rustc.stdin.take().unwrap(), "{generated}\n{consumer}").unwrap();
         rustc.wait_with_output().unwrap()
+    }
+
+    #[test]
+    fn generated_field_identities_reuse_argument_types() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! ping: String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use generated::{
+                dispatch::SchemaDispatcher,
+                fields,
+                resolvers::QueryResolver,
+                types,
+            };
+            use necrassrs::Field;
+
+            struct Query;
+
+            impl QueryResolver<()> for Query {}
+
+            fn assert_field<F: Field<Args = types::Query::hello::Args>>() {}
+
+            fn main() {
+                assert_field::<fields::Query::hello>();
+
+                let args = types::Query::hello::Args {
+                    name: String::from("Sheri"),
+                };
+                assert_eq!(args.name, "Sheri");
+
+                let _: <fields::Query::ping as Field>::Args =
+                    types::Query::ping::Args {};
+
+                let _ = generated::SDL;
+                let _ = SchemaDispatcher::new(Query);
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
     }
 }

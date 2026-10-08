@@ -205,6 +205,26 @@ impl From<&str> for Id {
     }
 }
 
+pub trait Field {
+    type Args: Send;
+}
+
+pub trait Resolver<F, C>: Send + Sync
+where
+    F: Field,
+    C: Sync,
+{
+    type Output: Send;
+
+    fn resolve<'a>(
+        &'a self,
+        context: &'a C,
+        args: F::Args,
+    ) -> impl ::core::future::Future<Output = ::core::result::Result<Self::Output, ResolverError>>
+    + Send
+    + 'a;
+}
+
 #[cfg(test)]
 mod input_type_tests {
     use super::{GraphQLInput, Id};
