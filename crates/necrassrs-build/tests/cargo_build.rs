@@ -19,6 +19,7 @@ fn first_build_creates_query_and_explicit_unimplemented_methods_from_sdl() {
     assert!(ast.items.iter().any(|item| matches!(
         item, Item::Struct(item) if item.ident == "Query"
     )));
+    assert!(resolver_impl(&ast).items.is_empty());
     assert_eq!(method_names(&ast), ["hello", "ping"]);
     assert_stub(method(&ast, "hello"));
     assert_stub(method(&ast, "ping"));
@@ -182,19 +183,11 @@ fn expanded_input_and_result_contracts_rebuild_without_replacing_user_body() {
     );
     consumer.bootstrap();
     let mut ast = consumer.ast();
-    let implementation = ast
+    let inspect = field_resolver(&mut ast, "Query", "inspect")
         .items
         .iter_mut()
         .find_map(|item| match item {
-            Item::Impl(item) if item.trait_.is_some() => Some(item),
-            _ => None,
-        })
-        .unwrap();
-    let inspect = implementation
-        .items
-        .iter_mut()
-        .find_map(|item| match item {
-            ImplItem::Fn(method) if method.sig.ident.unraw() == "inspect" => Some(method),
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
             _ => None,
         })
         .unwrap();
@@ -224,9 +217,7 @@ fn expanded_input_and_result_contracts_rebuild_without_replacing_user_body() {
     assert_eq!(body(method(&ast, "inspect")), before);
     assert_stub(method(&ast, "echo"));
     assert!(
-        method(&ast, "inspect")
-            .sig
-            .output
+        output_type(field_resolver_ref(&ast, "Query", "inspect"))
             .to_token_stream()
             .to_string()
             .contains("Option < :: std :: vec :: Vec < :: necrassrs :: Id > >")
@@ -368,8 +359,10 @@ fn unchanged_sdl_preserves_equivalent_return_type_spelling_and_comments() {
     let ast = consumer.ast();
     let mut source = fs::read_to_string(consumer.resolvers()).unwrap();
     source.replace_range(
-        method(&ast, "hello").sig.output.span().byte_range(),
-        "-> Result</* Keep this return contract comment. */ String, necrassrs::ResolverError>",
+        output_type(field_resolver_ref(&ast, "Query", "hello"))
+            .span()
+            .byte_range(),
+        "/* Keep this output contract comment. */ String",
     );
     fs::write(consumer.resolvers(), &source).unwrap();
 
@@ -392,19 +385,38 @@ fn added_method_does_not_shadow_existing_impl_lifetime() {
         let Item::Impl(implementation) = item else {
             continue;
         };
-        implementation.generics = syn::parse_quote!(<'a>);
-        implementation.trait_.as_mut().unwrap().1 =
-            syn::parse_quote!(crate::generated::resolvers::QueryResolver<Context<'a>>);
-        for item in &mut implementation.items {
-            if let ImplItem::Fn(method) = item {
-                method.sig = syn::parse_quote! {
-                    async fn hello<'call>(
-                        &'call self,
-                        _context: &'call Context<'a>,
-                        _args: crate::generated::types::Query::hello::Args,
-                    ) -> ::core::result::Result<::std::string::String, ::necrassrs::ResolverError>
-                };
-            }
+        let trait_path = &mut implementation.trait_.as_mut().unwrap().1;
+        let trait_name = &trait_path.segments.last().unwrap().ident;
+        if trait_name == "QueryResolver" {
+            implementation.generics = syn::parse_quote!(<'a>);
+            *trait_path =
+                syn::parse_quote!(crate::generated::resolvers::QueryResolver<Context<'a>>);
+        } else if trait_name == "Resolver"
+            && implementation
+                .self_ty
+                .to_token_stream()
+                .to_string()
+                .ends_with("Query")
+        {
+            implementation.generics = syn::parse_quote!(<'a>);
+            *trait_path = syn::parse_quote!(
+                ::necrassrs::Resolver<crate::generated::fields::Query::hello, Context<'a>>
+            );
+            let resolve = implementation
+                .items
+                .iter_mut()
+                .find_map(|item| match item {
+                    ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+                    _ => None,
+                })
+                .unwrap();
+            resolve.sig = syn::parse_quote! {
+                async fn resolve(
+                    &self,
+                    _context: &Context<'a>,
+                    _args: crate::generated::types::Query::hello::Args,
+                ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError>
+            };
         }
     }
     ast.items.push(syn::parse_quote!(
@@ -435,6 +447,140 @@ fn main() {
     assert_eq!(method_names(&ast), ["extra", "hello"]);
     assert_stub(method(&ast, "extra"));
     assert_eq!(body(method(&ast, "hello")), before);
+}
+
+#[test]
+fn custom_query_root_and_context_compile_after_adding_a_field() {
+    let consumer = Consumer::new("type Query { hello: String! }");
+    consumer.bootstrap();
+    let mut ast = consumer.ast();
+    for item in &mut ast.items {
+        match item {
+            Item::Struct(item) if item.ident == "Query" => {
+                item.ident = syn::parse_quote!(AppQuery);
+            }
+            Item::Impl(implementation)
+                if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                }) =>
+            {
+                implementation.generics = syn::Generics::default();
+                implementation.trait_.as_mut().unwrap().1 =
+                    syn::parse_quote!(crate::generated::resolvers::QueryResolver<AppContext>);
+                *implementation.self_ty = syn::parse_quote!(self::AppQuery);
+            }
+            _ => {}
+        }
+    }
+    ast.items.push(syn::parse_quote!(
+        pub struct AppContext;
+    ));
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<resolvers::AppContext>>(_: D) {}
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(resolvers::AppQuery));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema("type Query { hello: String! extra: String! }");
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    for field in ["hello", "extra"] {
+        let receiver = &field_resolver_ref(&ast, "AppQuery", field).self_ty;
+        assert_eq!(receiver.to_token_stream().to_string(), "self :: AppQuery");
+    }
+}
+
+#[test]
+fn generic_bindings_remain_local_to_each_resolver_impl() {
+    let consumer = Consumer::new("type Query { hello: String! }");
+    consumer.bootstrap();
+    let mut ast = consumer.ast();
+    for item in &mut ast.items {
+        match item {
+            Item::Struct(item) if item.ident == "Query" => {
+                *item = syn::parse_quote!(
+                    pub struct Query<T>(pub ::core::marker::PhantomData<T>);
+                );
+            }
+            Item::Impl(implementation)
+                if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                }) =>
+            {
+                implementation.generics = syn::parse_quote!(<T: Send + Sync>);
+                implementation.trait_.as_mut().unwrap().1 =
+                    syn::parse_quote!(crate::generated::resolvers::QueryResolver<()>);
+                *implementation.self_ty = syn::parse_quote!(self::Query<T>);
+            }
+            Item::Impl(implementation)
+                if field_resolver_coordinate(implementation)
+                    .is_some_and(|(object, _)| object.unraw() == "Query") =>
+            {
+                implementation.generics = syn::parse_quote!(<U: Send + Sync>);
+                let (_, trait_path, _) = implementation.trait_.as_mut().unwrap();
+                let PathArguments::AngleBracketed(arguments) =
+                    &mut trait_path.segments.last_mut().unwrap().arguments
+                else {
+                    unreachable!()
+                };
+                arguments.args[1] = syn::parse_quote!(());
+                *implementation.self_ty = syn::parse_quote!(self::Query<U>);
+                let resolve = implementation
+                    .items
+                    .iter_mut()
+                    .find_map(|item| match item {
+                        ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+                        _ => None,
+                    })
+                    .unwrap();
+                let syn::FnArg::Typed(context) = &mut resolve.sig.inputs[1] else {
+                    unreachable!()
+                };
+                *context.ty = syn::parse_quote!(&());
+            }
+            _ => {}
+        }
+    }
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<()>>(_: D) {}
+    let query = resolvers::Query::<String>(::core::marker::PhantomData);
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(query));
+}
+"#,
+    )
+    .unwrap();
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    let implementation = field_resolver_ref(&ast, "Query", "hello");
+    assert_eq!(
+        implementation.generics.to_token_stream().to_string(),
+        "< U : Send + Sync >"
+    );
+    assert_eq!(
+        implementation.self_ty.to_token_stream().to_string(),
+        "self :: Query < U >"
+    );
 }
 
 #[test]
@@ -482,43 +628,56 @@ fn field_resolver<'a>(ast: &'a mut syn::File, object: &str, field: &str) -> &'a 
         .iter_mut()
         .find_map(|item| {
             let Item::Impl(item) = item else { return None };
-            let (_, trait_path, _) = item.trait_.as_ref()?;
-            let resolver = trait_path.segments.last()?;
-            if resolver.ident != "Resolver" {
-                return None;
-            }
-            let PathArguments::AngleBracketed(arguments) = &resolver.arguments else {
-                return None;
-            };
-            let field_matches = arguments.args.first().is_some_and(|argument| {
-                let GenericArgument::Type(Type::Path(ty)) = argument else {
-                    return false;
-                };
-                ty.path
-                    .segments
-                    .last()
-                    .is_some_and(|segment| segment.ident.unraw() == field)
-            });
-            let Type::Path(self_type) = item.self_ty.as_ref() else {
-                return None;
-            };
-            (field_matches
-                && self_type
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|segment| segment.ident.unraw() == object))
-            .then_some(item)
+            let matches = field_resolver_coordinate(item).is_some_and(
+                |(candidate_object, candidate_field)| {
+                    candidate_object.unraw() == object && candidate_field.unraw() == field
+                },
+            );
+            matches.then_some(item)
         })
         .unwrap_or_else(|| panic!("missing explicit resolver implementation for {object}.{field}"))
 }
 
+fn field_resolver_ref<'a>(ast: &'a syn::File, object: &str, field: &str) -> &'a ItemImpl {
+    ast.items
+        .iter()
+        .find_map(|item| {
+            let Item::Impl(item) = item else { return None };
+            field_resolver_coordinate(item)
+                .is_some_and(|(candidate_object, candidate_field)| {
+                    candidate_object.unraw() == object && candidate_field.unraw() == field
+                })
+                .then_some(item)
+        })
+        .unwrap_or_else(|| panic!("missing explicit resolver implementation for {object}.{field}"))
+}
+
+fn field_resolver_coordinate(implementation: &ItemImpl) -> Option<(&syn::Ident, &syn::Ident)> {
+    let (_, trait_path, _) = implementation.trait_.as_ref()?;
+    let resolver = trait_path.segments.last()?;
+    let PathArguments::AngleBracketed(arguments) = &resolver.arguments else {
+        return None;
+    };
+    let GenericArgument::Type(Type::Path(field)) = arguments.args.first()? else {
+        return None;
+    };
+    let Type::Path(self_type) = implementation.self_ty.as_ref() else {
+        return None;
+    };
+    (resolver.ident == "Resolver").then_some((
+        &self_type.path.segments.last()?.ident,
+        &field.path.segments.last()?.ident,
+    ))
+}
+
 fn method_names(ast: &syn::File) -> Vec<String> {
-    let mut names: Vec<_> = resolver_impl(ast)
+    let mut names: Vec<_> = ast
         .items
         .iter()
         .filter_map(|item| match item {
-            ImplItem::Fn(method) => Some(method.sig.ident.unraw().to_string()),
+            Item::Impl(implementation) => field_resolver_coordinate(implementation)
+                .filter(|(object, _)| object.unraw() == "Query")
+                .map(|(_, field)| field.unraw().to_string()),
             _ => None,
         })
         .collect();
@@ -527,14 +686,25 @@ fn method_names(ast: &syn::File) -> Vec<String> {
 }
 
 fn method<'a>(ast: &'a syn::File, name: &str) -> &'a ImplItemFn {
-    resolver_impl(ast)
+    field_resolver_ref(ast, "Query", name)
         .items
         .iter()
         .find_map(|item| match item {
-            ImplItem::Fn(method) if method.sig.ident.unraw() == name => Some(method),
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
             _ => None,
         })
         .unwrap_or_else(|| panic!("missing explicit resolver method {name}"))
+}
+
+fn output_type(implementation: &ItemImpl) -> &Type {
+    implementation
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ImplItem::Type(item) if item.ident == "Output" => Some(&item.ty),
+            _ => None,
+        })
+        .expect("field resolver must declare its Output type")
 }
 
 fn body(method: &ImplItemFn) -> String {
@@ -672,27 +842,11 @@ impl Consumer {
 
     fn implement(&self, name: &str, value: &str) {
         let mut ast = self.ast();
-        let implementation = ast
+        let method = field_resolver(&mut ast, "Query", name)
             .items
             .iter_mut()
             .find_map(|item| match item {
-                Item::Impl(item)
-                    if item.trait_.as_ref().is_some_and(|(_, path, _)| {
-                        path.segments
-                            .last()
-                            .is_some_and(|segment| segment.ident == "QueryResolver")
-                    }) =>
-                {
-                    Some(item)
-                }
-                _ => None,
-            })
-            .unwrap();
-        let method = implementation
-            .items
-            .iter_mut()
-            .find_map(|item| match item {
-                ImplItem::Fn(method) if method.sig.ident.unraw() == name => Some(method),
+                ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
                 _ => None,
             })
             .unwrap();

@@ -178,7 +178,7 @@ fn check_generated_consumer(framework: &str) {
     );
     let resolvers = fs::read_to_string(project.join("src/resolvers.rs")).unwrap();
     assert!(resolvers.contains("Hello, {}"));
-    assert!(resolvers.contains("async fn r#ping"), "{resolvers}");
+    assert!(resolvers.contains("fields::r#Query::r#ping"), "{resolvers}");
     assert!(resolvers.contains("unimplemented!()"));
 
     fs::write(

@@ -498,57 +498,24 @@ fn generate_fields(schema: &Valid<Schema>) -> impl quote::ToTokens {
 }
 
 fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
-    let mut resolvers = Vec::new();
-
-    for (type_name, definition) in &schema.types {
-        if type_name.as_str().starts_with("__") {
-            continue;
-        }
-        let ExtendedType::Object(object) = definition else {
-            continue;
-        };
-
-        let object_name = format_ident!("r#{}", rust_name(type_name.as_str()));
-        let resolver_name = format_ident!("{}Resolver", rust_name(type_name.as_str()));
-        let mut methods = Vec::new();
-        for (field_name, field) in &object.fields {
-            if composite_output_name(schema, &field.ty).is_some() {
-                continue;
-            }
-
-            let method_name = format_ident!("r#{}", rust_name(field_name.as_str()));
-            let return_type = resolver_return_type(
+    let query = schema
+        .schema_definition
+        .query
+        .as_ref()
+        .and_then(|name| schema.get_object(name.as_str()))
+        .ok_or_else(|| {
+            CodegenError::new(
+                "A query root object is required",
                 schema,
-                type_name,
-                field_name,
-                &field.ty,
-                &quote! { super::types },
-            )?;
-            let message = format!("Resolver {type_name}.{field_name} is not implemented");
-            methods.push(quote! {
-                fn #method_name<'a>(
-                    &'a self,
-                    _context: &'a C,
-                    _args: super::types::#object_name::#method_name::Args,
-                ) -> impl ::core::future::Future<
-                    Output = ::core::result::Result<#return_type, ::necrassrs::ResolverError>
-                > + ::core::marker::Send + 'a {
-                    async { ::core::unimplemented!(#message) }
-                }
-            });
-        }
-
-        resolvers.push(quote! {
-            #[allow(dead_code, non_camel_case_types, non_snake_case)]
-            pub trait #resolver_name<C> {
-                #(#methods)*
-            }
-        });
-    }
+                schema.schema_definition.location(),
+            )
+        })?;
+    let resolver_name = format_ident!("{}Resolver", rust_name(query.name.as_str()));
 
     Ok(quote! {
         pub mod resolvers {
-            #(#resolvers)*
+            #[allow(dead_code, non_camel_case_types, non_snake_case)]
+            pub trait #resolver_name<C> {}
         }
     })
 }
@@ -1019,11 +986,14 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
         generate_object_dispatcher(schema, type_name)?;
     let mut branches = Vec::new();
     let mut dispatcher_bounds = object_bounds;
-    let mut uses_root_resolver = false;
+    dispatcher_bounds.push(quote! {
+        Q: super::resolvers::#resolver_name<C>
+    });
 
     for (field_name, field) in &query.fields {
         let field_name = field_name.as_str();
         let method_name = format_ident!("r#{}", rust_name(field_name));
+        let field_type = quote! { super::fields::#object_name::#method_name };
         let arguments = field
             .arguments
             .iter()
@@ -1053,72 +1023,59 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             .collect::<Result<Vec<_>, CodegenError>>()?;
 
         let coordinate = format!("{type_name}.{field_name}");
-        if let Some(return_type) = composite_output_type(schema, &field.ty, type_name) {
-            let field_type = quote! { super::fields::#object_name::#method_name };
-            let conversion = composite_output_value(
-                schema,
-                &field.ty,
-                &quote! { value },
-                type_name,
-                &object_types,
-            )
-            .expect("Object output type and conversion must agree");
-
-            dispatcher_bounds.push(quote! {
-                Q: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
-            });
-
-            branches.push(quote! {
-                (#type_name, #field_name) => {
-                    let args = super::types::#object_name::#method_name::Args {
-                        #(#arguments)*
-                    };
-                    let value = <Q as ::necrassrs::Resolver<#field_type, C>>::resolve(
-                        &self.query,
-                        context,
-                        args,
-                    )
-                    .await?;
-                    Ok(#conversion)
-                }
-            });
-        } else {
-            uses_root_resolver = true;
-            let conversion = output_value(
-                schema,
-                &field.ty,
-                &quote! { value },
-                &coordinate,
-                &quote! { super::types },
-            )
-            .ok_or_else(|| {
-                CodegenError::new(
-                    format!("Unsupported result type at {coordinate}: {}", field.ty),
+        let (return_type, conversion) =
+            if let Some(return_type) = composite_output_type(schema, &field.ty, type_name) {
+                let conversion = composite_output_value(
                     schema,
-                    field.ty.inner_named_type().location(),
+                    &field.ty,
+                    &quote! { value },
+                    type_name,
+                    &object_types,
                 )
-            })?;
-
-            branches.push(quote! {
-                (#type_name, #field_name) => {
-                    let args = super::types::#object_name::#method_name::Args {
-                        #(#arguments)*
-                    };
-                    let value = super::resolvers::#resolver_name::#method_name(
-                        &self.query,
-                        context,
-                        args,
+                .expect("Object output type and conversion must agree");
+                (return_type, conversion)
+            } else {
+                let return_type = resolver_return_type(
+                    schema,
+                    type_name,
+                    field_name,
+                    &field.ty,
+                    &quote! { super::types },
+                )?;
+                let conversion = output_value(
+                    schema,
+                    &field.ty,
+                    &quote! { value },
+                    &coordinate,
+                    &quote! { super::types },
+                )
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        format!("Unsupported result type at {coordinate}: {}", field.ty),
+                        schema,
+                        field.ty.inner_named_type().location(),
                     )
-                    .await?;
-                    Ok(#conversion)
-                }
-            });
-        }
-    }
+                })?;
+                (return_type, conversion)
+            };
 
-    if uses_root_resolver {
         dispatcher_bounds.push(quote! {
-            Q: super::resolvers::#resolver_name<C>
+            Q: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
+        });
+
+        branches.push(quote! {
+            (#type_name, #field_name) => {
+                let args = super::types::#object_name::#method_name::Args {
+                    #(#arguments)*
+                };
+                let value = <Q as ::necrassrs::Resolver<#field_type, C>>::resolve(
+                    &self.query,
+                    context,
+                    args,
+                )
+                .await?;
+                Ok(#conversion)
+            }
         });
     }
 
@@ -1980,6 +1937,7 @@ mod test {
         let generated = super::generate(&schema).expect("generation must succeed");
         let consumer = r#"
             use resolvers::QueryResolver;
+            use necrassrs::Resolver;
 
             pub struct Query {
                 greeting: String,
@@ -1989,23 +1947,44 @@ mod test {
                 suffix: &'a str,
             }
 
-            impl<'ctx> QueryResolver<Context<'ctx>> for Query {
-                async fn hello<'a>(
-                    &'a self,
-                    context: &'a Context<'ctx>,
+            impl<'ctx> QueryResolver<Context<'ctx>> for Query {}
+
+            impl<'ctx> Resolver<fields::Query::hello, Context<'ctx>> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
                     args: types::Query::hello::Args,
-                ) -> Result<String, necrassrs::ResolverError> {
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     std::future::ready(()).await;
                     Ok(format!("{} {}{}", self.greeting, args.name, context.suffix))
                 }
             }
 
-            pub fn check_contract<'a, C: 'a, R: QueryResolver<C> + 'a>(
+            impl<'ctx> Resolver<fields::Query::ping, Context<'ctx>> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context<'ctx>,
+                    _args: types::Query::ping::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    unimplemented!()
+                }
+            }
+
+            pub fn check_contract<'a, C: Sync + 'a, R>(
                 resolver: &'a R,
                 context: &'a C,
                 args: types::Query::hello::Args,
-            ) -> impl Future<Output = Result<String, necrassrs::ResolverError>> + Send + 'a {
-                resolver.hello(context, args)
+            ) -> impl Future<Output = Result<String, necrassrs::ResolverError>> + Send + 'a
+            where
+                R: QueryResolver<C>
+                    + Resolver<fields::Query::hello, C, Output = String>
+                    + 'a,
+            {
+                <R as Resolver<fields::Query::hello, C>>::resolve(resolver, context, args)
             }
 
             pub fn check() {
@@ -2015,7 +1994,10 @@ mod test {
                 let args = types::Query::hello::Args { name: String::from("Sheri") };
                 let future = check_contract(&query, &context, args);
                 drop(future);
-                let unimplemented = query.ping(&context, types::Query::ping::Args {});
+                let unimplemented = <Query as Resolver<
+                    fields::Query::ping,
+                    Context<'_>,
+                >>::resolve(&query, &context, types::Query::ping::Args {});
                 drop(unimplemented);
             }
         "#;
@@ -2032,17 +2014,22 @@ mod test {
         .expect("the test schema must be valid");
         let generated = super::generate(&schema).expect("generation must succeed");
         let consumer = r#"
-            use generated::{resolvers::QueryResolver, types};
+            use generated::{fields, resolvers::QueryResolver, types};
+            use necrassrs::Resolver;
 
             struct Query;
             struct Context<'a> { greeting: &'a str }
 
-            impl<'ctx> QueryResolver<Context<'ctx>> for Query {
-                async fn hello<'a>(
-                    &'a self,
-                    context: &'a Context<'ctx>,
+            impl<'ctx> QueryResolver<Context<'ctx>> for Query {}
+
+            impl<'ctx> Resolver<fields::Query::hello, Context<'ctx>> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
                     args: types::Query::hello::Args,
-                ) -> Result<String, necrassrs::ResolverError> {
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(format!("{}, {}", context.greeting, args.name))
                 }
             }
@@ -2071,6 +2058,57 @@ mod test {
     }
 
     #[test]
+    fn generated_query_leaf_dispatch_uses_field_resolver() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use generated::{fields, resolvers::QueryResolver, types};
+            use necrassrs::Resolver;
+
+            struct Query;
+            struct Context<'a> { greeting: &'a str }
+
+            impl<'ctx> QueryResolver<Context<'ctx>> for Query {}
+
+            impl<'ctx> Resolver<fields::Query::hello, Context<'ctx>> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    args: types::Query::hello::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(format!("{}, {}", context.greeting, args.name))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let greeting = String::from("Hello");
+                let context = Context { greeting: &greeting };
+                let request = necrassrs::Request::new("{ hello(name: \"Sheri\") }");
+                let response = futures::executor::block_on(
+                    necrassrs::execute(&schema, &request, &dispatcher, &context),
+                );
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "hello": "Hello, Sheri" } }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn generated_consumer_resolves_a_nested_field_against_its_parent_object() {
         let schema = Schema::parse_and_validate(
             "type Query { viewer: User! } type User { name: String! }",
@@ -2084,6 +2122,8 @@ mod test {
 
             struct Query;
             struct User { name: String }
+
+            impl<C> generated::resolvers::QueryResolver<C> for Query {}
 
             impl<C: Sync> Resolver<fields::Query::viewer, C> for Query {
                 type Output = User;
@@ -2145,6 +2185,8 @@ mod test {
             struct Query;
             struct User { name: String }
             struct Context<'a> { punctuation: &'a str }
+
+            impl<C> generated::resolvers::QueryResolver<C> for Query {}
 
             impl<C: Sync> Resolver<fields::Query::users, C> for Query {
                 type Output = Vec<User>;
@@ -2227,6 +2269,8 @@ mod test {
 
             struct Query;
             struct User { name: String }
+
+            impl<C> generated::resolvers::QueryResolver<C> for Query {}
 
             impl<C: Sync> Resolver<fields::Query::present, C> for Query {
                 type Output = Option<User>;
@@ -2361,12 +2405,16 @@ mod test {
             struct User { value: &'static str, fail: bool }
             struct Organization;
 
-            impl QueryResolver<Context> for Query {
-                async fn sibling(
+            impl QueryResolver<Context> for Query {}
+
+            impl Resolver<fields::Query::sibling, Context> for Query {
+                type Output = String;
+
+                async fn resolve(
                     &self,
                     _context: &Context,
                     _args: types::Query::sibling::Args,
-                ) -> Result<String, necrassrs::ResolverError> {
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(String::from("safe"))
                 }
             }
@@ -2593,6 +2641,8 @@ mod test {
             }
             struct Context<'a> { punctuation: &'a str }
 
+            impl<C> generated::resolvers::QueryResolver<C> for Query {}
+
             impl<'ctx> Resolver<fields::Query::viewer, Context<'ctx>> for Query {
                 type Output = User;
 
@@ -2716,6 +2766,8 @@ mod test {
             struct Query;
             struct User { remaining: u8 }
 
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
             impl Resolver<fields::Query::viewer, ()> for Query {
                 type Output = User;
 
@@ -2819,6 +2871,8 @@ mod test {
             struct Query;
             struct User(String);
             struct Organization(String);
+
+            impl generated::resolvers::QueryResolver<()> for Query {}
 
             impl Resolver<fields::Query::search, ()> for Query {
                 type Output = types::SearchResult<User, Organization>;
@@ -2937,6 +2991,8 @@ mod test {
             struct Query;
             struct User;
             struct Organization;
+
+            impl generated::resolvers::QueryResolver<()> for Query {}
 
             impl Resolver<fields::Query::entity, ()> for Query {
                 type Output = types::Node<User, Organization>;
@@ -3105,9 +3161,11 @@ mod test {
             &generated,
             r#"
                 struct Query;
-                impl resolvers::QueryResolver<()> for Query {
-                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
-                        -> Result<String, necrassrs::ResolverError> {
+                impl resolvers::QueryResolver<()> for Query {}
+                impl necrassrs::Resolver<fields::Query::echo, ()> for Query {
+                    type Output = String;
+                    async fn resolve(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<Self::Output, necrassrs::ResolverError> {
                         Ok(match args.value {
                             types::Choice::from_graphql_value(value)
                             | types::Choice::__from_graphql_value(value) => value,
@@ -3151,11 +3209,13 @@ mod test {
         assert_consumer(
             &format!("#[allow(non_camel_case_types)] pub mod generated {{ {generated} }}"),
             r#"
-                use generated::{types, resolvers::QueryResolver};
+                use generated::{fields, types, resolvers::QueryResolver};
                 struct Query;
-                impl QueryResolver<()> for Query {
-                    async fn inspect(&self, _: &(), args: types::Query::inspect::Args)
-                        -> Result<Vec<String>, necrassrs::ResolverError> {
+                impl QueryResolver<()> for Query {}
+                impl necrassrs::Resolver<fields::Query::inspect, ()> for Query {
+                    type Output = Vec<String>;
+                    async fn resolve(&self, _: &(), args: types::Query::inspect::Args)
+                        -> Result<Self::Output, necrassrs::ResolverError> {
                         let number: ::core::primitive::i32 = args.value.number;
                         let decimal: ::core::primitive::f64 = args.value.decimal;
                         let flag: ::core::primitive::bool = args.value.flag;
@@ -3207,11 +3267,16 @@ mod test {
             &generated,
             r#"
                 struct Query;
-                impl resolvers::QueryResolver<()> for Query {
-                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
-                        -> Result<necrassrs::Id, necrassrs::ResolverError> { Ok(args.value) }
-                    async fn inspect(&self, _: &(), args: types::Query::inspect::Args)
-                        -> Result<Vec<necrassrs::Id>, necrassrs::ResolverError> {
+                impl resolvers::QueryResolver<()> for Query {}
+                impl necrassrs::Resolver<fields::Query::echo, ()> for Query {
+                    type Output = necrassrs::Id;
+                    async fn resolve(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<Self::Output, necrassrs::ResolverError> { Ok(args.value) }
+                }
+                impl necrassrs::Resolver<fields::Query::inspect, ()> for Query {
+                    type Output = Vec<necrassrs::Id>;
+                    async fn resolve(&self, _: &(), args: types::Query::inspect::Args)
+                        -> Result<Self::Output, necrassrs::ResolverError> {
                         let mut ids = vec![args.value.id];
                         ids.extend(args.value.ids);
                         Ok(ids)
@@ -3277,9 +3342,11 @@ mod test {
             &generated,
             r#"
                 struct Query;
-                impl resolvers::QueryResolver<()> for Query {
-                    async fn echo(&self, _: &(), args: types::Query::echo::Args)
-                        -> Result<types::status, necrassrs::ResolverError> {
+                impl resolvers::QueryResolver<()> for Query {}
+                impl necrassrs::Resolver<fields::Query::echo, ()> for Query {
+                    type Output = types::status;
+                    async fn resolve(&self, _: &(), args: types::Query::echo::Args)
+                        -> Result<Self::Output, necrassrs::ResolverError> {
                         Ok(match args.choice {
                             types::choice::filter(value) => value.status,
                             types::choice::status(value) => value,
@@ -3318,31 +3385,40 @@ mod test {
         ).unwrap();
         let generated = super::generate(&schema).unwrap();
         let consumer = r##"
-            use generated::{resolvers::QueryResolver, types};
+            use generated::{fields, resolvers::QueryResolver, types};
+            use necrassrs::Resolver;
             struct Query;
+            impl QueryResolver<()> for Query {}
             macro_rules! echo {
                 ($method:ident, $ty:ty) => {
-                    async fn $method(&self, _: &(), args: types::Query::$method::Args)
-                        -> Result<$ty, necrassrs::ResolverError> { Ok(args.value) }
+                    impl Resolver<fields::Query::$method, ()> for Query {
+                        type Output = $ty;
+                        async fn resolve(&self, _: &(), args: types::Query::$method::Args)
+                            -> Result<Self::Output, necrassrs::ResolverError> { Ok(args.value) }
+                    }
                 };
             }
-            impl QueryResolver<()> for Query {
-                echo!(integer, i32);
-                echo!(float, f64);
-                echo!(text, String);
-                echo!(boolean, bool);
-                echo!(id, necrassrs::Id);
-                echo!(required, Vec<Option<i32>>);
-                echo!(strict, Vec<i32>);
-                async fn nullable(&self, _: &(), args: types::Query::nullable::Args)
-                    -> Result<Option<Vec<Option<i32>>>, necrassrs::ResolverError> {
+            echo!(integer, i32);
+            echo!(float, f64);
+            echo!(text, String);
+            echo!(boolean, bool);
+            echo!(id, necrassrs::Id);
+            echo!(required, Vec<Option<i32>>);
+            echo!(strict, Vec<i32>);
+            impl Resolver<fields::Query::nullable, ()> for Query {
+                type Output = Option<Vec<Option<i32>>>;
+                async fn resolve(&self, _: &(), args: types::Query::nullable::Args)
+                    -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(match args.value {
                         necrassrs::GraphQLInput::Value(value) => Some(value),
                         necrassrs::GraphQLInput::Undefined | necrassrs::GraphQLInput::Null => None,
                     })
                 }
-                async fn nitems(&self, _: &(), args: types::Query::nitems::Args)
-                    -> Result<Option<Vec<i32>>, necrassrs::ResolverError> {
+            }
+            impl Resolver<fields::Query::nitems, ()> for Query {
+                type Output = Option<Vec<i32>>;
+                async fn resolve(&self, _: &(), args: types::Query::nitems::Args)
+                    -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(match args.value {
                         necrassrs::GraphQLInput::Value(value) => Some(value),
                         necrassrs::GraphQLInput::Undefined | necrassrs::GraphQLInput::Null => None,
@@ -3424,8 +3500,8 @@ mod test {
         .unwrap();
         let generated = super::generate(&schema).unwrap();
         let consumer = r##"
-            use generated::{resolvers::QueryResolver, types};
-            use necrassrs::GraphQLInput;
+            use generated::{fields, resolvers::QueryResolver, types};
+            use necrassrs::{GraphQLInput, Resolver};
             use std::sync::atomic::{AtomicUsize, Ordering};
 
             struct Query;
@@ -3439,10 +3515,14 @@ mod test {
                 }
             }
 
-            impl QueryResolver<()> for Query {
-                async fn inspect(
+            impl QueryResolver<()> for Query {}
+
+            impl Resolver<fields::Query::inspect, ()> for Query {
+                type Output = Vec<String>;
+
+                async fn resolve(
                     &self, _: &(), args: types::Query::inspect::Args,
-                ) -> Result<Vec<String>, necrassrs::ResolverError> {
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     CALLS.fetch_add(1, Ordering::Relaxed);
                     let mut result = vec![presence(args.value), presence(args.raw)];
                     match args.filter {
@@ -3465,10 +3545,14 @@ mod test {
                     }
                     Ok(result)
                 }
+            }
 
-                async fn echo(
+            impl Resolver<fields::Query::echo, ()> for Query {
+                type Output = types::Status;
+
+                async fn resolve(
                     &self, _: &(), args: types::Query::echo::Args,
-                ) -> Result<types::Status, necrassrs::ResolverError> {
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     CALLS.fetch_add(1, Ordering::Relaxed);
                     Ok(args.status)
                 }
@@ -3566,22 +3650,34 @@ mod test {
             .expect("the test schema must be valid");
         let generated = super::generate(&schema).expect("generation must succeed");
         let consumer = r#"
-            use generated::{resolvers::ReadRootResolver, types};
-            use necrassrs::Dispatcher;
+            use generated::{fields, resolvers::ReadRootResolver, types};
+            use necrassrs::{Dispatcher, Resolver};
 
             struct Query;
-            impl ReadRootResolver<()> for Query {
-                async fn greet<'a>(
-                    &'a self, _: &'a (), args: types::ReadRoot::greet::Args,
-                ) -> Result<String, necrassrs::ResolverError> {
+            impl ReadRootResolver<()> for Query {}
+            impl Resolver<fields::ReadRoot::greet, ()> for Query {
+                type Output = String;
+                async fn resolve(
+                    &self, _: &(), args: types::ReadRoot::greet::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(format!("Hello, {}", args.who))
                 }
-
-                async fn fail<'a>(
-                    &'a self, _: &'a (), _: types::ReadRoot::fail::Args,
-                ) -> Result<String, necrassrs::ResolverError> {
+            }
+            impl Resolver<fields::ReadRoot::fail, ()> for Query {
+                type Output = String;
+                async fn resolve(
+                    &self, _: &(), _: types::ReadRoot::fail::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Err(necrassrs::ResolverError::new("Greeting failed.")
                         .with_extension("code", "GREETING_FAILED"))
+                }
+            }
+            impl Resolver<fields::ReadRoot::pending, ()> for Query {
+                type Output = String;
+                async fn resolve(
+                    &self, _: &(), _: types::ReadRoot::pending::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    unimplemented!()
                 }
             }
 
@@ -3633,11 +3729,21 @@ mod test {
         let generated = super::generate(&schema).expect("generation must succeed");
         let consumer = r#"
             struct Query;
-            impl generated::resolvers::QueryResolver<()> for Query {
-                async fn hello<'a>(
-                    &'a self, _: &'a (), _: generated::types::Query::hello::Args,
-                ) -> Result<String, necrassrs::ResolverError> {
+            impl generated::resolvers::QueryResolver<()> for Query {}
+            impl necrassrs::Resolver<generated::fields::Query::hello, ()> for Query {
+                type Output = String;
+                async fn resolve(
+                    &self, _: &(), _: generated::types::Query::hello::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(String::from("Hello, Sheri"))
+                }
+            }
+            impl necrassrs::Resolver<generated::fields::Query::pending, ()> for Query {
+                type Output = String;
+                async fn resolve(
+                    &self, _: &(), _: generated::types::Query::pending::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    unimplemented!("Resolver Query.pending is not implemented")
                 }
             }
 
@@ -4134,13 +4240,16 @@ mod test {
             .expect("the test schema must be valid");
         let generated = super::generate(&schema).expect("generation must succeed");
         let consumer = r#"
-            use necrassrs::Dispatcher;
+            use necrassrs::{Dispatcher, Resolver};
 
             pub struct Query(&'static str);
-            impl resolvers::QueryResolver<()> for Query {
-                async fn id<'a>(
-                    &'a self, _: &'a (), _: types::Query::id::Args,
-                ) -> Result<necrassrs::Id, necrassrs::ResolverError> {
+            impl resolvers::QueryResolver<()> for Query {}
+            impl Resolver<fields::Query::id, ()> for Query {
+                type Output = necrassrs::Id;
+
+                async fn resolve(
+                    &self, _: &(), _: types::Query::id::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(necrassrs::Id::from(self.0))
                 }
             }
@@ -4173,13 +4282,16 @@ mod test {
         .expect("the test schema must be valid");
         let generated = super::generate(&schema).expect("generation must succeed");
         let consumer = r#"
-            use necrassrs::Dispatcher;
+            use necrassrs::{Dispatcher, Resolver};
 
             pub struct Query(bool);
-            impl resolvers::QueryResolver<()> for Query {
-                async fn status<'a>(
-                    &'a self, _: &'a (), _: types::Query::status::Args,
-                ) -> Result<types::Status, necrassrs::ResolverError> {
+            impl resolvers::QueryResolver<()> for Query {}
+            impl Resolver<fields::Query::status, ()> for Query {
+                type Output = types::Status;
+
+                async fn resolve(
+                    &self, _: &(), _: types::Query::status::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(if self.0 { types::Status::OPEN } else { types::Status::CLOSED })
                 }
             }
@@ -4209,13 +4321,17 @@ mod test {
             .expect("the test schema must be valid");
         let generated = super::generate(&schema).expect("generation must succeed");
         let consumer = r#"
-            use generated::{resolvers::QueryResolver, types};
+            use generated::{fields, resolvers::QueryResolver, types};
+            use necrassrs::Resolver;
 
             struct Query(f64);
-            impl QueryResolver<()> for Query {
-                async fn values<'a>(
-                    &'a self, _: &'a (), _: types::Query::values::Args,
-                ) -> Result<Option<Vec<Option<f64>>>, necrassrs::ResolverError> {
+            impl QueryResolver<()> for Query {}
+            impl Resolver<fields::Query::values, ()> for Query {
+                type Output = Option<Vec<Option<f64>>>;
+
+                async fn resolve(
+                    &self, _: &(), _: types::Query::values::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(Some(vec![Some(1.5), Some(self.0), Some(2.5)]))
                 }
             }
@@ -4250,13 +4366,16 @@ mod test {
     }
 
     const FLOAT_RESULT_CONSUMER: &str = r#"
-        use necrassrs::Dispatcher;
+        use necrassrs::{Dispatcher, Resolver};
 
         pub struct Query(f64);
-        impl resolvers::QueryResolver<()> for Query {
-            async fn value<'a>(
-                &'a self, _: &'a (), _: types::Query::value::Args,
-            ) -> Result<f64, necrassrs::ResolverError> {
+        impl resolvers::QueryResolver<()> for Query {}
+        impl Resolver<fields::Query::value, ()> for Query {
+            type Output = f64;
+
+            async fn resolve(
+                &self, _: &(), _: types::Query::value::Args,
+            ) -> Result<Self::Output, necrassrs::ResolverError> {
                 Ok(self.0)
             }
         }
@@ -4353,11 +4472,15 @@ mod test {
             })
             .collect::<String>();
         let consumer = format!(
-            "pub struct Query(usize);
-             impl resolvers::QueryResolver<()> for Query {{
-                 async fn value<'a>(
-                     &'a self, _: &'a (), _: types::Query::value::Args,
-                 ) -> Result<{rust_type}, necrassrs::ResolverError> {{
+            "use necrassrs::Resolver;
+             pub struct Query(usize);
+             impl resolvers::QueryResolver<()> for Query {{}}
+             impl Resolver<fields::Query::value, ()> for Query {{
+                 type Output = {rust_type};
+
+                 async fn resolve(
+                     &self, _: &(), _: types::Query::value::Args,
+                 ) -> Result<Self::Output, necrassrs::ResolverError> {{
                      Ok(match self.0 {{ {arms} _ => unreachable!() }})
                  }}
              }}
@@ -4642,11 +4765,6 @@ mod test {
             pub struct Context;
 
             impl resolvers::QueryResolver<Context> for Query {}
-            impl resolvers::UserResolver<Context> for Query {}
-            impl resolvers::userResolver<Context> for Query {}
-            impl resolvers::UserResolverResolver<Context> for Query {}
-            impl resolvers::_selfResolver<Context> for Query {}
-            impl resolvers::__selfResolver<Context> for Query {}
 
             pub fn check() {
                 let _: String = types::Query::hello::Args { name: String::new() }.name;
@@ -4670,10 +4788,13 @@ mod test {
 
     const HELLO_CONSUMER: &str = r#"
         pub struct Query;
-        impl resolvers::QueryResolver<()> for Query {
-            async fn hello<'a>(
-                &'a self, _: &'a (), _: types::Query::hello::Args,
-            ) -> Result<String, necrassrs::ResolverError> {
+        impl resolvers::QueryResolver<()> for Query {}
+        impl necrassrs::Resolver<fields::Query::hello, ()> for Query {
+            type Output = String;
+
+            async fn resolve(
+                &self, _: &(), _: types::Query::hello::Args,
+            ) -> Result<Self::Output, necrassrs::ResolverError> {
                 Ok(String::from("Hello, Sheri"))
             }
         }
@@ -4692,7 +4813,7 @@ mod test {
             if compatible {
                 assert_consumer_compiles(&generated, HELLO_CONSUMER);
             } else {
-                assert_consumer_fails(&generated, HELLO_CONSUMER, "E0407");
+                assert_consumer_fails(&generated, HELLO_CONSUMER, "E0425");
             }
         }
     }
@@ -4701,10 +4822,13 @@ mod test {
     fn renamed_or_removed_argument_rejects_existing_argument_access() {
         let consumer = r#"
             pub struct Query;
-            impl resolvers::QueryResolver<()> for Query {
-                async fn hello<'a>(
-                    &'a self, _: &'a (), args: types::Query::hello::Args,
-                ) -> Result<String, necrassrs::ResolverError> {
+            impl resolvers::QueryResolver<()> for Query {}
+            impl necrassrs::Resolver<fields::Query::hello, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self, _: &(), args: types::Query::hello::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
                     Ok(format!("Hello, {}", args.name))
                 }
             }
