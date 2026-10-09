@@ -663,6 +663,67 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_only_source_bootstraps_resolvers() {
+        let file = ResolverFile::new();
+        fs::write(&file.path, "  \n\t\n").unwrap();
+
+        file.synchronize("type Query { hello: String! }").unwrap();
+
+        let source = file.read();
+        assert!(source.contains("QueryResolver<C> for self::Query {}"));
+        assert!(source.contains("fields::r#Query::r#hello"));
+    }
+
+    #[test]
+    fn custom_query_root_and_context_drive_query_field_resolvers() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = file
+            .read()
+            .replacen(
+                "pub struct Query;",
+                "pub struct AppContext;\npub struct AppQuery;",
+                1,
+            )
+            .replace(
+                "impl<C: ::core::marker::Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}",
+                "impl crate::generated::resolvers::QueryResolver<AppContext> for self::AppQuery {}",
+            )
+            .replacen(
+                "::core::unimplemented!()",
+                "{ Ok(::std::string::String::from(\"retained\")) }",
+                1,
+            );
+        syn::parse_file(&source).unwrap();
+        fs::write(&file.path, source).unwrap();
+
+        file.synchronize("type Query { hello: String! extra: String! }")
+            .unwrap();
+
+        let source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        for field in ["hello", "extra"] {
+            let implementation = ast
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Impl(item)
+                        if field_resolver_coordinate(item)
+                            == Some(("Query".to_owned(), field.to_owned())) =>
+                    {
+                        Some(item)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let receiver = &implementation.self_ty;
+            assert_eq!(quote!(#receiver).to_string(), "self :: AppQuery");
+        }
+        assert!(source.contains("String :: from (\"retained\")"));
+        assert!(source.contains("QueryResolver < AppContext > for self :: AppQuery"));
+    }
+
+    #[test]
     fn adds_and_removes_field_resolvers_without_rewriting_retained_code() {
         let file = ResolverFile::new();
         file.synchronize("type Query { hello: String! old: String! }")
