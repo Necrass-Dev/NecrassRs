@@ -335,7 +335,7 @@ h2 {
   min-height: 414px;
 }
 .added-schema .line:nth-child(3),
-.added-resolver .line:nth-child(n + 12):nth-child(-n + 18) {
+.added-resolver .line:nth-child(n + 17):nth-child(-n + 27) {
   display: inline-block;
   min-width: 100%;
   background: #a48bff18;
