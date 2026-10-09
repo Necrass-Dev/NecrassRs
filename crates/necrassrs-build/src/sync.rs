@@ -315,14 +315,73 @@ fn reconcile_field_resolver(
     edits: &mut Vec<Edit>,
 ) -> syn::Result<()> {
     let current_receiver = &implementation.self_ty;
-    let desired_receiver = &resolver.receiver;
+    let desired_receiver = receiver_with_existing_arguments(&resolver.receiver, current_receiver)?;
     if quote!(#current_receiver).to_string() != quote!(#desired_receiver).to_string() {
-        let replacement = &resolver.receiver;
         edits.push(Edit {
             range: implementation.self_ty.span().byte_range(),
+            replacement: quote!(#desired_receiver).to_string(),
+        });
+    }
+    let (output, resolve) = field_resolver_items(implementation)?;
+    validate_resolve(resolve)?;
+    if !equivalent_output_type(&output.ty, &resolver.output) {
+        let replacement = &resolver.output;
+        edits.push(Edit {
+            range: output.ty.span().byte_range(),
             replacement: quote!(#replacement).to_string(),
         });
     }
+    Ok(())
+}
+
+fn receiver_with_existing_arguments(desired: &Type, current: &Type) -> syn::Result<Type> {
+    let (Type::Path(desired_path), Type::Path(current_path)) = (desired, current) else {
+        return Ok(desired.clone());
+    };
+    let mut desired_path = desired_path.clone();
+    let desired_arguments = &desired_path
+        .path
+        .segments
+        .last()
+        .expect("Rust type paths have at least one segment")
+        .arguments;
+    let current_arguments = &current_path
+        .path
+        .segments
+        .last()
+        .expect("Rust type paths have at least one segment")
+        .arguments;
+    if !compatible_generic_arguments(desired_arguments, current_arguments) {
+        return Err(syn::Error::new_spanned(
+            current,
+            "Cannot preserve field resolver generic bindings for the query root type",
+        ));
+    }
+    desired_path.path.segments.last_mut().unwrap().arguments = current_arguments.clone();
+    Ok(Type::Path(desired_path))
+}
+
+fn compatible_generic_arguments(left: &PathArguments, right: &PathArguments) -> bool {
+    match (left, right) {
+        (PathArguments::None, PathArguments::None) => true,
+        (PathArguments::AngleBracketed(left), PathArguments::AngleBracketed(right)) => {
+            left.args.len() == right.args.len()
+                && left.args.iter().zip(&right.args).all(|(left, right)| {
+                    matches!(
+                        (left, right),
+                        (GenericArgument::Lifetime(_), GenericArgument::Lifetime(_))
+                            | (GenericArgument::Type(_), GenericArgument::Type(_))
+                            | (GenericArgument::Const(_), GenericArgument::Const(_))
+                    )
+                })
+        }
+        _ => false,
+    }
+}
+
+fn field_resolver_items(
+    implementation: &syn::ItemImpl,
+) -> syn::Result<(&syn::ImplItemType, &syn::ImplItemFn)> {
     let mut outputs = implementation.items.iter().filter_map(|item| match item {
         syn::ImplItem::Type(item) if item.ident == "Output" => Some(item),
         _ => None,
@@ -339,12 +398,58 @@ fn reconcile_field_resolver(
             "Expected one Output type in a field resolver implementation",
         ));
     }
-    if !equivalent_output_type(&output.ty, &resolver.output) {
-        let replacement = &resolver.output;
-        edits.push(Edit {
-            range: output.ty.span().byte_range(),
-            replacement: quote!(#replacement).to_string(),
-        });
+    let mut resolves = implementation.items.iter().filter_map(|item| match item {
+        syn::ImplItem::Fn(item) if item.sig.ident == "resolve" => Some(item),
+        _ => None,
+    });
+    let resolve = resolves.next().ok_or_else(|| {
+        syn::Error::new_spanned(
+            implementation,
+            "Expected one resolve method in a field resolver implementation",
+        )
+    })?;
+    if resolves.next().is_some() {
+        return Err(syn::Error::new_spanned(
+            implementation,
+            "Expected one resolve method in a field resolver implementation",
+        ));
+    }
+    if implementation.items.iter().any(|item| {
+        !matches!(item, syn::ImplItem::Type(item) if item.ident == "Output")
+            && !matches!(item, syn::ImplItem::Fn(item) if item.sig.ident == "resolve")
+    }) {
+        return Err(syn::Error::new_spanned(
+            implementation,
+            "Unexpected item in a field resolver implementation",
+        ));
+    }
+    Ok((output, resolve))
+}
+
+fn validate_resolve(resolve: &syn::ImplItemFn) -> syn::Result<()> {
+    let mut inputs = resolve.sig.inputs.iter();
+    let receiver = matches!(
+        inputs.next(),
+        Some(syn::FnArg::Receiver(receiver))
+            if receiver.reference.is_some() && receiver.mutability.is_none()
+    );
+    let context = matches!(
+        inputs.next(),
+        Some(syn::FnArg::Typed(context))
+            if matches!(context.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_none())
+    );
+    let args = matches!(inputs.next(), Some(syn::FnArg::Typed(_)));
+    if !receiver || !context || !args || inputs.next().is_some() {
+        return Err(syn::Error::new_spanned(
+            &resolve.sig,
+            "Expected resolve with self, Context, and Args parameters",
+        ));
+    }
+    if matches!(resolve.sig.output, syn::ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &resolve.sig,
+            "Expected resolve to declare its result type",
+        ));
     }
     Ok(())
 }
@@ -356,16 +461,47 @@ fn equivalent_output_type(left: &Type, right: &Type) -> bool {
         (Type::Paren(left), _) => equivalent_output_type(&left.elem, right),
         (_, Type::Paren(right)) => equivalent_output_type(left, &right.elem),
         (Type::Path(left), Type::Path(right)) if left.qself.is_none() && right.qself.is_none() => {
-            let Some(left) = left.path.segments.last() else {
-                return false;
-            };
-            let Some(right) = right.path.segments.last() else {
-                return false;
-            };
-            left.ident.unraw() == right.ident.unraw()
-                && equivalent_path_arguments(&left.arguments, &right.arguments)
+            let exact_path = left.path.segments.len() == right.path.segments.len()
+                && left
+                    .path
+                    .segments
+                    .iter()
+                    .zip(&right.path.segments)
+                    .all(|(left, right)| {
+                        left.ident.unraw() == right.ident.unraw()
+                            && equivalent_path_arguments(&left.arguments, &right.arguments)
+                    });
+            exact_path
+                || builtin_path(&left.path) == builtin_path(&right.path)
+                    && builtin_path(&left.path).is_some()
+                    && equivalent_path_arguments(
+                        &left.path.segments.last().unwrap().arguments,
+                        &right.path.segments.last().unwrap().arguments,
+                    )
         }
         _ => quote!(#left).to_string() == quote!(#right).to_string(),
+    }
+}
+
+fn builtin_path(path: &syn::Path) -> Option<&'static str> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.unraw().to_string())
+        .collect::<Vec<_>>();
+    match segments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["String"] | ["std", "string", "String"] => Some("String"),
+        ["bool"] | ["core", "primitive", "bool"] => Some("bool"),
+        ["i32"] | ["core", "primitive", "i32"] => Some("i32"),
+        ["f64"] | ["core", "primitive", "f64"] => Some("f64"),
+        ["Option"] | ["core", "option", "Option"] => Some("Option"),
+        ["Vec"] | ["std", "vec", "Vec"] => Some("Vec"),
+        _ => None,
     }
 }
 
@@ -651,6 +787,79 @@ mod tests {
         }
     }
 
+    fn field_implementation_mut<'a>(
+        ast: &'a mut syn::File,
+        object: &str,
+        field: &str,
+    ) -> &'a mut syn::ItemImpl {
+        ast.items
+            .iter_mut()
+            .find_map(|item| match item {
+                Item::Impl(item)
+                    if field_resolver_coordinate(item)
+                        == Some((object.to_owned(), field.to_owned())) =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn field_output(source: &str, object: &str, field: &str) -> String {
+        let ast = syn::parse_file(source).unwrap();
+        let implementation = ast
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Impl(item)
+                    if field_resolver_coordinate(item)
+                        == Some((object.to_owned(), field.to_owned())) =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let output = implementation
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::ImplItem::Type(item) if item.ident == "Output" => Some(&item.ty),
+                _ => None,
+            })
+            .unwrap();
+        quote!(#output).to_string()
+    }
+
+    fn mutate_resolve(source: &str, change: fn(&mut syn::ImplItemFn)) -> String {
+        let mut ast = syn::parse_file(source).unwrap();
+        let implementation = field_implementation_mut(&mut ast, "Query", "hello");
+        let resolve = implementation
+            .items
+            .iter_mut()
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+                _ => None,
+            })
+            .unwrap();
+        change(resolve);
+        ast.to_token_stream().to_string()
+    }
+
+    fn duplicate_resolve(source: &str) -> String {
+        let mut ast = syn::parse_file(source).unwrap();
+        let implementation = field_implementation_mut(&mut ast, "Query", "hello");
+        let resolve = implementation
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::ImplItem::Fn(method) if method.sig.ident == "resolve"))
+            .unwrap()
+            .clone();
+        implementation.items.push(resolve);
+        ast.to_token_stream().to_string()
+    }
+
     #[test]
     fn creates_resolvers_and_preserves_unchanged_source() {
         let file = ResolverFile::new();
@@ -886,6 +1095,60 @@ mod tests {
 
             assert_eq!(quote!(#output).to_string(), expected, "{sdl}");
             assert!(source.contains("/* retain this body */"), "{sdl}");
+        }
+    }
+
+    #[test]
+    fn updates_output_when_named_type_kind_changes() {
+        let file = ResolverFile::new();
+        let enum_schema = "enum Status { OPEN } type Query { value: Status! }";
+        let object_schema = "type Status { code: String! } type Query { value: Status! }";
+
+        file.synchronize(enum_schema).unwrap();
+        file.synchronize(object_schema).unwrap();
+        assert_eq!(
+            field_output(&file.read(), "Query", "value"),
+            "self :: r#Status"
+        );
+
+        file.synchronize(enum_schema).unwrap();
+        assert_eq!(
+            field_output(&file.read(), "Query", "value"),
+            "crate :: generated :: types :: r#Status"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_resolve_methods_without_writing() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = file.read();
+        let cases = [
+            (
+                mutate_resolve(&source, |resolve| {
+                    resolve.sig.ident = syn::parse_quote!(renamed);
+                }),
+                "Expected one resolve method",
+            ),
+            (duplicate_resolve(&source), "Expected one resolve method"),
+            (
+                mutate_resolve(&source, |resolve| {
+                    resolve.sig.inputs.pop();
+                }),
+                "Expected resolve with self, Context, and Args parameters",
+            ),
+        ];
+
+        for (index, (input, expected)) in cases.into_iter().enumerate() {
+            fs::write(&file.path, &input).unwrap();
+            let error = file
+                .synchronize("type Query { hello: String! added: String! }")
+                .expect_err(&format!("case {index} unexpectedly succeeded"));
+            assert!(
+                error.to_string().contains(expected),
+                "case {index}: {error}"
+            );
+            assert_eq!(file.read(), input);
         }
     }
 

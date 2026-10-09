@@ -502,6 +502,88 @@ fn main() {
 }
 
 #[test]
+fn generic_bindings_remain_local_to_each_resolver_impl() {
+    let consumer = Consumer::new("type Query { hello: String! }");
+    consumer.bootstrap();
+    let mut ast = consumer.ast();
+    for item in &mut ast.items {
+        match item {
+            Item::Struct(item) if item.ident == "Query" => {
+                *item = syn::parse_quote!(
+                    pub struct Query<T>(pub ::core::marker::PhantomData<T>);
+                );
+            }
+            Item::Impl(implementation)
+                if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                }) =>
+            {
+                implementation.generics = syn::parse_quote!(<T: Send + Sync>);
+                implementation.trait_.as_mut().unwrap().1 =
+                    syn::parse_quote!(crate::generated::resolvers::QueryResolver<()>);
+                *implementation.self_ty = syn::parse_quote!(self::Query<T>);
+            }
+            Item::Impl(implementation)
+                if field_resolver_coordinate(implementation)
+                    .is_some_and(|(object, _)| object.unraw() == "Query") =>
+            {
+                implementation.generics = syn::parse_quote!(<U: Send + Sync>);
+                let (_, trait_path, _) = implementation.trait_.as_mut().unwrap();
+                let PathArguments::AngleBracketed(arguments) =
+                    &mut trait_path.segments.last_mut().unwrap().arguments
+                else {
+                    unreachable!()
+                };
+                arguments.args[1] = syn::parse_quote!(());
+                *implementation.self_ty = syn::parse_quote!(self::Query<U>);
+                let resolve = implementation
+                    .items
+                    .iter_mut()
+                    .find_map(|item| match item {
+                        ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+                        _ => None,
+                    })
+                    .unwrap();
+                let syn::FnArg::Typed(context) = &mut resolve.sig.inputs[1] else {
+                    unreachable!()
+                };
+                *context.ty = syn::parse_quote!(&());
+            }
+            _ => {}
+        }
+    }
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<()>>(_: D) {}
+    let query = resolvers::Query::<String>(::core::marker::PhantomData);
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(query));
+}
+"#,
+    )
+    .unwrap();
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    let implementation = field_resolver_ref(&ast, "Query", "hello");
+    assert_eq!(
+        implementation.generics.to_token_stream().to_string(),
+        "< U : Send + Sync >"
+    );
+    assert_eq!(
+        implementation.self_ty.to_token_stream().to_string(),
+        "self :: Query < U >"
+    );
+}
+
+#[test]
 fn adding_field_to_bom_prefixed_source_preserves_existing_code() {
     let consumer = Consumer::new("type Query { hello(name: String!): String! }");
     consumer.bootstrap();
