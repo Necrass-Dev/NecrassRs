@@ -935,7 +935,7 @@ fn should_include(selection: &Selection, variables: &JsonMap) -> bool {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -969,6 +969,17 @@ mod tests {
     struct RecoveringDispatcher(AtomicUsize);
 
     struct OrderingDispatcher(Mutex<Vec<String>>);
+
+    struct MergedObjectDispatcher {
+        viewer_calls: AtomicUsize,
+        friend_calls: Arc<AtomicUsize>,
+    }
+
+    struct MergedObject {
+        name: &'static str,
+        id: &'static str,
+        friend_calls: Arc<AtomicUsize>,
+    }
 
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
         async fn resolve<'a>(
@@ -1096,6 +1107,65 @@ mod tests {
         }
     }
 
+    impl super::Dispatcher<()> for MergedObjectDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> Result<ResolvedValue, ResolverError> {
+            assert_eq!(
+                coordinate,
+                FieldCoordinate {
+                    parent_type: "Query",
+                    field: "viewer",
+                }
+            );
+            self.viewer_calls.fetch_add(1, Ordering::Relaxed);
+
+            Ok(ResolvedValue::Object(Box::new(MergedObject {
+                name: "Viewer",
+                id: "viewer-id",
+                friend_calls: Arc::clone(&self.friend_calls),
+            })))
+        }
+    }
+
+    impl crate::ResolvedObject<()> for MergedObject {
+        fn type_name(&self) -> &'static str {
+            "User"
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = Result<ResolvedValue, ResolverError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                match coordinate.field {
+                    "name" => Ok(ResolvedValue::Json(json!(self.name))),
+                    "id" => Ok(ResolvedValue::Json(json!(self.id))),
+                    "friend" => {
+                        self.friend_calls.fetch_add(1, Ordering::Relaxed);
+                        Ok(ResolvedValue::Object(Box::new(Self {
+                            name: "Friend",
+                            id: "friend-id",
+                            friend_calls: Arc::clone(&self.friend_calls),
+                        })))
+                    }
+                    field => Err(ResolverError::new(format!("Unknown User field '{field}'"))),
+                }
+            })
+        }
+    }
+
     fn assert_send<T: Send>(_: &T) {}
 
     fn coerce_arguments(schema_source: &str, request: Request) -> JsonMap {
@@ -1208,6 +1278,48 @@ mod tests {
             json!({ "data": { "hello": "unexpected resolver call" } })
         );
         assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_object_fields_complete_every_subselection_once() {
+        let schema = Schema::parse_and_validate(
+            "type Query { viewer: User! } type User { name: String! id: ID! friend: User! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            r#"
+                query {
+                    viewer { name friend { name } }
+                    viewer { id friend { id } }
+                }
+            "#,
+        );
+        let friend_calls = Arc::new(AtomicUsize::new(0));
+        let dispatcher = MergedObjectDispatcher {
+            viewer_calls: AtomicUsize::new(0),
+            friend_calls: Arc::clone(&friend_calls),
+        };
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+
+        assert_eq!(
+            to_value(response).unwrap(),
+            json!({
+                "data": {
+                    "viewer": {
+                        "name": "Viewer",
+                        "id": "viewer-id",
+                        "friend": {
+                            "name": "Friend",
+                            "id": "friend-id",
+                        },
+                    },
+                },
+            })
+        );
+        assert_eq!(dispatcher.viewer_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(friend_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
