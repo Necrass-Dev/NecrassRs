@@ -266,7 +266,7 @@ where
         let value = match complete_value(
             schema,
             &prepared,
-            field,
+            &fields,
             &definition.ty,
             value,
             context,
@@ -595,7 +595,7 @@ struct PropagateNull;
 fn complete_value<'a, C>(
     schema: &'a Valid<Schema>,
     prepared: &'a PreparedRequest,
-    field: &'a Field,
+    fields: &'a [&'a Field],
     ty: &'a Type,
     value: ResolvedValue<C>,
     context: &'a C,
@@ -606,6 +606,7 @@ where
     C: Sync + 'a,
 {
     Box::pin(async move {
+        let field = fields[0];
         let value = match value {
             ResolvedValue::Error(error) => {
                 errors.push(*resolver_error_to_graphql_error(
@@ -666,7 +667,7 @@ where
                 for (index, value) in values.into_iter().enumerate() {
                     path.push(ResponseDataPathSegment::ListIndex(index));
                     let item = complete_value(
-                        schema, prepared, field, item_type, value, context, path, errors,
+                        schema, prepared, fields, item_type, value, context, path, errors,
                     )
                     .await;
                     path.pop();
@@ -737,19 +738,21 @@ where
                         };
                     }
 
-                    let mut fields = IndexMap::default();
+                    let mut subfields = IndexMap::default();
                     let mut visited_fragments = HashSet::default();
-                    collect_selections(
-                        schema,
-                        object_type,
-                        prepared,
-                        &field.selection_set.selections,
-                        &mut visited_fragments,
-                        &mut fields,
-                    );
+                    for field in fields {
+                        collect_selections(
+                            schema,
+                            object_type,
+                            prepared,
+                            &field.selection_set.selections,
+                            &mut visited_fragments,
+                            &mut subfields,
+                        );
+                    }
 
                     let mut completed = JsonMap::new();
-                    for (response_key, fields) in fields {
+                    for (response_key, fields) in subfields {
                         let selected_field = fields[0];
                         path.push(ResponseDataPathSegment::Field(response_key.clone()));
 
@@ -815,7 +818,7 @@ where
                         let field_value = complete_value(
                             schema,
                             prepared,
-                            selected_field,
+                            &fields,
                             &definition.ty,
                             field_value,
                             context,
