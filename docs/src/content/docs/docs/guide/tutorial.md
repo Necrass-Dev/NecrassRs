@@ -8,12 +8,13 @@ resolvers, and run a web server. You will send queries using GraphiQL and HTTP.
 The example introduces enums, input defaults,
 nullable values, OneOf inputs, and recursive input types.
 
-The source checkout supports built-in scalar and enum query results, including
-nullable and list forms, and ordinary and OneOf input objects. Custom scalars,
-composite results, and generated mutation/subscription routing remain unsupported.
-These examples describe this checkout; a previously resolved Git dependency must
-be updated before it contains these changes. Use the maintained Apollo source
-replacement configured in the repository's Cargo manifests.
+The source checkout supports built-in scalar and enum results, ordinary and OneOf
+input objects, owned Object results, Interface and Union results, nullable and
+list forms, and recursive input and Object relationships. Custom scalars,
+borrowed Object results, and generated mutation/subscription routing remain
+unsupported. These examples describe this checkout; a previously resolved Git
+dependency must be updated before it contains these changes. Use the maintained
+Apollo source replacement configured in the repository's Cargo manifests.
 
 ## 1. Create a project
 
@@ -191,12 +192,15 @@ type mappings, `GraphQLInput`, defaults, OneOf inputs, and recursive inputs.
 ## 5. Change the schema and rebuild
 
 Stop the server with Ctrl+C, edit `schema/schema.graphql`, and run `cargo build`
-again. Rebuilding adds new method stubs and retains existing method bodies. Argument
-changes update generated `Args`; bodies that depend on removed or changed fields
-need manual edits. Retained methods keep their written return-type spelling, so
-changing an SDL return type may also require editing the Rust return signature.
-New enum-return methods use `crate::generated::types::<Enum>`. Deleting or renaming
-a field removes its old method and body.
+again. Rebuilding adds new resolver stubs and retains existing resolver bodies.
+Argument changes update generated `Args`; bodies that depend on removed or changed
+fields need manual edits. Retained declarations keep their written return-type
+spelling, so changing an SDL return type may also require editing the Rust return
+signature or associated `Output` type. New enum-return methods use
+`crate::generated::types::<Enum>`. Deleting or renaming a field removes its old
+resolver declaration and body.
 
 Implement new resolver stubs, then restart the server with `cargo run`. Refresh
-GraphiQL to explore the updated schema and execute your new queries.
+GraphiQL to explore the updated schema and execute your new queries. Continue with
+the [Personnel Management System](/docs/personnel-management/) to add Object,
+Interface, and Union results.

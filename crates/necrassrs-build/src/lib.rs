@@ -26,18 +26,19 @@
 //! # Source ownership
 //!
 //! **Building modifies `src/resolvers.rs`.** SDL owns resolver declarations;
-//! applications own retained method bodies and unrelated code. New fields get
-//! explicit `unimplemented!()` stubs. Deleted fields lose their methods and
-//! bodies. A rename is a deletion plus a new stub, without body migration.
-//! Review source changes after editing SDL. Retained bodies may need manual
-//! changes when arguments change.
+//! applications own retained resolver bodies and unrelated code. New fields get
+//! explicit `unimplemented!()` stubs. Deleted fields lose their resolver
+//! declarations and bodies. A rename is a deletion plus a new stub, without body
+//! migration. Review source changes after editing SDL. Retained bodies may need
+//! manual changes when arguments or result types change.
 //!
 //! Generated contract types cover built-in scalars, enums, ordinary input
-//! objects, lists, and nullable wrappers. Query dispatch accepts built-in scalar,
-//! enum, and ordinary input object arguments, including nullable and list forms;
-//! result dispatch supports built-in scalars and enums with nullable/list forms.
-//! OneOf inputs and recursive input boxing are supported. Mutation and subscription roots
-//! are rejected. Applications must configure `panic = "abort"` in their root dev
+//! objects, lists, nullable wrappers, owned Object results, and Interface and
+//! Union results. Query dispatch accepts built-in scalar, enum, and ordinary input
+//! object arguments and supports nullable/list forms, OneOf inputs, recursive
+//! input boxing, and recursive Object relationships. Custom scalars, borrowed
+//! Object results, and mutation and subscription roots are unsupported.
+//! Applications must configure `panic = "abort"` in their root dev
 //! and release profiles to enforce process termination on unimplemented calls.
 //! This affects all panics; ordinary application failures should be returned as
 //! runtime resolver errors.
@@ -50,15 +51,17 @@ mod sync;
 
 /// Generates `OUT_DIR/necrassrs.rs` from `.graphql` files recursively discovered
 /// under `schema_dir`, sorted by path. Symbolic-link entries are skipped.
-/// Creates and synchronizes editable query resolvers in `src/resolvers.rs`.
+/// Creates and synchronizes editable query and Object resolvers in
+/// `src/resolvers.rs`.
 ///
 /// Relative schema paths are resolved against the process's working directory
 /// (the package root for a Cargo build script). Cargo supplies `OUT_DIR` and
 /// `CARGO_MANIFEST_DIR`; the resolver file is under the latter. Emits Cargo
 /// rebuild directives for the schema directory and discovered files.
 ///
-/// Retained methods keep their bodies; deleted and renamed fields lose their
-/// old methods. Source is written only when synchronization changes it.
+/// Retained fields keep their resolver bodies; deleted and renamed fields lose
+/// their old resolver declarations. Source is written only when synchronization
+/// changes it.
 ///
 /// # Errors
 ///

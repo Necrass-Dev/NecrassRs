@@ -8,9 +8,10 @@ page describes those types and the values a resolver receives. For a complete
 web server example, follow the [Tutorial](/docs/tutorial/).
 
 The generated API currently supports built-in scalar and enum results, ordinary
-and OneOf input objects, nullable and list forms, and recursive inputs. Custom
-scalars, composite results, and generated mutation/subscription routing remain
-unsupported.
+and OneOf input objects, owned Object results, Interface and Union results,
+nullable and list forms, and recursive input and Object relationships. Custom
+scalars, borrowed Object results, and generated mutation/subscription routing
+remain unsupported.
 
 ## Rust mappings
 
@@ -47,6 +48,29 @@ bounds. JSON variable numbers with an empty fractional part are treated as
 integers; a GraphQL floating-point literal remains a different literal kind.
 Non-finite Float results produce execution errors; nullable list items preserve
 valid siblings and report the failed item's index.
+
+## Composite results
+
+Applications provide the concrete Rust types returned for GraphQL Objects.
+Interface and Union results use generated enums whose variants hold those concrete
+types. Nullability and lists use the same `Option<T>` and `Vec<T>` wrappers as
+scalar results.
+
+| SDL result            | Resolver output example                                      |
+| --------------------- | ------------------------------------------------------------ |
+| `Operator!`           | `Operator`                                                   |
+| `Operator`            | `Option<Operator>`                                           |
+| `[Operator!]!`        | `Vec<Operator>`                                              |
+| Interface `Person!`   | `generated::types::Person<Operator>`                         |
+| Union `SearchResult!` | `generated::types::SearchResult<Operator, Company, Faction>` |
+
+Scalar and enum fields on the Query root are methods on its generated resolver
+trait. Composite Query fields and fields on reachable application-owned Objects
+use `necrassrs::Resolver<Field, Context>` implementations with an associated
+`Output` type. Recursive Object relationships are supported because each selected
+field is resolved independently instead of nesting an infinitely sized Rust type.
+See the [Personnel Management System](/docs/personnel-management/) for a complete
+Object, Interface, and Union example.
 
 ## GraphQLInput
 

@@ -24,7 +24,7 @@ NecrassRs makes GraphQL SDL the source of truth. Cargo builds turn that
 language-independent contract into Rust types, resolver contracts, and dispatch
 code. This reduces repetitive declarations and catches mismatches between the
 schema and its Rust implementation at compile time, while leaving application
-developers to write the business logic in ordinary Rust methods.
+developers to write the business logic in ordinary Rust resolver bodies.
 
 ## Key features
 
@@ -33,9 +33,10 @@ developers to write the business logic in ordinary Rust methods.
 - **Cargo-integrated generation.** Your build script invokes `necrassrs-build`
   during ordinary Cargo builds. After project initialization, schema changes do
   not require a separate CLI generation command.
-- **Resolver source synchronization.** Builds create new method stubs and preserve
-  the bodies of retained methods. Deleted or renamed fields remove their old
-  methods, including their bodies; unrelated application code is preserved.
+- **Resolver source synchronization.** Builds create new resolver stubs and preserve
+  the bodies of retained fields. Deleted or renamed fields remove their old
+  resolver declarations, including their bodies; unrelated application code is
+  preserved.
 - **Typed async resolvers.** Generated argument types and resolver traits connect
   GraphQL inputs and results to Rust types. The compiler checks implementations
   against those contracts, and async methods can borrow request Context.
@@ -45,11 +46,12 @@ developers to write the business logic in ordinary Rust methods.
   independent of the HTTP framework.
 
 :::caution[Under active development]
-The generated API supports built-in scalar and enum query results, ordinary and
-OneOf input objects, nullable and list forms, and recursive input layouts. Custom
-scalars, composite results, and generated mutation/subscription routing remain
-unsupported. These pages describe this source checkout, not an older resolved
-Git dependency.
+The generated API supports built-in scalar and enum results, ordinary and OneOf
+input objects, owned Object results, Interface and Union results, nullable and
+list forms, and recursive input and Object relationships. Custom scalars,
+borrowed Object results, and generated mutation/subscription routing remain
+unsupported. These pages describe this source checkout, not an older resolved Git
+dependency.
 :::
 
 ## Namesake
@@ -64,5 +66,7 @@ Special thanks to [XiNiHa](https://xiniha.dev/#about) for his contributions to N
 
 - [Tutorial](/docs/tutorial/): build a GraphQL web server and query it with
   GraphiQL or HTTP.
+- [Personnel Management System](/docs/personnel-management/): add Object,
+  Interface, and Union results to a working server.
 - [Types](/docs/types/): Rust type mappings, input presence, defaults, and
   generated input types.
