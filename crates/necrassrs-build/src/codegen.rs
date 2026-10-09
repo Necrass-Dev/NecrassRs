@@ -2636,6 +2636,154 @@ mod test {
     }
 
     #[test]
+    fn generated_consumer_resolves_interface_implementers_and_inherited_fragments() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                interface Node { id: ID! }
+                interface Named implements Node {
+                    id: ID!
+                    name: String!
+                }
+                type User implements Node & Named {
+                    id: ID!
+                    name: String!
+                }
+                type Organization implements Node & Named {
+                    id: ID!
+                    name: String!
+                }
+                type Query { entity(kind: String!): Node! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Interface generation must succeed");
+        let consumer = r##"
+            use generated::{fields, types};
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User;
+            struct Organization;
+
+            impl Resolver<fields::Query::entity, ()> for Query {
+                type Output = types::Node<User, Organization>;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    args: <fields::Query::entity as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(match args.kind.as_str() {
+                        "user" => types::Node::User(User),
+                        "organization" => types::Node::Organization(Organization),
+                        _ => return Err(necrassrs::ResolverError::new("unknown kind")),
+                    })
+                }
+            }
+
+            impl Resolver<fields::User::id, ()> for User {
+                type Output = necrassrs::Id;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::id as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(necrassrs::Id::from("user-1"))
+                }
+            }
+
+            impl Resolver<fields::User::name, ()> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(String::from("Sheri"))
+                }
+            }
+
+            impl Resolver<fields::Organization::id, ()> for Organization {
+                type Output = necrassrs::Id;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Organization::id as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(necrassrs::Id::from("organization-1"))
+                }
+            }
+
+            impl Resolver<fields::Organization::name, ()> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Organization::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(String::from("Witch Court"))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let document = r#"
+                    query Entity($kind: String!) {
+                        entity(kind: $kind) {
+                            __typename
+                            id
+                            ... on Named { name }
+                        }
+                    }
+                "#;
+
+                for (kind, type_name, id, name) in [
+                    ("user", "User", "user-1", "Sheri"),
+                    (
+                        "organization",
+                        "Organization",
+                        "organization-1",
+                        "Witch Court",
+                    ),
+                ] {
+                    let request = necrassrs::Request::new(document).with_variables(
+                        serde_json::from_value(serde_json::json!({ "kind": kind })).unwrap(),
+                    );
+                    let response = futures::executor::block_on(necrassrs::execute(
+                        &schema,
+                        &request,
+                        &dispatcher,
+                        &(),
+                    ));
+
+                    assert_eq!(
+                        serde_json::to_value(response).unwrap(),
+                        serde_json::json!({
+                            "data": {
+                                "entity": {
+                                    "__typename": type_name,
+                                    "id": id,
+                                    "name": name,
+                                },
+                            },
+                        }),
+                    );
+                }
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn one_of_members_cannot_shadow_input_conversion() {
         let schema = Schema::parse_and_validate(
             "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",
