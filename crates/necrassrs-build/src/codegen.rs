@@ -7,7 +7,7 @@ use apollo_compiler::{
     Schema,
     ast::{NamedType, Type},
     parser::SourceSpan,
-    schema::ExtendedType,
+    schema::{ComponentName, ExtendedType},
     validation::Valid,
 };
 use proc_macro2::TokenStream;
@@ -26,8 +26,8 @@ use quote::{format_ident, quote};
 /// Returns [`CodegenError`] for unsupported types or mutation and subscription
 /// roots. Generated contracts support built-in scalars, enums, ordinary input
 /// objects, lists, nullable wrappers, and owned Object results with nullable/list
-/// wrappers, leaf fields, recursive relationships, and Union results. Custom
-/// scalars, borrowed Objects, and Interface output types are not yet supported.
+/// wrappers, leaf fields, recursive relationships, and abstract results. Custom
+/// scalars and borrowed Objects are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
@@ -204,23 +204,13 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
             continue;
         }
 
-        if let ExtendedType::Union(union_type) = definition {
-            let name = format_ident!("r#{}", rust_name(type_name.as_str()));
-            let (member_types, variants): (Vec<_>, Vec<_>) = union_type
-                .members
-                .iter()
-                .map(|member| {
-                    let member_type = object_type_ident(member.as_str());
-                    let variant = object_variant_ident(member.as_str());
-                    (member_type.clone(), quote! { #variant(#member_type) })
-                })
-                .unzip();
-
-            named_types.push(quote! {
-                pub enum #name<#(#member_types),*> {
-                    #(#variants,)*
-                }
-            });
+        if matches!(
+            definition,
+            ExtendedType::Union(_) | ExtendedType::Interface(_)
+        ) {
+            let members = abstract_member_names(schema, type_name)
+                .expect("abstract output type must have concrete members");
+            named_types.push(generate_abstract_output_enum(type_name.as_str(), &members));
             continue;
         }
 
@@ -452,7 +442,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
     }
 
     Ok(quote! {
-        #[allow(non_snake_case, non_camel_case_types)]
+        #[allow(dead_code, non_snake_case, non_camel_case_types)]
         pub mod types {
             #(#named_types)*
             #(#object_modules)*
@@ -567,7 +557,7 @@ fn composite_output_name<'a>(schema: &Schema, ty: &'a Type) -> Option<&'a NamedT
     let name = ty.inner_named_type();
     matches!(
         schema.types.get(name),
-        Some(ExtendedType::Object(_) | ExtendedType::Union(_))
+        Some(ExtendedType::Object(_) | ExtendedType::Interface(_) | ExtendedType::Union(_))
     )
     .then_some(name)
 }
@@ -578,6 +568,57 @@ fn object_type_ident(type_name: &str) -> proc_macro2::Ident {
 
 fn object_variant_ident(type_name: &str) -> proc_macro2::Ident {
     format_ident!("r#{}", rust_name(type_name))
+}
+
+fn abstract_member_names<'a>(schema: &'a Schema, name: &NamedType) -> Option<Vec<&'a str>> {
+    match schema.types.get(name)? {
+        ExtendedType::Union(union_type) => Some(
+            union_type
+                .members
+                .iter()
+                .map(<ComponentName as AsRef<str>>::as_ref)
+                .collect(),
+        ),
+        ExtendedType::Interface(_) => Some(
+            schema
+                .types
+                .iter()
+                .filter_map(|(type_name, definition)| {
+                    let ExtendedType::Object(object) = definition else {
+                        return None;
+                    };
+                    object
+                        .implements_interfaces
+                        .iter()
+                        .any(|interface| interface == name)
+                        .then(|| type_name.as_str())
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn generate_abstract_output_enum(type_name: &str, members: &[&str]) -> TokenStream {
+    let name = format_ident!("r#{}", rust_name(type_name));
+    let (member_types, variants): (Vec<_>, Vec<_>) = members
+        .iter()
+        .map(|member| {
+            let member_type = object_type_ident(member);
+            let variant = object_variant_ident(member);
+            (member_type.clone(), quote! { #variant(#member_type) })
+        })
+        .unzip();
+
+    if member_types.is_empty() {
+        quote! { pub enum #name {} }
+    } else {
+        quote! {
+            pub enum #name<#(#member_types),*> {
+                #(#variants,)*
+            }
+        }
+    }
 }
 
 fn reachable_object_names(schema: &Schema, query_type: &str) -> Vec<String> {
@@ -601,9 +642,10 @@ fn reachable_object_names(schema: &Schema, query_type: &str) -> Vec<String> {
                         pending.push(name.to_owned());
                     }
                 }
-                Some(ExtendedType::Union(union_type)) => {
-                    for member in &union_type.members {
-                        let member = member.as_str();
+                Some(ExtendedType::Interface(_) | ExtendedType::Union(_)) => {
+                    for member in abstract_member_names(schema, name)
+                        .expect("abstract output type must have concrete members")
+                    {
                         if member != query_type && reachable.insert(member.to_owned()) {
                             pending.push(member.to_owned());
                         }
@@ -633,16 +675,17 @@ fn named_composite_output_type(
             let object_type = object_type_ident(name.as_str());
             Some(quote! { #object_type })
         }
-        ExtendedType::Union(union_type) => {
-            let name = format_ident!("r#{}", rust_name(name.as_str()));
-            let members = union_type
-                .members
-                .iter()
-                .map(|member| {
-                    (member.as_str() != query_type).then(|| object_type_ident(member.as_str()))
-                })
+        ExtendedType::Interface(_) | ExtendedType::Union(_) => {
+            let output_name = format_ident!("r#{}", rust_name(name.as_str()));
+            let members = abstract_member_names(schema, name)?
+                .into_iter()
+                .map(|member| (member != query_type).then(|| object_type_ident(member)))
                 .collect::<Option<Vec<_>>>()?;
-            Some(quote! { super::types::#name<#(#members),*> })
+            if members.is_empty() {
+                Some(quote! { super::types::#output_name })
+            } else {
+                Some(quote! { super::types::#output_name<#(#members),*> })
+            }
         }
         _ => None,
     }
@@ -682,18 +725,17 @@ fn named_composite_output_value(
                 ))
             })
         }
-        ExtendedType::Union(union_type) => {
-            let union_name = format_ident!("r#{}", rust_name(name.as_str()));
-            let arms = union_type
-                .members
-                .iter()
+        ExtendedType::Interface(_) | ExtendedType::Union(_) => {
+            let abstract_name = format_ident!("r#{}", rust_name(name.as_str()));
+            let arms = abstract_member_names(schema, name)?
+                .into_iter()
                 .map(|member| {
-                    if member.as_str() == query_type {
+                    if member == query_type {
                         return None;
                     }
-                    let variant = object_variant_ident(member.as_str());
+                    let variant = object_variant_ident(member);
                     Some(quote! {
-                        super::types::#union_name::#variant(value) =>
+                        super::types::#abstract_name::#variant(value) =>
                             ::necrassrs::ResolvedValue::Object(Box::new(
                                 ObjectValue::<#(#object_types),*>::#variant(value)
                             ))
