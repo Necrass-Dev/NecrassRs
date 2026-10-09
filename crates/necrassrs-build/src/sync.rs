@@ -1,7 +1,10 @@
-use apollo_compiler::{Schema, validation::Valid};
-use quote::{format_ident, quote};
+use apollo_compiler::{Schema, ast::Type as GraphqlType, schema::ExtendedType, validation::Valid};
+use quote::{ToTokens, format_ident, quote};
 use std::{collections::BTreeMap, fs, ops::Range, path::Path};
-use syn::{FnArg, ImplItem, ImplItemFn, Item, Type, ext::IdentExt, spanned::Spanned};
+use syn::{
+    FnArg, GenericArgument, ImplItem, ImplItemFn, Item, PathArguments, Type, ext::IdentExt,
+    spanned::Spanned,
+};
 
 use crate::{BuildError, codegen};
 
@@ -32,6 +35,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
     let methods = query
         .fields
         .iter()
+        .filter(|(_, field)| codegen::composite_output_name(schema, &field.ty).is_none())
         .map(|(name, field)| {
             let name = format_ident!("r#{}", codegen::rust_name(name.as_str()));
             let result = codegen::resolver_return_type(
@@ -53,21 +57,94 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             })
         })
         .collect::<Result<Vec<ImplItemFn>, BuildError>>()?;
+    let object_names = codegen::reachable_object_names(schema, query.name.as_str());
+    let objects = object_names
+        .iter()
+        .map(|name| rust_ident(name))
+        .collect::<Vec<_>>();
+    let mut field_resolvers = query
+        .fields
+        .iter()
+        .filter(|(_, field)| codegen::composite_output_name(schema, &field.ty).is_some())
+        .map(|(name, field)| {
+            field_resolver(
+                schema,
+                query.name.as_str(),
+                name.as_str(),
+                &field.ty,
+                query.name.as_str(),
+            )
+        })
+        .collect::<Result<Vec<_>, BuildError>>()?;
+    for object_name in &object_names {
+        let object_type = schema
+            .get_object(object_name)
+            .expect("reachable Object type must exist");
+        field_resolvers.extend(
+            object_type
+                .fields
+                .iter()
+                .map(|(name, field)| {
+                    field_resolver(
+                        schema,
+                        object_name,
+                        name.as_str(),
+                        &field.ty,
+                        query.name.as_str(),
+                    )
+                })
+                .collect::<Result<Vec<_>, BuildError>>()?,
+        );
+    }
 
     let updated = match existing.as_deref() {
-        None => format!(
-            "#[allow(non_camel_case_types)]\npub struct {object};\n\n\
+        None => {
+            let generics: syn::Generics = syn::parse_quote!(<C: ::core::marker::Sync>);
+            let context: Type = syn::parse_quote!(C);
+            let object_declarations = objects
+                .iter()
+                .map(|object| {
+                    format!(
+                        "#[allow(non_camel_case_types)]\n#[derive(Clone, Copy)]\npub struct {object};"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let field_implementations = field_resolvers
+                .iter()
+                .map(|resolver| render_field_resolver(resolver, &generics, &context))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            format!(
+                "#[allow(non_camel_case_types)]\npub struct {object};\n\n\
+                 {object_declarations}\n\n\
              #[allow(non_snake_case)]\n\
              impl<C: ::core::marker::Sync> crate::generated::resolvers::{resolver}<C> for self::{object} {{\n{}\n}}\n",
-            methods
-                .iter()
-                .map(render_method)
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-        ),
-        Some(source) => {
-            update_existing(source, &object, &resolver, &methods).map_err(source_error)?
+                methods
+                    .iter()
+                    .map(render_method)
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            ) + if field_implementations.is_empty() {
+                ""
+            } else {
+                "\n"
+            } + &field_implementations
+                + if field_implementations.is_empty() {
+                    ""
+                } else {
+                    "\n"
+                }
         }
+        Some(source) => update_existing(
+            source,
+            &object,
+            &resolver,
+            &methods,
+            &objects,
+            &field_resolvers,
+        )
+        .map_err(source_error)?,
     };
     syn::parse_file(&updated).map_err(source_error)?;
 
@@ -119,6 +196,8 @@ fn update_existing(
     object: &syn::Ident,
     resolver: &syn::Ident,
     methods: &[ImplItemFn],
+    objects: &[syn::Ident],
+    field_resolvers: &[FieldResolver],
 ) -> syn::Result<String> {
     let ast = syn::parse_file(source)?;
     // parse_file removes these prefixes before assigning token byte ranges.
@@ -183,6 +262,7 @@ fn update_existing(
         .ok_or_else(|| {
             syn::Error::new_spanned(implementation, "Expected one resolver Context type")
         })?;
+    let generics = &implementation.generics;
 
     let mut desired: BTreeMap<_, _> = methods
         .iter()
@@ -242,6 +322,58 @@ fn update_existing(
         });
     }
 
+    let mut desired_fields: BTreeMap<_, _> = field_resolvers
+        .iter()
+        .map(|resolver| (resolver.coordinate(), resolver))
+        .collect();
+    let mut seen_fields = std::collections::BTreeSet::new();
+    for item in ast.items.iter().filter_map(|item| match item {
+        Item::Impl(item) => Some(item),
+        _ => None,
+    }) {
+        let Some(coordinate) = field_resolver_coordinate(item) else {
+            continue;
+        };
+        if !seen_fields.insert(coordinate.clone()) {
+            return Err(syn::Error::new_spanned(
+                item,
+                "Duplicate field resolver implementations are ambiguous",
+            ));
+        }
+        if desired_fields.remove(&coordinate).is_none() {
+            edits.push(Edit {
+                range: item.span().byte_range(),
+                replacement: String::new(),
+            });
+        }
+    }
+
+    let defined_types = ast
+        .items
+        .iter()
+        .filter_map(item_type_name)
+        .collect::<std::collections::BTreeSet<_>>();
+    let declarations = objects
+        .iter()
+        .filter(|object| !defined_types.contains(&object.unraw().to_string()))
+        .map(|object| {
+            format!("#[allow(non_camel_case_types)]\n#[derive(Clone, Copy)]\npub struct {object};")
+        });
+    let additions = declarations
+        .chain(
+            desired_fields
+                .into_values()
+                .map(|resolver| render_field_resolver(resolver, generics, context)),
+        )
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if !additions.is_empty() {
+        edits.push(Edit {
+            range: source.len() - source_offset..source.len() - source_offset,
+            replacement: format!("\n{additions}\n"),
+        });
+    }
+
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.range.start));
     let mut updated = source.to_owned();
     let mut next_start = source.len();
@@ -258,6 +390,197 @@ fn update_existing(
         updated.replace_range(edit.range, &edit.replacement);
     }
     Ok(updated)
+}
+
+struct FieldResolver {
+    object: syn::Ident,
+    field: syn::Ident,
+    output: proc_macro2::TokenStream,
+}
+
+impl FieldResolver {
+    fn coordinate(&self) -> (String, String) {
+        (
+            self.object.unraw().to_string(),
+            self.field.unraw().to_string(),
+        )
+    }
+}
+
+fn field_resolver(
+    schema: &Schema,
+    object_name: &str,
+    field_name: &str,
+    ty: &GraphqlType,
+    query_name: &str,
+) -> Result<FieldResolver, BuildError> {
+    Ok(FieldResolver {
+        object: rust_ident(object_name),
+        field: rust_ident(field_name),
+        output: resolver_output_type(schema, object_name, field_name, ty, query_name)
+            .map_err(BuildError::Codegen)?,
+    })
+}
+
+fn resolver_output_type(
+    schema: &Schema,
+    object_name: &str,
+    field_name: &str,
+    ty: &GraphqlType,
+    query_name: &str,
+) -> Result<proc_macro2::TokenStream, codegen::CodegenError> {
+    if codegen::composite_output_name(schema, ty).is_none() {
+        return codegen::resolver_return_type(
+            schema,
+            object_name,
+            field_name,
+            ty,
+            &quote! { crate::generated::types },
+        );
+    }
+    match composite_resolver_output_type(schema, ty, query_name) {
+        Some(output) => Ok(output),
+        None => codegen::resolver_return_type(
+            schema,
+            object_name,
+            field_name,
+            ty,
+            &quote! { crate::generated::types },
+        ),
+    }
+}
+
+fn composite_resolver_output_type(
+    schema: &Schema,
+    ty: &GraphqlType,
+    query_name: &str,
+) -> Option<proc_macro2::TokenStream> {
+    match ty {
+        GraphqlType::NonNullNamed(name) => {
+            named_composite_resolver_output_type(schema, name, query_name)
+        }
+        GraphqlType::Named(name) => {
+            let output = named_composite_resolver_output_type(schema, name, query_name)?;
+            Some(quote! { ::core::option::Option<#output> })
+        }
+        GraphqlType::NonNullList(item) => {
+            let item = composite_resolver_output_type(schema, item, query_name)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        GraphqlType::List(item) => {
+            let item = composite_resolver_output_type(schema, item, query_name)?;
+            Some(quote! { ::core::option::Option<::std::vec::Vec<#item>> })
+        }
+    }
+}
+
+fn named_composite_resolver_output_type(
+    schema: &Schema,
+    name: &apollo_compiler::Name,
+    query_name: &str,
+) -> Option<proc_macro2::TokenStream> {
+    match schema.types.get(name)? {
+        ExtendedType::Object(_) if name.as_str() != query_name => {
+            let object = rust_ident(name.as_str());
+            Some(quote! { self::#object })
+        }
+        ExtendedType::Interface(_) | ExtendedType::Union(_) => {
+            let abstract_type = rust_ident(name.as_str());
+            let members = codegen::abstract_member_names(schema, name)?
+                .into_iter()
+                .map(|member| {
+                    (member != query_name).then(|| {
+                        let member = rust_ident(member);
+                        quote! { self::#member }
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(quote! { crate::generated::types::#abstract_type<#(#members),*> })
+        }
+        _ => None,
+    }
+}
+
+fn rust_ident(name: &str) -> syn::Ident {
+    format_ident!("r#{}", codegen::rust_name(name))
+}
+
+fn render_field_resolver(
+    resolver: &FieldResolver,
+    generics: &syn::Generics,
+    context: &Type,
+) -> String {
+    let object = &resolver.object;
+    let field = &resolver.field;
+    let output = &resolver.output;
+    let mut impl_generics = proc_macro2::TokenStream::new();
+    generics.to_tokens(&mut impl_generics);
+    let where_clause = &generics.where_clause;
+    format!(
+        "impl{} ::necrassrs::Resolver<crate::generated::fields::{object}::{field}, {}> for self::{object} {}{{\n\
+         \x20   type Output = {};\n\n\
+         \x20   async fn resolve(\n\
+         \x20       &self,\n\
+         \x20       _context: &{},\n\
+         \x20       _args: crate::generated::types::{object}::{field}::Args,\n\
+         \x20   ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {{\n\
+         \x20       ::core::unimplemented!()\n\
+         \x20   }}\n\
+         }}",
+        impl_generics,
+        quote!(#context),
+        quote!(#where_clause),
+        output,
+        quote!(#context),
+    )
+}
+
+fn field_resolver_coordinate(implementation: &syn::ItemImpl) -> Option<(String, String)> {
+    let (_, trait_path, _) = implementation.trait_.as_ref()?;
+    let expected = ["necrassrs", "Resolver"];
+    if !trait_path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.unraw().to_string())
+        .eq(expected.map(str::to_owned))
+    {
+        return None;
+    }
+    let PathArguments::AngleBracketed(arguments) = &trait_path.segments.last()?.arguments else {
+        return None;
+    };
+    let GenericArgument::Type(Type::Path(field_type)) = arguments.args.first()? else {
+        return None;
+    };
+    let field_path = field_type
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.unraw().to_string())
+        .collect::<Vec<_>>();
+    let [crate_name, generated, fields, object, field] = field_path.as_slice() else {
+        return None;
+    };
+    if [crate_name.as_str(), generated, fields] != ["crate", "generated", "fields"] {
+        return None;
+    }
+    let Type::Path(self_type) = implementation.self_ty.as_ref() else {
+        return None;
+    };
+    let self_object = self_type.path.segments.last()?.ident.unraw().to_string();
+    (self_object == *object).then(|| (object.clone(), field.clone()))
+}
+
+fn item_type_name(item: &Item) -> Option<String> {
+    // shortcut: imported and cross-file object types are discovered by the #38 module AST work.
+    let ident = match item {
+        Item::Enum(item) => &item.ident,
+        Item::Struct(item) => &item.ident,
+        Item::Type(item) => &item.ident,
+        Item::Union(item) => &item.ident,
+        _ => return None,
+    };
+    Some(ident.unraw().to_string())
 }
 
 struct Edit {

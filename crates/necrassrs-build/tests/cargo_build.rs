@@ -300,6 +300,28 @@ fn composite_resolvers_are_created_preserved_and_execute() {
 }
 
 #[test]
+fn composite_synchronization_supports_wrappers_and_abstract_types() {
+    let consumer = Consumer::new(
+        "interface Node { name: String! } \
+         type User implements Node { name: String! } \
+         type Organization implements Node { name: String! } \
+         union Search = User | Organization \
+         type Query { node: Node results: [Search!]! }",
+    );
+    consumer.bootstrap();
+
+    let mut ast = consumer.ast();
+    for (object, field) in [
+        ("Query", "node"),
+        ("Query", "results"),
+        ("User", "name"),
+        ("Organization", "name"),
+    ] {
+        field_resolver(&mut ast, object, field);
+    }
+}
+
+#[test]
 fn synchronization_uses_injective_names_without_matching_similar_methods() {
     let consumer = Consumer::new(
         "type Query { hello: String! Hello: String! type: String! self: String! _self: String! _: String! }",

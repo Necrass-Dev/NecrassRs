@@ -553,7 +553,7 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
     })
 }
 
-fn composite_output_name<'a>(schema: &Schema, ty: &'a Type) -> Option<&'a NamedType> {
+pub(crate) fn composite_output_name<'a>(schema: &Schema, ty: &'a Type) -> Option<&'a NamedType> {
     let name = ty.inner_named_type();
     matches!(
         schema.types.get(name),
@@ -570,7 +570,10 @@ fn object_variant_ident(type_name: &str) -> proc_macro2::Ident {
     format_ident!("r#{}", rust_name(type_name))
 }
 
-fn abstract_member_names<'a>(schema: &'a Schema, name: &NamedType) -> Option<Vec<&'a str>> {
+pub(crate) fn abstract_member_names<'a>(
+    schema: &'a Schema,
+    name: &NamedType,
+) -> Option<Vec<&'a str>> {
     match schema.types.get(name)? {
         ExtendedType::Union(union_type) => Some(
             union_type
@@ -621,7 +624,7 @@ fn generate_abstract_output_enum(type_name: &str, members: &[&str]) -> TokenStre
     }
 }
 
-fn reachable_object_names(schema: &Schema, query_type: &str) -> Vec<String> {
+pub(crate) fn reachable_object_names(schema: &Schema, query_type: &str) -> Vec<String> {
     let mut pending = vec![query_type.to_owned()];
     let mut reachable = std::collections::HashSet::new();
 
