@@ -663,6 +663,63 @@ mod tests {
     }
 
     #[test]
+    fn updates_field_output_shapes_without_rewriting_the_body() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { value: String! }").unwrap();
+        let source = file.read().replacen(
+            "::core::unimplemented!()",
+            "{ /* retain this body */ ::core::unimplemented!() }",
+            1,
+        );
+        fs::write(&file.path, source).unwrap();
+
+        for (sdl, expected) in [
+            (
+                "type Query { value: String }",
+                ":: core :: option :: Option < :: std :: string :: String >",
+            ),
+            (
+                "type Query { value: [String!]! }",
+                ":: std :: vec :: Vec < :: std :: string :: String >",
+            ),
+            (
+                "type Query { value: User! } type User { name: String! }",
+                "self :: User",
+            ),
+            ("type Query { value: Int! }", "i32"),
+        ] {
+            file.synchronize(sdl).unwrap();
+            let source = file.read();
+            let ast = syn::parse_file(&source).unwrap();
+            let implementation = ast
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Impl(item)
+                        if field_resolver_coordinate(item)
+                            == Some(("Query".to_owned(), "value".to_owned())) =>
+                    {
+                        Some(item)
+                    }
+                    _ => None,
+                })
+                .next()
+                .unwrap();
+            let output = implementation
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    syn::ImplItem::Type(item) if item.ident == "Output" => Some(&item.ty),
+                    _ => None,
+                })
+                .unwrap();
+
+            assert_eq!(quote!(#output).to_string(), expected, "{sdl}");
+            assert!(source.contains("/* retain this body */"), "{sdl}");
+        }
+    }
+
+    #[test]
     fn rejects_ambiguous_or_malformed_implementations_without_writing() {
         let file = ResolverFile::new();
         file.synchronize("type Query { hello: String! }").unwrap();
