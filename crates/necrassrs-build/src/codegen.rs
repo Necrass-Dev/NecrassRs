@@ -601,17 +601,6 @@ fn generate_object_dispatchers(
                 let graphql_field_name = field_name.as_str();
                 let field_name = format_ident!("r#{}", rust_name(graphql_field_name));
                 let field_type = quote! { super::fields::#object_name::#field_name };
-                let return_type = resolver_return_type(
-                    schema,
-                    graphql_type_name,
-                    graphql_field_name,
-                    &field.ty,
-                    &quote! { super::types },
-                )?;
-                bounds.push(quote! {
-                    T: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
-                });
-
                 let arguments = field
                     .arguments
                     .iter()
@@ -641,6 +630,47 @@ fn generate_object_dispatchers(
                         Ok(quote! { #member: #value, })
                     })
                     .collect::<Result<Vec<_>, CodegenError>>()?;
+
+                if let Some(output_shape) = object_output_shape(schema, &field.ty) {
+                    let output_type = quote! {
+                        <T as ::necrassrs::Resolver<#field_type, C>>::Output
+                    };
+                    bounds.push(quote! {
+                        T: ::necrassrs::Resolver<#field_type, C>
+                    });
+                    bounds.push(quote! {
+                        #output_type: IntoResolvedObject<C, #output_shape>
+                    });
+
+                    branches.push(quote! {
+                        #graphql_field_name => {
+                            let args = super::types::#object_name::#field_name::Args {
+                                #(#arguments)*
+                            };
+                            let value = <T as ::necrassrs::Resolver<#field_type, C>>::resolve(
+                                &self.value,
+                                context,
+                                args,
+                            )
+                            .await?;
+                            Ok(<#output_type as IntoResolvedObject<C, #output_shape>>::
+                                into_resolved_object(value))
+                        }
+                    });
+                    continue;
+                }
+
+                let return_type = resolver_return_type(
+                    schema,
+                    graphql_type_name,
+                    graphql_field_name,
+                    &field.ty,
+                    &quote! { super::types },
+                )?;
+                bounds.push(quote! {
+                    T: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
+                });
+
                 let coordinate = format!("{graphql_type_name}.{graphql_field_name}");
                 let conversion = output_value(
                     schema,
