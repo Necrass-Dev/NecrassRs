@@ -61,34 +61,45 @@ type Query {
 ## 3. Implement the resolvers
 
 After `cargo build`, open `src/resolvers.rs`. Cargo synchronizes the resolver
-declarations with your schema and creates these method stubs:
+declarations with your schema and creates an empty root marker plus one field
+resolver stub for each query field:
 
 ```rust
 pub struct Query;
 
-impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {
-    async fn r#label(
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {}
+
+impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#label, C> for Query {
+    type Output = ::std::string::String;
+
+    async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::Query::r#label::Args,
-    ) -> ::core::result::Result<::std::string::String, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::r#Query::r#label::Args,
+    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
         ::core::unimplemented!()
     }
+}
 
-    async fn r#statuses(
+impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#statuses, C>
+    for Query
+{
+    type Output = ::std::vec::Vec<crate::generated::types::r#Status>;
+
+    async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::Query::r#statuses::Args,
-    ) -> ::core::result::Result<
-        ::std::vec::Vec<crate::generated::types::r#Status>,
-        ::necrassrs::ResolverError,
-    > {
+        _args: crate::generated::types::r#Query::r#statuses::Args,
+    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
         ::core::unimplemented!()
     }
 }
 ```
 
-The signatures are generated for you; each new method starts with
+The marker identifies the Rust root type and Context used by dispatch. It stays
+empty. Each field is a separate `Resolver<Field, C>` implementation with its
+Rust result in `type Output`, so each field has an independent implementation
+block. Each new `resolve` body starts with
 `::core::unimplemented!()`. Rename `_args` to `args`, add the `GraphQLInput` import,
 and replace the stub bodies with your resolver logic. Keep the generated
 signatures and any unrelated application code.
@@ -100,26 +111,33 @@ use necrassrs::GraphQLInput;
 
 pub struct Query;
 
-impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {
-    async fn r#label(
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {}
+
+impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#label, C> for Query {
+    type Output = ::std::string::String;
+
+    async fn resolve(
         &self,
         _context: &C,
-        args: crate::generated::types::Query::r#label::Args,
-    ) -> ::core::result::Result<::std::string::String, ::necrassrs::ResolverError> {
+        args: crate::generated::types::r#Query::r#label::Args,
+    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
         match args.locator {
-            crate::generated::types::Locator::id(id) => Ok(id.as_str().to_owned()),
-            crate::generated::types::Locator::name(name) => Ok(name),
+            crate::generated::types::r#Locator::r#id(id) => Ok(id.as_str().to_owned()),
+            crate::generated::types::r#Locator::r#name(name) => Ok(name),
         }
     }
+}
 
-    async fn r#statuses(
+impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#statuses, C>
+    for Query
+{
+    type Output = ::std::vec::Vec<crate::generated::types::r#Status>;
+
+    async fn resolve(
         &self,
         _context: &C,
-        args: crate::generated::types::Query::r#statuses::Args,
-    ) -> ::core::result::Result<
-        ::std::vec::Vec<crate::generated::types::r#Status>,
-        ::necrassrs::ResolverError,
-    > {
+        args: crate::generated::types::r#Query::r#statuses::Args,
+    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
         let GraphQLInput::Value(filter) = args.filter else {
             return Ok(Vec::new());
         };
@@ -194,11 +212,11 @@ type mappings, `GraphQLInput`, defaults, OneOf inputs, and recursive inputs.
 Stop the server with Ctrl+C, edit `schema/schema.graphql`, and run `cargo build`
 again. Rebuilding adds new resolver stubs and retains existing resolver bodies.
 Argument changes update generated `Args`; bodies that depend on removed or changed
-fields need manual edits. Retained declarations keep their written return-type
-spelling, so changing an SDL return type may also require editing the Rust return
-signature or associated `Output` type. New enum-return methods use
-`crate::generated::types::<Enum>`. Deleting or renaming a field removes its old
-resolver declaration and body.
+fields need manual edits. For a retained field, Cargo updates `type Output` when
+its result category, list wrapper, or nullability changes while preserving the
+`resolve` body and parameter bindings. The body must still return the new Rust
+type. New enum results use `crate::generated::types::<Enum>`. Deleting or
+renaming a field removes its old resolver declaration and body.
 
 Implement new resolver stubs, then restart the server with `cargo run`. Refresh
 GraphiQL to explore the updated schema and execute your new queries. Continue with
