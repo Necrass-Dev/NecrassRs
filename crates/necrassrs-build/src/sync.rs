@@ -203,38 +203,50 @@ fn update_existing(
     // parse_file removes these prefixes before assigning token byte ranges.
     let source_offset = if source.starts_with('\u{feff}') { 3 } else { 0 }
         + ast.shebang.as_ref().map_or(0, String::len);
-    let mut implementations = ast.items.iter().filter_map(|item| {
-        let Item::Impl(item) = item else { return None };
-        let (_, trait_path, _) = item.trait_.as_ref()?;
-        let Type::Path(self_type) = item.self_ty.as_ref() else {
-            return None;
-        };
-        let expected = [
-            "crate".to_owned(),
-            "generated".to_owned(),
-            "resolvers".to_owned(),
-            resolver.to_string(),
-        ];
-        let matches_trait = trait_path
-            .segments
-            .iter()
-            .map(|segment| segment.ident.unraw().to_string())
-            .eq(expected);
-        let self_path = &self_type.path;
-        let matches_self = self_type.qself.is_none()
-            && self_path.leading_colon.is_none()
-            && (self_path.segments.len() == 1
-                || (self_path.segments.len() == 2 && self_path.segments[0].ident == "self"))
-            && self_path
-                .segments
-                .iter()
-                .all(|segment| segment.arguments.is_none())
-            && self_path
-                .segments
-                .last()
-                .is_some_and(|segment| segment.ident.unraw() == object.unraw());
-        (matches_trait && matches_self).then_some(item)
-    });
+    let implementation = query_resolver_implementation(&ast, object, resolver)?;
+    let context = resolver_context(implementation)?;
+    let generics = &implementation.generics;
+    let mut edits = reconcile_query_methods(implementation, methods, context)?;
+    let desired_fields = reconcile_field_resolvers(&ast, field_resolvers, &mut edits)?;
+
+    let defined_types = ast
+        .items
+        .iter()
+        .filter_map(item_type_name)
+        .collect::<std::collections::BTreeSet<_>>();
+    let declarations = objects
+        .iter()
+        .filter(|object| !defined_types.contains(&object.unraw().to_string()))
+        .map(|object| {
+            format!("#[allow(non_camel_case_types)]\n#[derive(Clone, Copy)]\npub struct {object};")
+        });
+    let additions = declarations
+        .chain(
+            desired_fields
+                .into_values()
+                .map(|resolver| render_field_resolver(resolver, generics, context)),
+        )
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if !additions.is_empty() {
+        edits.push(Edit {
+            range: source.len() - source_offset..source.len() - source_offset,
+            replacement: format!("\n{additions}\n"),
+        });
+    }
+
+    apply_edits(source, source_offset, implementation, edits)
+}
+
+fn query_resolver_implementation<'a>(
+    ast: &'a syn::File,
+    object: &syn::Ident,
+    resolver: &syn::Ident,
+) -> syn::Result<&'a syn::ItemImpl> {
+    let mut implementations = ast
+        .items
+        .iter()
+        .filter_map(|item| matching_query_resolver(item, object, resolver));
     let implementation = implementations.next().ok_or_else(|| syn::Error::new(
         object.span(),
         "Expected one explicit crate::generated::resolvers implementation for the query root; aliases are not resolved",
@@ -245,7 +257,48 @@ fn update_existing(
             "Multiple query resolver implementations are ambiguous",
         ));
     }
-    let context = implementation
+    Ok(implementation)
+}
+
+fn matching_query_resolver<'a>(
+    item: &'a Item,
+    object: &syn::Ident,
+    resolver: &syn::Ident,
+) -> Option<&'a syn::ItemImpl> {
+    let Item::Impl(item) = item else { return None };
+    let (_, trait_path, _) = item.trait_.as_ref()?;
+    let Type::Path(self_type) = item.self_ty.as_ref() else {
+        return None;
+    };
+    let expected = [
+        "crate".to_owned(),
+        "generated".to_owned(),
+        "resolvers".to_owned(),
+        resolver.to_string(),
+    ];
+    let matches_trait = trait_path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.unraw().to_string())
+        .eq(expected);
+    let self_path = &self_type.path;
+    let matches_self = self_type.qself.is_none()
+        && self_path.leading_colon.is_none()
+        && (self_path.segments.len() == 1
+            || (self_path.segments.len() == 2 && self_path.segments[0].ident == "self"))
+        && self_path
+            .segments
+            .iter()
+            .all(|segment| segment.arguments.is_none())
+        && self_path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident.unraw() == object.unraw());
+    (matches_trait && matches_self).then_some(item)
+}
+
+fn resolver_context(implementation: &syn::ItemImpl) -> syn::Result<&Type> {
+    implementation
         .trait_
         .as_ref()
         .and_then(|(_, path, _)| path.segments.last())
@@ -261,9 +314,14 @@ fn update_existing(
         })
         .ok_or_else(|| {
             syn::Error::new_spanned(implementation, "Expected one resolver Context type")
-        })?;
-    let generics = &implementation.generics;
+        })
+}
 
+fn reconcile_query_methods(
+    implementation: &syn::ItemImpl,
+    methods: &[ImplItemFn],
+    context: &Type,
+) -> syn::Result<Vec<Edit>> {
     let mut desired: BTreeMap<_, _> = methods
         .iter()
         .map(|method| (method.sig.ident.unraw().to_string(), method))
@@ -321,11 +379,18 @@ fn update_existing(
             replacement: format!("\n{added}\n"),
         });
     }
+    Ok(edits)
+}
 
-    let mut desired_fields: BTreeMap<_, _> = field_resolvers
+fn reconcile_field_resolvers<'a>(
+    ast: &syn::File,
+    field_resolvers: &'a [FieldResolver],
+    edits: &mut Vec<Edit>,
+) -> syn::Result<BTreeMap<(String, String), &'a FieldResolver>> {
+    let mut desired_fields = field_resolvers
         .iter()
         .map(|resolver| (resolver.coordinate(), resolver))
-        .collect();
+        .collect::<BTreeMap<_, _>>();
     let mut seen_fields = std::collections::BTreeSet::new();
     for item in ast.items.iter().filter_map(|item| match item {
         Item::Impl(item) => Some(item),
@@ -347,33 +412,15 @@ fn update_existing(
             });
         }
     }
+    Ok(desired_fields)
+}
 
-    let defined_types = ast
-        .items
-        .iter()
-        .filter_map(item_type_name)
-        .collect::<std::collections::BTreeSet<_>>();
-    let declarations = objects
-        .iter()
-        .filter(|object| !defined_types.contains(&object.unraw().to_string()))
-        .map(|object| {
-            format!("#[allow(non_camel_case_types)]\n#[derive(Clone, Copy)]\npub struct {object};")
-        });
-    let additions = declarations
-        .chain(
-            desired_fields
-                .into_values()
-                .map(|resolver| render_field_resolver(resolver, generics, context)),
-        )
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if !additions.is_empty() {
-        edits.push(Edit {
-            range: source.len() - source_offset..source.len() - source_offset,
-            replacement: format!("\n{additions}\n"),
-        });
-    }
-
+fn apply_edits(
+    source: &str,
+    source_offset: usize,
+    implementation: &syn::ItemImpl,
+    mut edits: Vec<Edit>,
+) -> syn::Result<String> {
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.range.start));
     let mut updated = source.to_owned();
     let mut next_start = source.len();

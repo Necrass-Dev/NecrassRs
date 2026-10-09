@@ -11,7 +11,7 @@ use apollo_compiler::{
 };
 
 use crate::{
-    Request, ResolvedValue, ResolverError, Response,
+    Request, ResolvedObject, ResolvedValue, ResolverError, Response,
     input::literal_to_json as input_literal_to_json,
     request::{PreparedRequest, prepare_request},
 };
@@ -591,6 +591,10 @@ fn new_execution_error(
 
 struct PropagateNull;
 
+type CompletionResult = Result<JsonValue, PropagateNull>;
+type CompletionFuture<'a> =
+    ::core::pin::Pin<Box<dyn Future<Output = CompletionResult> + Send + 'a>>;
+
 #[allow(clippy::too_many_arguments)]
 fn complete_value<'a, C>(
     schema: &'a Valid<Schema>,
@@ -601,7 +605,7 @@ fn complete_value<'a, C>(
     context: &'a C,
     path: &'a mut Vec<ResponseDataPathSegment>,
     errors: &'a mut Vec<GraphQLError>,
-) -> ::core::pin::Pin<Box<dyn Future<Output = Result<JsonValue, PropagateNull>> + Send + 'a>>
+) -> CompletionFuture<'a>
 where
     C: Sync + 'a,
 {
@@ -612,18 +616,13 @@ where
                 errors.push(*resolver_error_to_graphql_error(
                     prepared, field, path, error,
                 ));
-
-                return if ty.is_non_null() {
-                    Err(PropagateNull)
-                } else {
-                    Ok(JsonValue::Null)
-                };
+                return complete_null(ty);
             }
             value => value,
         };
 
         if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
-            return if ty.is_non_null() {
+            if ty.is_non_null() {
                 errors.push(*new_execution_error(
                     prepared,
                     path,
@@ -633,288 +632,347 @@ where
                     ),
                     field.name.location(),
                 ));
-
-                Err(PropagateNull)
-            } else {
-                Ok(JsonValue::Null)
-            };
+            }
+            return complete_null(ty);
         }
 
         match ty {
             Type::List(item_type) | Type::NonNullList(item_type) => {
-                let values = match value {
-                    ResolvedValue::List(values) => values,
-                    ResolvedValue::Json(JsonValue::Array(values)) => {
-                        values.into_iter().map(ResolvedValue::Json).collect()
-                    }
-                    _ => {
-                        errors.push(*new_execution_error(
-                            prepared,
-                            path,
-                            format!("Expected field '{}' to return a list.", field.name),
-                            field.name.location(),
-                        ));
-
-                        return if ty.is_non_null() {
-                            Err(PropagateNull)
-                        } else {
-                            Ok(JsonValue::Null)
-                        };
-                    }
-                };
-
-                let mut completed = Vec::with_capacity(values.len());
-                for (index, value) in values.into_iter().enumerate() {
-                    path.push(ResponseDataPathSegment::ListIndex(index));
-                    let item = complete_value(
-                        schema, prepared, fields, item_type, value, context, path, errors,
-                    )
-                    .await;
-                    path.pop();
-
-                    match item {
-                        Ok(value) => completed.push(value),
-                        Err(PropagateNull) if ty.is_non_null() => return Err(PropagateNull),
-                        Err(PropagateNull) => return Ok(JsonValue::Null),
-                    }
-                }
-
-                Ok(completed.into())
+                complete_list_value(
+                    schema, prepared, fields, ty, item_type, value, context, path, errors,
+                )
+                .await
             }
             Type::Named(name) | Type::NonNullNamed(name) => {
-                if matches!(
-                    schema.types.get(name),
-                    Some(
-                        ExtendedType::Object(_)
-                            | ExtendedType::Interface(_)
-                            | ExtendedType::Union(_)
-                    )
-                ) {
-                    let ResolvedValue::Object(object) = value else {
-                        errors.push(*new_execution_error(
-                            prepared,
-                            path,
-                            format!("Expected field '{}' to return an Object value.", field.name),
-                            field.name.location(),
-                        ));
-
-                        return if ty.is_non_null() {
-                            Err(PropagateNull)
-                        } else {
-                            Ok(JsonValue::Null)
-                        };
-                    };
-
-                    let Some(object_type) = schema.get_object(object.type_name()) else {
-                        errors.push(*new_execution_error(
-                            prepared,
-                            path,
-                            format!("Unknown runtime Object type '{}'.", object.type_name()),
-                            field.name.location(),
-                        ));
-
-                        return if ty.is_non_null() {
-                            Err(PropagateNull)
-                        } else {
-                            Ok(JsonValue::Null)
-                        };
-                    };
-
-                    if !does_fragment_type_apply(schema, object_type, name) {
-                        errors.push(*new_execution_error(
-                            prepared,
-                            path,
-                            format!(
-                                "Runtime Object type '{}' is not valid for '{name}'.",
-                                object_type.name
-                            ),
-                            field.name.location(),
-                        ));
-
-                        return if ty.is_non_null() {
-                            Err(PropagateNull)
-                        } else {
-                            Ok(JsonValue::Null)
-                        };
-                    }
-
-                    let mut subfields = IndexMap::default();
-                    let mut visited_fragments = HashSet::default();
-                    for field in fields {
-                        collect_selections(
-                            schema,
-                            object_type,
-                            prepared,
-                            &field.selection_set.selections,
-                            &mut visited_fragments,
-                            &mut subfields,
-                        );
-                    }
-
-                    let mut completed = JsonMap::new();
-                    for (response_key, fields) in subfields {
-                        let selected_field = fields[0];
-                        path.push(ResponseDataPathSegment::Field(response_key.clone()));
-
-                        if selected_field.name.as_str() == "__typename" {
-                            completed.insert(
-                                response_key.as_str(),
-                                JsonValue::from(object_type.name.as_str()),
-                            );
-                            path.pop();
-                            continue;
-                        }
-
-                        let definition = schema
-                            .type_field(object_type.name.as_str(), selected_field.name.as_str())
-                            .expect("validated Object selection must have a field definition");
-                        let (field_value, has_error) = match coerce_argument_values(
-                            schema,
-                            prepared,
-                            path,
-                            selected_field,
-                            definition,
-                        ) {
-                            Ok(arguments) => match object
-                                .resolve(
-                                    context,
-                                    FieldCoordinate {
-                                        parent_type: object_type.name.as_str(),
-                                        field: selected_field.name.as_str(),
-                                    },
-                                    &arguments,
-                                )
-                                .await
-                            {
-                                Ok(value) => (value, false),
-                                Err(error) => {
-                                    errors.push(*resolver_error_to_graphql_error(
-                                        prepared,
-                                        selected_field,
-                                        path,
-                                        error,
-                                    ));
-                                    (ResolvedValue::Json(JsonValue::Null), true)
-                                }
-                            },
-                            Err(error) => {
-                                errors.push(*error);
-                                (ResolvedValue::Json(JsonValue::Null), true)
-                            }
-                        };
-
-                        if has_error
-                            && matches!(&field_value, ResolvedValue::Json(value) if value.is_null())
-                            && definition.ty.is_non_null()
-                        {
-                            path.pop();
-                            return if ty.is_non_null() {
-                                Err(PropagateNull)
-                            } else {
-                                Ok(JsonValue::Null)
-                            };
-                        }
-
-                        let field_value = complete_value(
-                            schema,
-                            prepared,
-                            &fields,
-                            &definition.ty,
-                            field_value,
-                            context,
-                            path,
-                            errors,
-                        )
-                        .await;
-                        path.pop();
-
-                        match field_value {
-                            Ok(value) => {
-                                completed.insert(response_key.as_str(), value);
-                            }
-                            Err(PropagateNull) if ty.is_non_null() => {
-                                return Err(PropagateNull);
-                            }
-                            Err(PropagateNull) => return Ok(JsonValue::Null),
-                        }
-                    }
-
-                    return Ok(completed.into());
-                }
-
-                let ResolvedValue::Json(value) = value else {
-                    errors.push(*new_execution_error(
-                        prepared,
-                        path,
-                        format!("Expected field '{}' to return a leaf value.", field.name),
-                        field.name.location(),
-                    ));
-
-                    return if ty.is_non_null() {
-                        Err(PropagateNull)
-                    } else {
-                        Ok(JsonValue::Null)
-                    };
-                };
-
-                let message = match schema.types.get(name) {
-                    Some(ExtendedType::Scalar(_))
-                        if match name.as_str() {
-                            "Int" => value
-                                .as_i64()
-                                .is_some_and(|value| i32::try_from(value).is_ok()),
-                            "Float" => value.as_f64().is_some_and(f64::is_finite),
-                            "String" | "ID" => value.is_string(),
-                            "Boolean" => value.as_bool().is_some(),
-                            _ => false,
-                        } =>
-                    {
-                        return Ok(value);
-                    }
-                    Some(ExtendedType::Scalar(_))
-                        if matches!(
-                            name.as_str(),
-                            "Int" | "Float" | "String" | "Boolean" | "ID"
-                        ) =>
-                    {
-                        format!("Expected field '{}' to return a {name}.", field.name)
-                    }
-                    Some(ExtendedType::Enum(enum_type))
-                        if value
-                            .as_str()
-                            .is_some_and(|value| enum_type.values.contains_key(value)) =>
-                    {
-                        return Ok(value);
-                    }
-                    Some(ExtendedType::Enum(_)) => {
-                        format!(
-                            "Expected field '{}' to return a {name} enum value.",
-                            field.name
-                        )
-                    }
-                    Some(_) => {
-                        format!("Result completion for type '{name}' is not supported.")
-                    }
-                    None => {
-                        format!("Unknown output type '{name}'.")
-                    }
-                };
-
-                errors.push(*new_execution_error(
-                    prepared,
-                    path,
-                    message,
-                    field.name.location(),
-                ));
-
-                if ty.is_non_null() {
-                    Err(PropagateNull)
-                } else {
-                    Ok(JsonValue::Null)
-                }
+                complete_named_value(
+                    schema, prepared, fields, ty, name, value, context, path, errors,
+                )
+                .await
             }
         }
     })
+}
+
+fn complete_null(ty: &Type) -> CompletionResult {
+    if ty.is_non_null() {
+        Err(PropagateNull)
+    } else {
+        Ok(JsonValue::Null)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_list_value<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    ty: &Type,
+    item_type: &Type,
+    value: ResolvedValue<C>,
+    context: &C,
+    path: &mut Vec<ResponseDataPathSegment>,
+    errors: &mut Vec<GraphQLError>,
+) -> CompletionResult
+where
+    C: Sync,
+{
+    let field = fields[0];
+    let values = match value {
+        ResolvedValue::List(values) => values,
+        ResolvedValue::Json(JsonValue::Array(values)) => {
+            values.into_iter().map(ResolvedValue::Json).collect()
+        }
+        _ => {
+            errors.push(*new_execution_error(
+                prepared,
+                path,
+                format!("Expected field '{}' to return a list.", field.name),
+                field.name.location(),
+            ));
+            return complete_null(ty);
+        }
+    };
+
+    let mut completed = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        path.push(ResponseDataPathSegment::ListIndex(index));
+        let item = complete_value(
+            schema, prepared, fields, item_type, value, context, path, errors,
+        )
+        .await;
+        path.pop();
+
+        match item {
+            Ok(value) => completed.push(value),
+            Err(PropagateNull) => return complete_null(ty),
+        }
+    }
+
+    Ok(completed.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_named_value<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    ty: &Type,
+    name: &Name,
+    value: ResolvedValue<C>,
+    context: &C,
+    path: &mut Vec<ResponseDataPathSegment>,
+    errors: &mut Vec<GraphQLError>,
+) -> CompletionResult
+where
+    C: Sync,
+{
+    if matches!(
+        schema.types.get(name),
+        Some(ExtendedType::Object(_) | ExtendedType::Interface(_) | ExtendedType::Union(_))
+    ) {
+        complete_object_value(
+            schema, prepared, fields, ty, name, value, context, path, errors,
+        )
+        .await
+    } else {
+        complete_leaf_value(schema, prepared, fields[0], ty, name, value, path, errors)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_object_value<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    ty: &Type,
+    name: &Name,
+    value: ResolvedValue<C>,
+    context: &C,
+    path: &mut Vec<ResponseDataPathSegment>,
+    errors: &mut Vec<GraphQLError>,
+) -> CompletionResult
+where
+    C: Sync,
+{
+    let field = fields[0];
+    let ResolvedValue::Object(object) = value else {
+        errors.push(*new_execution_error(
+            prepared,
+            path,
+            format!("Expected field '{}' to return an Object value.", field.name),
+            field.name.location(),
+        ));
+        return complete_null(ty);
+    };
+
+    let Some(object_type) = schema.get_object(object.type_name()) else {
+        errors.push(*new_execution_error(
+            prepared,
+            path,
+            format!("Unknown runtime Object type '{}'.", object.type_name()),
+            field.name.location(),
+        ));
+        return complete_null(ty);
+    };
+
+    if !does_fragment_type_apply(schema, object_type, name) {
+        errors.push(*new_execution_error(
+            prepared,
+            path,
+            format!(
+                "Runtime Object type '{}' is not valid for '{name}'.",
+                object_type.name
+            ),
+            field.name.location(),
+        ));
+        return complete_null(ty);
+    }
+
+    let mut subfields = IndexMap::default();
+    let mut visited_fragments = HashSet::default();
+    for field in fields {
+        collect_selections(
+            schema,
+            object_type,
+            prepared,
+            &field.selection_set.selections,
+            &mut visited_fragments,
+            &mut subfields,
+        );
+    }
+
+    let mut completed = JsonMap::new();
+    for (response_key, fields) in subfields {
+        let selected_field = fields[0];
+        path.push(ResponseDataPathSegment::Field(response_key.clone()));
+
+        if selected_field.name.as_str() == "__typename" {
+            completed.insert(
+                response_key.as_str(),
+                JsonValue::from(object_type.name.as_str()),
+            );
+            path.pop();
+            continue;
+        }
+
+        let definition = schema
+            .type_field(object_type.name.as_str(), selected_field.name.as_str())
+            .expect("validated Object selection must have a field definition");
+        let (field_value, has_error) = resolve_object_field(
+            schema,
+            prepared,
+            selected_field,
+            definition,
+            object.as_ref(),
+            object_type,
+            context,
+            path,
+            errors,
+        )
+        .await;
+
+        if has_error
+            && matches!(&field_value, ResolvedValue::Json(value) if value.is_null())
+            && definition.ty.is_non_null()
+        {
+            path.pop();
+            return complete_null(ty);
+        }
+
+        let field_value = complete_value(
+            schema,
+            prepared,
+            &fields,
+            &definition.ty,
+            field_value,
+            context,
+            path,
+            errors,
+        )
+        .await;
+        path.pop();
+
+        match field_value {
+            Ok(value) => {
+                completed.insert(response_key.as_str(), value);
+            }
+            Err(PropagateNull) => return complete_null(ty),
+        }
+    }
+
+    Ok(completed.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resolve_object_field<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    field: &Field,
+    definition: &FieldDefinition,
+    object: &dyn ResolvedObject<C>,
+    object_type: &ObjectType,
+    context: &C,
+    path: &[ResponseDataPathSegment],
+    errors: &mut Vec<GraphQLError>,
+) -> (ResolvedValue<C>, bool)
+where
+    C: Sync,
+{
+    let arguments = match coerce_argument_values(schema, prepared, path, field, definition) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            errors.push(*error);
+            return (ResolvedValue::Json(JsonValue::Null), true);
+        }
+    };
+
+    match object
+        .resolve(
+            context,
+            FieldCoordinate {
+                parent_type: object_type.name.as_str(),
+                field: field.name.as_str(),
+            },
+            &arguments,
+        )
+        .await
+    {
+        Ok(value) => (value, false),
+        Err(error) => {
+            errors.push(*resolver_error_to_graphql_error(
+                prepared, field, path, error,
+            ));
+            (ResolvedValue::Json(JsonValue::Null), true)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_leaf_value<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    field: &Field,
+    ty: &Type,
+    name: &Name,
+    value: ResolvedValue<C>,
+    path: &[ResponseDataPathSegment],
+    errors: &mut Vec<GraphQLError>,
+) -> CompletionResult {
+    let ResolvedValue::Json(value) = value else {
+        errors.push(*new_execution_error(
+            prepared,
+            path,
+            format!("Expected field '{}' to return a leaf value.", field.name),
+            field.name.location(),
+        ));
+        return complete_null(ty);
+    };
+
+    let message = match schema.types.get(name) {
+        Some(ExtendedType::Scalar(_)) if valid_builtin_scalar(name, &value) => return Ok(value),
+        Some(ExtendedType::Scalar(_)) if is_builtin_scalar(name) => {
+            format!("Expected field '{}' to return a {name}.", field.name)
+        }
+        Some(ExtendedType::Enum(enum_type))
+            if value
+                .as_str()
+                .is_some_and(|value| enum_type.values.contains_key(value)) =>
+        {
+            return Ok(value);
+        }
+        Some(ExtendedType::Enum(_)) => {
+            format!(
+                "Expected field '{}' to return a {name} enum value.",
+                field.name
+            )
+        }
+        Some(_) => format!("Result completion for type '{name}' is not supported."),
+        None => format!("Unknown output type '{name}'."),
+    };
+
+    errors.push(*new_execution_error(
+        prepared,
+        path,
+        message,
+        field.name.location(),
+    ));
+    complete_null(ty)
+}
+
+fn valid_builtin_scalar(name: &Name, value: &JsonValue) -> bool {
+    match name.as_str() {
+        "Int" => value
+            .as_i64()
+            .is_some_and(|value| i32::try_from(value).is_ok()),
+        "Float" => value.as_f64().is_some_and(f64::is_finite),
+        "String" | "ID" => value.is_string(),
+        "Boolean" => value.as_bool().is_some(),
+        _ => false,
+    }
+}
+
+fn is_builtin_scalar(name: &Name) -> bool {
+    matches!(name.as_str(), "Int" | "Float" | "String" | "Boolean" | "ID")
 }
 
 fn directive_condition(selection: &Selection, name: &str, variables: &JsonMap) -> Option<bool> {
