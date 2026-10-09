@@ -47,6 +47,9 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             )
         })
         .collect::<Result<Vec<_>, BuildError>>()?;
+    for field_resolver in &mut field_resolvers {
+        field_resolver.receiver = syn::parse_quote!(self::#object);
+    }
     for object_name in &object_names {
         let object_type = schema
             .get_object(object_name)
@@ -68,7 +71,10 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         );
     }
 
-    let updated = match existing.as_deref() {
+    let updated = match existing
+        .as_deref()
+        .filter(|source| !source.trim().is_empty())
+    {
         None => {
             let generics: syn::Generics = syn::parse_quote!(<C: ::core::marker::Sync>);
             let context: Type = syn::parse_quote!(C);
@@ -171,7 +177,14 @@ fn update_existing(
         ));
     }
     let mut edits = Vec::new();
-    let desired_fields = reconcile_field_resolvers(&ast, field_resolvers, &mut edits)?;
+    let root_receiver = implementation.self_ty.as_ref();
+    let mut field_resolvers = field_resolvers.to_vec();
+    for field_resolver in &mut field_resolvers {
+        if field_resolver.object.unraw() == object.unraw() {
+            field_resolver.receiver = root_receiver.clone();
+        }
+    }
+    let desired_fields = reconcile_field_resolvers(&ast, &field_resolvers, &mut edits)?;
 
     let defined_types = ast
         .items
@@ -210,7 +223,7 @@ fn query_resolver_implementation<'a>(
     let mut implementations = ast
         .items
         .iter()
-        .filter_map(|item| matching_query_resolver(item, object, resolver));
+        .filter_map(|item| matching_query_resolver(item, resolver));
     let implementation = implementations.next().ok_or_else(|| syn::Error::new(
         object.span(),
         "Expected one explicit crate::generated::resolvers implementation for the query root; aliases are not resolved",
@@ -224,41 +237,21 @@ fn query_resolver_implementation<'a>(
     Ok(implementation)
 }
 
-fn matching_query_resolver<'a>(
-    item: &'a Item,
-    object: &syn::Ident,
-    resolver: &syn::Ident,
-) -> Option<&'a syn::ItemImpl> {
+fn matching_query_resolver<'a>(item: &'a Item, resolver: &syn::Ident) -> Option<&'a syn::ItemImpl> {
     let Item::Impl(item) = item else { return None };
     let (_, trait_path, _) = item.trait_.as_ref()?;
-    let Type::Path(self_type) = item.self_ty.as_ref() else {
-        return None;
-    };
     let expected = [
         "crate".to_owned(),
         "generated".to_owned(),
         "resolvers".to_owned(),
         resolver.to_string(),
     ];
-    let matches_trait = trait_path
+    trait_path
         .segments
         .iter()
         .map(|segment| segment.ident.unraw().to_string())
-        .eq(expected);
-    let self_path = &self_type.path;
-    let matches_self = self_type.qself.is_none()
-        && self_path.leading_colon.is_none()
-        && (self_path.segments.len() == 1
-            || (self_path.segments.len() == 2 && self_path.segments[0].ident == "self"))
-        && self_path
-            .segments
-            .iter()
-            .all(|segment| segment.arguments.is_none())
-        && self_path
-            .segments
-            .last()
-            .is_some_and(|segment| segment.ident.unraw() == object.unraw());
-    (matches_trait && matches_self).then_some(item)
+        .eq(expected)
+        .then_some(item)
 }
 
 fn resolver_context(implementation: &syn::ItemImpl) -> syn::Result<&Type> {
@@ -305,7 +298,7 @@ fn reconcile_field_resolvers<'a>(
             ));
         }
         if let Some(resolver) = desired_fields.remove(&coordinate) {
-            reconcile_field_output(item, resolver, edits)?;
+            reconcile_field_resolver(item, resolver, edits)?;
         } else {
             edits.push(Edit {
                 range: item.span().byte_range(),
@@ -316,11 +309,20 @@ fn reconcile_field_resolvers<'a>(
     Ok(desired_fields)
 }
 
-fn reconcile_field_output(
+fn reconcile_field_resolver(
     implementation: &syn::ItemImpl,
     resolver: &FieldResolver,
     edits: &mut Vec<Edit>,
 ) -> syn::Result<()> {
+    let current_receiver = &implementation.self_ty;
+    let desired_receiver = &resolver.receiver;
+    if quote!(#current_receiver).to_string() != quote!(#desired_receiver).to_string() {
+        let replacement = &resolver.receiver;
+        edits.push(Edit {
+            range: implementation.self_ty.span().byte_range(),
+            replacement: quote!(#replacement).to_string(),
+        });
+    }
     let mut outputs = implementation.items.iter().filter_map(|item| match item {
         syn::ImplItem::Type(item) if item.ident == "Output" => Some(item),
         _ => None,
@@ -411,9 +413,11 @@ fn apply_edits(
     Ok(updated)
 }
 
+#[derive(Clone)]
 struct FieldResolver {
     object: syn::Ident,
     field: syn::Ident,
+    receiver: Type,
     output: Type,
 }
 
@@ -435,8 +439,10 @@ fn field_resolver(
 ) -> Result<FieldResolver, BuildError> {
     let output = resolver_output_type(schema, object_name, field_name, ty, query_name)
         .map_err(BuildError::Codegen)?;
+    let object = rust_ident(object_name);
     Ok(FieldResolver {
-        object: rust_ident(object_name),
+        receiver: syn::parse_quote!(self::#object),
+        object,
         field: rust_ident(field_name),
         output: syn::parse2(output).expect("generated resolver output types must parse"),
     })
@@ -532,12 +538,13 @@ fn render_field_resolver(
 ) -> String {
     let object = &resolver.object;
     let field = &resolver.field;
+    let receiver = &resolver.receiver;
     let output = &resolver.output;
     let mut impl_generics = proc_macro2::TokenStream::new();
     generics.to_tokens(&mut impl_generics);
     let where_clause = &generics.where_clause;
     format!(
-        "impl{} ::necrassrs::Resolver<crate::generated::fields::{object}::{field}, {}> for self::{object} {}{{\n\
+        "impl{} ::necrassrs::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
          \x20   type Output = {};\n\n\
          \x20   async fn resolve(\n\
          \x20       &self,\n\
@@ -549,6 +556,7 @@ fn render_field_resolver(
          }}",
         impl_generics,
         quote!(#context),
+        quote!(#receiver),
         quote!(#where_clause),
         quote!(#output),
         quote!(#context),
@@ -584,11 +592,7 @@ fn field_resolver_coordinate(implementation: &syn::ItemImpl) -> Option<(String, 
     if [crate_name.as_str(), generated, fields] != ["crate", "generated", "fields"] {
         return None;
     }
-    let Type::Path(self_type) = implementation.self_ty.as_ref() else {
-        return None;
-    };
-    let self_object = self_type.path.segments.last()?.ident.unraw().to_string();
-    (self_object == *object).then(|| (object.clone(), field.clone()))
+    Some((object.clone(), field.clone()))
 }
 
 fn item_type_name(item: &Item) -> Option<String> {
@@ -718,9 +722,40 @@ mod tests {
                 .unwrap();
             let receiver = &implementation.self_ty;
             assert_eq!(quote!(#receiver).to_string(), "self :: AppQuery");
+            let resolve = implementation
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    syn::ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+                    _ => None,
+                })
+                .unwrap();
+            if field == "hello" {
+                assert!(
+                    resolve
+                        .block
+                        .to_token_stream()
+                        .to_string()
+                        .contains("retained")
+                );
+            } else {
+                assert!(
+                    quote!(#resolve)
+                        .to_string()
+                        .contains("_context : & AppContext")
+                );
+            }
         }
-        assert!(source.contains("String :: from (\"retained\")"));
-        assert!(source.contains("QueryResolver < AppContext > for self :: AppQuery"));
+        let marker = query_resolver_implementation(
+            &ast,
+            &syn::parse_quote!(Query),
+            &syn::parse_quote!(QueryResolver),
+        )
+        .unwrap();
+        let receiver = &marker.self_ty;
+        let context = resolver_context(marker).unwrap();
+        assert_eq!(quote!(#receiver).to_string(), "self :: AppQuery");
+        assert_eq!(quote!(#context).to_string(), "AppContext");
     }
 
     #[test]

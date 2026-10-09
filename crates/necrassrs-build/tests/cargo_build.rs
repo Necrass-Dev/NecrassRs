@@ -450,6 +450,58 @@ fn main() {
 }
 
 #[test]
+fn custom_query_root_and_context_compile_after_adding_a_field() {
+    let consumer = Consumer::new("type Query { hello: String! }");
+    consumer.bootstrap();
+    let mut ast = consumer.ast();
+    for item in &mut ast.items {
+        match item {
+            Item::Struct(item) if item.ident == "Query" => {
+                item.ident = syn::parse_quote!(AppQuery);
+            }
+            Item::Impl(implementation)
+                if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                }) =>
+            {
+                implementation.generics = syn::Generics::default();
+                implementation.trait_.as_mut().unwrap().1 =
+                    syn::parse_quote!(crate::generated::resolvers::QueryResolver<AppContext>);
+                *implementation.self_ty = syn::parse_quote!(self::AppQuery);
+            }
+            _ => {}
+        }
+    }
+    ast.items.push(syn::parse_quote!(
+        pub struct AppContext;
+    ));
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<resolvers::AppContext>>(_: D) {}
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(resolvers::AppQuery));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema("type Query { hello: String! extra: String! }");
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    for field in ["hello", "extra"] {
+        let receiver = &field_resolver_ref(&ast, "AppQuery", field).self_ty;
+        assert_eq!(receiver.to_token_stream().to_string(), "self :: AppQuery");
+    }
+}
+
+#[test]
 fn adding_field_to_bom_prefixed_source_preserves_existing_code() {
     let consumer = Consumer::new("type Query { hello(name: String!): String! }");
     consumer.bootstrap();
