@@ -2115,6 +2115,143 @@ mod test {
     }
 
     #[test]
+    fn generated_consumer_resolves_multilevel_objects_once_against_each_parent() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query { viewer: User! }
+                type User { organization(code: String!): Organization! }
+                type Organization {
+                    label(prefix: String!): String!
+                    secret: String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated =
+            super::generate(&schema).expect("multilevel Object generation must succeed");
+        let consumer = r##"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+            use std::sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            };
+
+            struct Query { calls: Arc<AtomicUsize> }
+            struct User {
+                organization_name: String,
+                calls: Arc<AtomicUsize>,
+            }
+            struct Organization {
+                name: String,
+                calls: Arc<AtomicUsize>,
+            }
+            struct Context<'a> { punctuation: &'a str }
+
+            impl<'ctx> Resolver<fields::Query::viewer, Context<'ctx>> for Query {
+                type Output = User;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context<'ctx>,
+                    _args: <fields::Query::viewer as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(User {
+                        organization_name: String::from("Sheri Labs"),
+                        calls: Arc::clone(&self.calls),
+                    })
+                }
+            }
+
+            impl<'ctx> Resolver<fields::User::organization, Context<'ctx>> for User {
+                type Output = Organization;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context<'ctx>,
+                    args: <fields::User::organization as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Organization {
+                        name: format!("{}-{}", self.organization_name, args.code),
+                        calls: Arc::clone(&self.calls),
+                    })
+                }
+            }
+
+            impl<'ctx> Resolver<fields::Organization::label, Context<'ctx>> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    args: <fields::Organization::label as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    self.calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(format!("{}: {}{}", args.prefix, self.name, context.punctuation))
+                }
+            }
+
+            impl<'ctx> Resolver<fields::Organization::secret, Context<'ctx>> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context<'ctx>,
+                    _args: <fields::Organization::secret as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    panic!("unselected field must not execute")
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let calls = Arc::new(AtomicUsize::new(0));
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query {
+                    calls: Arc::clone(&calls),
+                });
+                let punctuation = String::from("!");
+                let context = Context { punctuation: &punctuation };
+                let request = necrassrs::Request::new(r#"
+                    query {
+                        viewer {
+                            company: organization(code: "42") {
+                                display: label(prefix: "Org")
+                                ...OrganizationLabel
+                            }
+                        }
+                    }
+                    fragment OrganizationLabel on Organization {
+                        display: label(prefix: "Org")
+                    }
+                "#);
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &context);
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(calls.load(Ordering::Relaxed), 1);
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": {
+                            "viewer": {
+                                "company": {
+                                    "display": "Org: Sheri Labs-42!",
+                                },
+                            },
+                        },
+                    }),
+                );
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn one_of_members_cannot_shadow_input_conversion() {
         let schema = Schema::parse_and_validate(
             "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",
