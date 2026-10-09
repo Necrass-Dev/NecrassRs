@@ -2332,6 +2332,233 @@ mod test {
     }
 
     #[test]
+    fn generated_composite_errors_follow_nullability_and_recover() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query {
+                    sibling: String!
+                    object: User
+                    items: [User]
+                    list: [User!]
+                    abstract: Search
+                    strict(fail: Boolean!): User!
+                }
+                union Search = User | Organization
+                type User { value: String! }
+                type Organization { value: String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("composite generation must succeed");
+        let consumer = r##"
+            use generated::{fields, resolvers::QueryResolver, types};
+            use necrassrs::{Field, Resolver};
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            struct Query;
+            struct Context { calls: AtomicUsize }
+            struct User { value: &'static str, fail: bool }
+            struct Organization;
+
+            impl QueryResolver<Context> for Query {
+                async fn sibling(
+                    &self,
+                    _context: &Context,
+                    _args: types::Query::sibling::Args,
+                ) -> Result<String, necrassrs::ResolverError> {
+                    Ok(String::from("safe"))
+                }
+            }
+
+            impl Resolver<fields::Query::object, Context> for Query {
+                type Output = Option<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Query::object as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(User { value: "object", fail: true }))
+                }
+            }
+
+            impl Resolver<fields::Query::items, Context> for Query {
+                type Output = Option<Vec<Option<User>>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Query::items as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(vec![
+                        Some(User { value: "first", fail: false }),
+                        Some(User { value: "second", fail: true }),
+                        Some(User { value: "third", fail: false }),
+                    ]))
+                }
+            }
+
+            impl Resolver<fields::Query::list, Context> for Query {
+                type Output = Option<Vec<User>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Query::list as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(vec![
+                        User { value: "first", fail: false },
+                        User { value: "second", fail: true },
+                        User { value: "unreached", fail: false },
+                    ]))
+                }
+            }
+
+            impl Resolver<fields::Query::r#abstract, Context> for Query {
+                type Output = Option<types::Search<User, Organization>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Query::r#abstract as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(types::Search::User(User { value: "abstract", fail: true })))
+                }
+            }
+
+            impl Resolver<fields::Query::strict, Context> for Query {
+                type Output = User;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    args: <fields::Query::strict as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    if args.fail {
+                        Err(necrassrs::ResolverError::new("value failed")
+                            .with_extension("code", "VALUE_FAILED"))
+                    } else {
+                        Ok(User { value: "recovered", fail: false })
+                    }
+                }
+            }
+
+            impl Resolver<fields::User::value, Context> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context,
+                    _args: <fields::User::value as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    context.calls.fetch_add(1, Ordering::Relaxed);
+                    if self.fail {
+                        Err(necrassrs::ResolverError::new("value failed")
+                            .with_extension("code", "VALUE_FAILED"))
+                    } else {
+                        Ok(String::from(self.value))
+                    }
+                }
+            }
+
+            impl Resolver<fields::Organization::value, Context> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Organization::value as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(String::from("organization"))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let context = Context { calls: AtomicUsize::new(0) };
+                let run = |document| {
+                    let request = necrassrs::Request::new(document);
+                    serde_json::to_value(futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &context),
+                    )).unwrap()
+                };
+                let assert_failure = |response: &serde_json::Value,
+                                      data: serde_json::Value,
+                                      path: serde_json::Value| {
+                    assert_eq!(response["data"], data);
+                    assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+                    assert_eq!(response["errors"][0]["message"], "value failed");
+                    assert_eq!(response["errors"][0]["extensions"]["code"], "VALUE_FAILED");
+                    assert_eq!(response["errors"][0]["path"], path);
+                };
+
+                let object = run("{ sibling nested: object { broken: value } }");
+                assert_failure(
+                    &object,
+                    serde_json::json!({ "sibling": "safe", "nested": null }),
+                    serde_json::json!(["nested", "broken"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 1);
+
+                let items = run("{ sibling nullableItems: items { value } }");
+                assert_failure(
+                    &items,
+                    serde_json::json!({
+                        "sibling": "safe",
+                        "nullableItems": [
+                            { "value": "first" },
+                            null,
+                            { "value": "third" },
+                        ],
+                    }),
+                    serde_json::json!(["nullableItems", 1, "value"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 4);
+
+                let list = run("{ sibling nullableList: list { value } }");
+                assert_failure(
+                    &list,
+                    serde_json::json!({ "sibling": "safe", "nullableList": null }),
+                    serde_json::json!(["nullableList", 1, "value"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 6);
+
+                let abstract_value = run(
+                    "{ sibling result: abstract { ... on User { broken: value } } }",
+                );
+                assert_failure(
+                    &abstract_value,
+                    serde_json::json!({ "sibling": "safe", "result": null }),
+                    serde_json::json!(["result", "broken"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 7);
+
+                let strict = run("{ sibling root: strict(fail: true) { value } }");
+                assert_failure(
+                    &strict,
+                    serde_json::Value::Null,
+                    serde_json::json!(["root"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 7);
+
+                assert_eq!(
+                    run("{ root: strict(fail: false) { value } }") ,
+                    serde_json::json!({
+                        "data": { "root": { "value": "recovered" } },
+                    }),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 8);
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn generated_consumer_resolves_multilevel_objects_once_against_each_parent() {
         let schema = Schema::parse_and_validate(
             r#"
