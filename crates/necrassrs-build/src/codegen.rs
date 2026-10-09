@@ -2071,6 +2071,57 @@ mod test {
     }
 
     #[test]
+    fn generated_query_leaf_dispatch_uses_field_resolver() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use generated::{fields, resolvers::QueryResolver, types};
+            use necrassrs::Resolver;
+
+            struct Query;
+            struct Context<'a> { greeting: &'a str }
+
+            impl<'ctx> QueryResolver<Context<'ctx>> for Query {}
+
+            impl<'ctx> Resolver<fields::Query::hello, Context<'ctx>> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    args: types::Query::hello::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(format!("{}, {}", context.greeting, args.name))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let greeting = String::from("Hello");
+                let context = Context { greeting: &greeting };
+                let request = necrassrs::Request::new("{ hello(name: \"Sheri\") }");
+                let response = futures::executor::block_on(
+                    necrassrs::execute(&schema, &request, &dispatcher, &context),
+                );
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "hello": "Hello, Sheri" } }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn generated_consumer_resolves_a_nested_field_against_its_parent_object() {
         let schema = Schema::parse_and_validate(
             "type Query { viewer: User! } type User { name: String! }",
