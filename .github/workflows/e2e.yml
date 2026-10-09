@@ -1,0 +1,55 @@
+name: Generated Consumer E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "crates/necrassrs/**"
+      - "crates/necrassrs-http/**"
+      - "crates/necrassrs-axum/**"
+      - "crates/necrassrs-actix/**"
+      - "crates/necrassrs-build/**"
+      - "crates/necrassrs-cli/**"
+      - "vendor/**"
+      - ".github/workflows/e2e.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "crates/necrassrs/**"
+      - "crates/necrassrs-http/**"
+      - "crates/necrassrs-axum/**"
+      - "crates/necrassrs-actix/**"
+      - "crates/necrassrs-build/**"
+      - "crates/necrassrs-cli/**"
+      - "vendor/**"
+      - ".github/workflows/e2e.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Generated consumer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Run generated-consumer E2E
+        run: cargo test --locked --package necrassrs-cli --test init generated_consumer_builds_and_rebuilds_without_the_cli -- --exact
