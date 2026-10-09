@@ -26,8 +26,8 @@ use quote::{format_ident, quote};
 /// Returns [`CodegenError`] for unsupported types or mutation and subscription
 /// roots. Generated contracts support built-in scalars, enums, ordinary input
 /// objects, lists, nullable wrappers, and owned Object results with nullable/list
-/// wrappers, leaf fields, and recursive relationships. Custom scalars, borrowed
-/// Objects, and abstract output types are not yet supported.
+/// wrappers, leaf fields, recursive relationships, and Union results. Custom
+/// scalars, borrowed Objects, and Interface output types are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
@@ -198,6 +198,26 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
 
             named_types.push(quote! {
                 pub enum #name {
+                    #(#variants,)*
+                }
+            });
+            continue;
+        }
+
+        if let ExtendedType::Union(union_type) = definition {
+            let name = format_ident!("r#{}", rust_name(type_name.as_str()));
+            let (member_types, variants): (Vec<_>, Vec<_>) = union_type
+                .members
+                .iter()
+                .map(|member| {
+                    let member_type = object_type_ident(member.as_str());
+                    let variant = object_variant_ident(member.as_str());
+                    (member_type.clone(), quote! { #variant(#member_type) })
+                })
+                .unzip();
+
+            named_types.push(quote! {
+                pub enum #name<#(#member_types),*> {
                     #(#variants,)*
                 }
             });
@@ -502,7 +522,7 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         let resolver_name = format_ident!("{}Resolver", rust_name(type_name.as_str()));
         let mut methods = Vec::new();
         for (field_name, field) in &object.fields {
-            if object_output_name(schema, &field.ty).is_some() {
+            if composite_output_name(schema, &field.ty).is_some() {
                 continue;
             }
 
@@ -543,9 +563,13 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
     })
 }
 
-fn object_output_name<'a>(schema: &Schema, ty: &'a Type) -> Option<&'a NamedType> {
+fn composite_output_name<'a>(schema: &Schema, ty: &'a Type) -> Option<&'a NamedType> {
     let name = ty.inner_named_type();
-    matches!(schema.types.get(name), Some(ExtendedType::Object(_))).then_some(name)
+    matches!(
+        schema.types.get(name),
+        Some(ExtendedType::Object(_) | ExtendedType::Union(_))
+    )
+    .then_some(name)
 }
 
 fn object_type_ident(type_name: &str) -> proc_macro2::Ident {
@@ -566,12 +590,26 @@ fn reachable_object_names(schema: &Schema, query_type: &str) -> Vec<String> {
         };
 
         for field in parent.fields.values() {
-            let Some(name) = object_output_name(schema, &field.ty) else {
+            let Some(name) = composite_output_name(schema, &field.ty) else {
                 continue;
             };
-            let name = name.as_str();
-            if name != query_type && reachable.insert(name.to_owned()) {
-                pending.push(name.to_owned());
+
+            match schema.types.get(name) {
+                Some(ExtendedType::Object(_)) => {
+                    let name = name.as_str();
+                    if name != query_type && reachable.insert(name.to_owned()) {
+                        pending.push(name.to_owned());
+                    }
+                }
+                Some(ExtendedType::Union(union_type)) => {
+                    for member in &union_type.members {
+                        let member = member.as_str();
+                        if member != query_type && reachable.insert(member.to_owned()) {
+                            pending.push(member.to_owned());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -585,46 +623,58 @@ fn reachable_object_names(schema: &Schema, query_type: &str) -> Vec<String> {
         .collect()
 }
 
-fn object_output_type(schema: &Schema, ty: &Type, query_type: &str) -> Option<TokenStream> {
-    match ty {
-        Type::NonNullNamed(name)
-            if name.as_str() != query_type
-                && matches!(schema.types.get(name), Some(ExtendedType::Object(_))) =>
-        {
+fn named_composite_output_type(
+    schema: &Schema,
+    name: &NamedType,
+    query_type: &str,
+) -> Option<TokenStream> {
+    match schema.types.get(name)? {
+        ExtendedType::Object(_) if name.as_str() != query_type => {
             let object_type = object_type_ident(name.as_str());
             Some(quote! { #object_type })
         }
-        Type::Named(name)
-            if name.as_str() != query_type
-                && matches!(schema.types.get(name), Some(ExtendedType::Object(_))) =>
-        {
-            let object_type = object_type_ident(name.as_str());
-            Some(quote! { ::core::option::Option<#object_type> })
-        }
-        Type::NonNullList(item) => {
-            let item = object_output_type(schema, item, query_type)?;
-            Some(quote! { ::std::vec::Vec<#item> })
-        }
-        Type::List(item) => {
-            let item = object_output_type(schema, item, query_type)?;
-            Some(quote! { ::core::option::Option<::std::vec::Vec<#item>> })
+        ExtendedType::Union(union_type) => {
+            let name = format_ident!("r#{}", rust_name(name.as_str()));
+            let members = union_type
+                .members
+                .iter()
+                .map(|member| {
+                    (member.as_str() != query_type).then(|| object_type_ident(member.as_str()))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(quote! { super::types::#name<#(#members),*> })
         }
         _ => None,
     }
 }
 
-fn object_output_value(
+fn composite_output_type(schema: &Schema, ty: &Type, query_type: &str) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_composite_output_type(schema, name, query_type),
+        Type::Named(name) => {
+            let output = named_composite_output_type(schema, name, query_type)?;
+            Some(quote! { ::core::option::Option<#output> })
+        }
+        Type::NonNullList(item) => {
+            let item = composite_output_type(schema, item, query_type)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        Type::List(item) => {
+            let item = composite_output_type(schema, item, query_type)?;
+            Some(quote! { ::core::option::Option<::std::vec::Vec<#item>> })
+        }
+    }
+}
+
+fn named_composite_output_value(
     schema: &Schema,
-    ty: &Type,
+    name: &NamedType,
     value: &TokenStream,
     query_type: &str,
     object_types: &[proc_macro2::Ident],
 ) -> Option<TokenStream> {
-    match ty {
-        Type::NonNullNamed(name)
-            if name.as_str() != query_type
-                && matches!(schema.types.get(name), Some(ExtendedType::Object(_))) =>
-        {
+    match schema.types.get(name)? {
+        ExtendedType::Object(_) if name.as_str() != query_type => {
             let variant = object_variant_ident(name.as_str());
             Some(quote! {
                 ::necrassrs::ResolvedValue::Object(Box::new(
@@ -632,23 +682,63 @@ fn object_output_value(
                 ))
             })
         }
-        Type::Named(name)
-            if name.as_str() != query_type
-                && matches!(schema.types.get(name), Some(ExtendedType::Object(_))) =>
-        {
-            let variant = object_variant_ident(name.as_str());
+        ExtendedType::Union(union_type) => {
+            let union_name = format_ident!("r#{}", rust_name(name.as_str()));
+            let arms = union_type
+                .members
+                .iter()
+                .map(|member| {
+                    if member.as_str() == query_type {
+                        return None;
+                    }
+                    let variant = object_variant_ident(member.as_str());
+                    Some(quote! {
+                        super::types::#union_name::#variant(value) =>
+                            ::necrassrs::ResolvedValue::Object(Box::new(
+                                ObjectValue::<#(#object_types),*>::#variant(value)
+                            ))
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(quote! {
+                match #value {
+                    #(#arms,)*
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+fn composite_output_value(
+    schema: &Schema,
+    ty: &Type,
+    value: &TokenStream,
+    query_type: &str,
+    object_types: &[proc_macro2::Ident],
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => {
+            named_composite_output_value(schema, name, value, query_type, object_types)
+        }
+        Type::Named(name) => {
+            let output = named_composite_output_value(
+                schema,
+                name,
+                &quote! { value },
+                query_type,
+                object_types,
+            )?;
             Some(quote! {
                 match #value {
                     None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
-                    Some(value) => ::necrassrs::ResolvedValue::Object(Box::new(
-                        ObjectValue::<#(#object_types),*>::#variant(value)
-                    )),
+                    Some(value) => #output,
                 }
             })
         }
         Type::NonNullList(item) => {
             let item =
-                object_output_value(schema, item, &quote! { item }, query_type, object_types)?;
+                composite_output_value(schema, item, &quote! { item }, query_type, object_types)?;
             Some(quote! {
                 {
                     let mut items = ::std::vec::Vec::new();
@@ -661,7 +751,7 @@ fn object_output_value(
         }
         Type::List(item) => {
             let item =
-                object_output_value(schema, item, &quote! { item }, query_type, object_types)?;
+                composite_output_value(schema, item, &quote! { item }, query_type, object_types)?;
             Some(quote! {
                 match #value {
                     None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
@@ -675,7 +765,6 @@ fn object_output_value(
                 }
             })
         }
-        _ => None,
     }
 }
 
@@ -741,8 +830,8 @@ fn generate_object_dispatcher(
                 .collect::<Result<Vec<_>, CodegenError>>()?;
             let coordinate = format!("{graphql_type_name}.{graphql_field_name}");
             let (return_type, conversion) =
-                if let Some(return_type) = object_output_type(schema, &field.ty, query_type) {
-                    let conversion = object_output_value(
+                if let Some(return_type) = composite_output_type(schema, &field.ty, query_type) {
+                    let conversion = composite_output_value(
                         schema,
                         &field.ty,
                         &quote! { value },
@@ -919,9 +1008,9 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             .collect::<Result<Vec<_>, CodegenError>>()?;
 
         let coordinate = format!("{type_name}.{field_name}");
-        if let Some(return_type) = object_output_type(schema, &field.ty, type_name) {
+        if let Some(return_type) = composite_output_type(schema, &field.ty, type_name) {
             let field_type = quote! { super::fields::#object_name::#method_name };
-            let conversion = object_output_value(
+            let conversion = composite_output_value(
                 schema,
                 &field.ty,
                 &quote! { value },
@@ -2521,7 +2610,7 @@ mod test {
                     ("organization", "Organization", "Witch Court"),
                 ] {
                     let request = necrassrs::Request::new(document).with_variables(
-                        serde_json::json!({ "kind": kind }).as_object().unwrap().clone(),
+                        serde_json::from_value(serde_json::json!({ "kind": kind })).unwrap(),
                     );
                     let future = necrassrs::execute(&schema, &request, &dispatcher, &());
                     fn assert_send<T: Send>(_: &T) {}

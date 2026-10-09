@@ -681,7 +681,14 @@ where
                 Ok(completed.into())
             }
             Type::Named(name) | Type::NonNullNamed(name) => {
-                if let Some(ExtendedType::Object(declared_type)) = schema.types.get(name) {
+                if matches!(
+                    schema.types.get(name),
+                    Some(
+                        ExtendedType::Object(_)
+                            | ExtendedType::Interface(_)
+                            | ExtendedType::Union(_)
+                    )
+                ) {
                     let ResolvedValue::Object(object) = value else {
                         errors.push(*new_execution_error(
                             prepared,
@@ -712,7 +719,7 @@ where
                         };
                     };
 
-                    if object_type.name != declared_type.name {
+                    if !does_fragment_type_apply(schema, object_type, name) {
                         errors.push(*new_execution_error(
                             prepared,
                             path,
