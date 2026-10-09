@@ -51,5 +51,8 @@ jobs:
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      - name: Fetch workspace dependencies
+        run: cargo fetch --locked
+
       - name: Run generated-consumer E2E
         run: cargo test --locked --package necrassrs-cli --test init generated_consumer_builds_and_rebuilds_without_the_cli -- --exact
