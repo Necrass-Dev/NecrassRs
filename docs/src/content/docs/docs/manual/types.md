@@ -64,11 +64,12 @@ scalar results.
 | Interface `Person!`   | `generated::types::Person<Operator>`                         |
 | Union `SearchResult!` | `generated::types::SearchResult<Operator, Company, Faction>` |
 
-Scalar and enum fields on the Query root are methods on its generated resolver
-trait. Composite Query fields and fields on reachable application-owned Objects
-use `necrassrs::Resolver<Field, Context>` implementations with an associated
-`Output` type. Recursive Object relationships are supported because each selected
-field is resolved independently instead of nesting an infinitely sized Rust type.
+Every supported Query and Object field uses a
+`necrassrs::Resolver<Field, Context>` implementation with an associated `Output`
+type. The generated query-root resolver trait is an empty marker for the Rust
+root type and Context. Recursive Object relationships are supported because each
+selected field is resolved independently instead of nesting an infinitely sized
+Rust type.
 See the [Personnel Management System](/docs/personnel-management/) for a complete
 Object, Interface, and Union example.
 
