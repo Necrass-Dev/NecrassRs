@@ -304,7 +304,9 @@ fn reconcile_field_resolvers<'a>(
                 "Duplicate field resolver implementations are ambiguous",
             ));
         }
-        if desired_fields.remove(&coordinate).is_none() {
+        if let Some(resolver) = desired_fields.remove(&coordinate) {
+            reconcile_field_output(item, resolver, edits)?;
+        } else {
             edits.push(Edit {
                 range: item.span().byte_range(),
                 replacement: String::new(),
@@ -312,6 +314,77 @@ fn reconcile_field_resolvers<'a>(
         }
     }
     Ok(desired_fields)
+}
+
+fn reconcile_field_output(
+    implementation: &syn::ItemImpl,
+    resolver: &FieldResolver,
+    edits: &mut Vec<Edit>,
+) -> syn::Result<()> {
+    let mut outputs = implementation.items.iter().filter_map(|item| match item {
+        syn::ImplItem::Type(item) if item.ident == "Output" => Some(item),
+        _ => None,
+    });
+    let output = outputs.next().ok_or_else(|| {
+        syn::Error::new_spanned(
+            implementation,
+            "Expected one Output type in a field resolver implementation",
+        )
+    })?;
+    if outputs.next().is_some() {
+        return Err(syn::Error::new_spanned(
+            implementation,
+            "Expected one Output type in a field resolver implementation",
+        ));
+    }
+    if !equivalent_output_type(&output.ty, &resolver.output) {
+        let replacement = &resolver.output;
+        edits.push(Edit {
+            range: output.ty.span().byte_range(),
+            replacement: quote!(#replacement).to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn equivalent_output_type(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (Type::Group(left), _) => equivalent_output_type(&left.elem, right),
+        (_, Type::Group(right)) => equivalent_output_type(left, &right.elem),
+        (Type::Paren(left), _) => equivalent_output_type(&left.elem, right),
+        (_, Type::Paren(right)) => equivalent_output_type(left, &right.elem),
+        (Type::Path(left), Type::Path(right)) if left.qself.is_none() && right.qself.is_none() => {
+            let Some(left) = left.path.segments.last() else {
+                return false;
+            };
+            let Some(right) = right.path.segments.last() else {
+                return false;
+            };
+            left.ident.unraw() == right.ident.unraw()
+                && equivalent_path_arguments(&left.arguments, &right.arguments)
+        }
+        _ => quote!(#left).to_string() == quote!(#right).to_string(),
+    }
+}
+
+fn equivalent_path_arguments(left: &PathArguments, right: &PathArguments) -> bool {
+    match (left, right) {
+        (PathArguments::None, PathArguments::None) => true,
+        (PathArguments::AngleBracketed(left), PathArguments::AngleBracketed(right)) => {
+            left.args.len() == right.args.len()
+                && left
+                    .args
+                    .iter()
+                    .zip(&right.args)
+                    .all(|(left, right)| match (left, right) {
+                        (GenericArgument::Type(left), GenericArgument::Type(right)) => {
+                            equivalent_output_type(left, right)
+                        }
+                        _ => quote!(#left).to_string() == quote!(#right).to_string(),
+                    })
+        }
+        _ => false,
+    }
 }
 
 fn apply_edits(
@@ -341,7 +414,7 @@ fn apply_edits(
 struct FieldResolver {
     object: syn::Ident,
     field: syn::Ident,
-    output: proc_macro2::TokenStream,
+    output: Type,
 }
 
 impl FieldResolver {
@@ -360,11 +433,12 @@ fn field_resolver(
     ty: &GraphqlType,
     query_name: &str,
 ) -> Result<FieldResolver, BuildError> {
+    let output = resolver_output_type(schema, object_name, field_name, ty, query_name)
+        .map_err(BuildError::Codegen)?;
     Ok(FieldResolver {
         object: rust_ident(object_name),
         field: rust_ident(field_name),
-        output: resolver_output_type(schema, object_name, field_name, ty, query_name)
-            .map_err(BuildError::Codegen)?,
+        output: syn::parse2(output).expect("generated resolver output types must parse"),
     })
 }
 
@@ -476,7 +550,7 @@ fn render_field_resolver(
         impl_generics,
         quote!(#context),
         quote!(#where_clause),
-        output,
+        quote!(#output),
         quote!(#context),
     )
 }
@@ -684,9 +758,9 @@ mod tests {
             ),
             (
                 "type Query { value: User! } type User { name: String! }",
-                "self :: User",
+                "self :: r#User",
             ),
-            ("type Query { value: Int! }", "i32"),
+            ("type Query { value: Int! }", ":: core :: primitive :: i32"),
         ] {
             file.synchronize(sdl).unwrap();
             let source = file.read();
@@ -747,6 +821,10 @@ mod tests {
             (
                 format!("{source}\n{}", &source[source.rfind("impl<").unwrap()..]),
                 "Duplicate field resolver",
+            ),
+            (
+                source.replacen("type Output", "type Result", 1),
+                "Expected one Output type",
             ),
             ("not Rust source".to_owned(), "expected"),
         ];
