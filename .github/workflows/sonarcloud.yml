@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+    paths-ignore: ["docs/**", "logo/**", ".github/workflows/docs.yml"]
   pull_request:
     branches:
       - main
+    paths-ignore: ["docs/**", "logo/**", ".github/workflows/docs.yml"]
 
 permissions:
   contents: read
@@ -47,7 +49,7 @@ jobs:
         run: |
           mkdir -p target/llvm-cov
           cargo llvm-cov clean --workspace
-          cargo llvm-cov --workspace --lcov --output-path target/llvm-cov/lcov.info -- --test-threads=1
+          cargo llvm-cov --workspace --lcov --output-path target/llvm-cov/lcov.info -- --test-threads=1 --skip generated_consumer_builds_and_rebuilds_without_the_cli
 
       - name: Run SonarCloud scan
         if: ${{ env.SONAR_TOKEN != '' }}
