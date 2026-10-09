@@ -171,16 +171,14 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#code
 ```
 
 :::note[Why `resolve` instead of `operator`?]
-The scalar `hello` field in the introductory tutorial has a fixed Rust result
-type, so it appears as the `hello` method on `QueryResolver`. The `operator`
-field returns a GraphQL Object whose concrete Rust representation belongs to the
-application. Here, `fields::Query::operator` identifies the GraphQL field and
-the associated `Output` type connects it to `Option<Operator>`. The shared trait
-method is therefore named `resolve`; the field name lives in the trait parameter
-instead of the method name. This field-level contract also lets each resolver
-implementation move independently into a reachable module. Fields on the
-application-owned `Operator` use the same contract, even when they return a
-scalar such as `String` or `ID`.
+Every supported field uses the same `Resolver<Field, Context>` contract,
+including the scalar fields from the introductory tutorial. Here,
+`fields::Query::operator` identifies the GraphQL field and the associated
+`Output` type connects it to `Option<Operator>`. The method is always named
+`resolve` because the field name lives in the trait parameter. Each field
+therefore has its own implementation block. The empty `QueryResolver`
+implementation only identifies the Rust query root and Context; it does not
+contain field methods.
 :::
 
 Format and run the application:
