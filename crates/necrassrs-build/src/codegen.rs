@@ -2282,6 +2282,110 @@ mod test {
     }
 
     #[test]
+    fn generated_consumer_resolves_recursive_objects_to_a_finite_depth() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query { viewer: User! }
+                type User {
+                    name: String!
+                    friend: User
+                }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("recursive Object generation must succeed");
+        let consumer = r##"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User { remaining: u8 }
+
+            impl Resolver<fields::Query::viewer, ()> for Query {
+                type Output = User;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Query::viewer as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(User { remaining: 2 })
+                }
+            }
+
+            impl Resolver<fields::User::name, ()> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(format!("User {}", self.remaining))
+                }
+            }
+
+            impl Resolver<fields::User::friend, ()> for User {
+                type Output = Option<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::friend as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.remaining.checked_sub(1).map(|remaining| User { remaining }))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let request = necrassrs::Request::new(r#"
+                    query {
+                        viewer {
+                            name
+                            friend {
+                                name
+                                friend {
+                                    name
+                                    friend { name }
+                                }
+                            }
+                        }
+                    }
+                "#);
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &());
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": {
+                            "viewer": {
+                                "name": "User 2",
+                                "friend": {
+                                    "name": "User 1",
+                                    "friend": {
+                                        "name": "User 0",
+                                        "friend": null,
+                                    },
+                                },
+                            },
+                        },
+                    }),
+                );
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn one_of_members_cannot_shadow_input_conversion() {
         let schema = Schema::parse_and_validate(
             "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",
