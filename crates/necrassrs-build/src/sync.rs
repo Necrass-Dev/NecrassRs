@@ -1,10 +1,7 @@
 use apollo_compiler::{Schema, ast::Type as GraphqlType, schema::ExtendedType, validation::Valid};
 use quote::{ToTokens, format_ident, quote};
 use std::{collections::BTreeMap, fs, ops::Range, path::Path};
-use syn::{
-    FnArg, GenericArgument, ImplItem, ImplItemFn, Item, PathArguments, Type, ext::IdentExt,
-    spanned::Spanned,
-};
+use syn::{GenericArgument, Item, PathArguments, Type, ext::IdentExt, spanned::Spanned};
 
 use crate::{BuildError, codegen};
 
@@ -32,31 +29,6 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         .filter(|_| object_name != "gen")
         .unwrap_or_else(|| format_ident!("r#{}", object_name));
     let resolver = format_ident!("{}Resolver", codegen::rust_name(query.name.as_str()));
-    let methods = query
-        .fields
-        .iter()
-        .filter(|(_, field)| codegen::composite_output_name(schema, &field.ty).is_none())
-        .map(|(name, field)| {
-            let name = format_ident!("r#{}", codegen::rust_name(name.as_str()));
-            let result = codegen::resolver_return_type(
-                schema,
-                query.name.as_str(),
-                field.name.as_str(),
-                &field.ty,
-                &quote! { crate::generated::types },
-            )
-            .map_err(BuildError::Codegen)?;
-            Ok(syn::parse_quote! {
-                async fn #name(
-                    &self,
-                    _context: &C,
-                    _args: crate::generated::types::#object::#name::Args,
-                ) -> ::core::result::Result<#result, ::necrassrs::ResolverError> {
-                    ::core::unimplemented!()
-                }
-            })
-        })
-        .collect::<Result<Vec<ImplItemFn>, BuildError>>()?;
     let object_names = codegen::reachable_object_names(schema, query.name.as_str());
     let objects = object_names
         .iter()
@@ -65,7 +37,6 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
     let mut field_resolvers = query
         .fields
         .iter()
-        .filter(|(_, field)| codegen::composite_output_name(schema, &field.ty).is_some())
         .map(|(name, field)| {
             field_resolver(
                 schema,
@@ -119,12 +90,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 "#[allow(non_camel_case_types)]\npub struct {object};\n\n\
                  {object_declarations}\n\n\
              #[allow(non_snake_case)]\n\
-             impl<C: ::core::marker::Sync> crate::generated::resolvers::{resolver}<C> for self::{object} {{\n{}\n}}\n",
-                methods
-                    .iter()
-                    .map(render_method)
-                    .collect::<Vec<_>>()
-                    .join("\n\n"),
+             impl<C: ::core::marker::Sync> crate::generated::resolvers::{resolver}<C> for self::{object} {{}}\n",
             ) + if field_implementations.is_empty() {
                 ""
             } else {
@@ -136,15 +102,8 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                     "\n"
                 }
         }
-        Some(source) => update_existing(
-            source,
-            &object,
-            &resolver,
-            &methods,
-            &objects,
-            &field_resolvers,
-        )
-        .map_err(source_error)?,
+        Some(source) => update_existing(source, &object, &resolver, &objects, &field_resolvers)
+            .map_err(source_error)?,
     };
     syn::parse_file(&updated).map_err(source_error)?;
 
@@ -195,7 +154,6 @@ fn update_existing(
     source: &str,
     object: &syn::Ident,
     resolver: &syn::Ident,
-    methods: &[ImplItemFn],
     objects: &[syn::Ident],
     field_resolvers: &[FieldResolver],
 ) -> syn::Result<String> {
@@ -206,7 +164,13 @@ fn update_existing(
     let implementation = query_resolver_implementation(&ast, object, resolver)?;
     let context = resolver_context(implementation)?;
     let generics = &implementation.generics;
-    let mut edits = reconcile_query_methods(implementation, methods, context)?;
+    if !implementation.items.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &implementation.items[0],
+            "Expected an empty query root resolver marker; grouped resolver methods are not supported",
+        ));
+    }
+    let mut edits = Vec::new();
     let desired_fields = reconcile_field_resolvers(&ast, field_resolvers, &mut edits)?;
 
     let defined_types = ast
@@ -315,71 +279,6 @@ fn resolver_context(implementation: &syn::ItemImpl) -> syn::Result<&Type> {
         .ok_or_else(|| {
             syn::Error::new_spanned(implementation, "Expected one resolver Context type")
         })
-}
-
-fn reconcile_query_methods(
-    implementation: &syn::ItemImpl,
-    methods: &[ImplItemFn],
-    context: &Type,
-) -> syn::Result<Vec<Edit>> {
-    let mut desired: BTreeMap<_, _> = methods
-        .iter()
-        .map(|method| (method.sig.ident.unraw().to_string(), method))
-        .collect();
-    let mut edits = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for item in &implementation.items {
-        let ImplItem::Fn(method) = item else { continue };
-        let name = method.sig.ident.unraw().to_string();
-        if !seen.insert(name.clone()) {
-            return Err(syn::Error::new_spanned(
-                method,
-                "Duplicate resolver methods are ambiguous",
-            ));
-        }
-        if desired.remove(&name).is_none() {
-            edits.push(Edit {
-                range: method.span().byte_range(),
-                replacement: String::new(),
-            });
-            continue;
-        }
-        if method.sig.asyncness.is_none() || method.sig.inputs.len() != 3 {
-            return Err(syn::Error::new_spanned(
-                &method.sig,
-                "Expected an async resolver with self, Context, and Args parameters",
-            ));
-        }
-        if !matches!(method.sig.inputs.last(), Some(FnArg::Typed(_))) {
-            return Err(syn::Error::new_spanned(
-                &method.sig,
-                "Expected a typed Args parameter",
-            ));
-        }
-        // Retained fields keep their existing return type and Args path. Argument
-        // changes update Args in OUT_DIR, not this signature.
-        // Preserve user spelling, aliases, and comments instead of normalizing them.
-    }
-
-    let added = desired
-        .into_values()
-        .map(|method| {
-            let mut method = method.clone();
-            if let Some(FnArg::Typed(argument)) = method.sig.inputs.iter_mut().nth(1) {
-                *argument.ty = syn::parse_quote!(&#context);
-            }
-            render_method(&method)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if !added.is_empty() {
-        let offset = implementation.brace_token.span.close().byte_range().start;
-        edits.push(Edit {
-            range: offset..offset,
-            replacement: format!("\n{added}\n"),
-        });
-    }
-    Ok(edits)
 }
 
 fn reconcile_field_resolvers<'a>(
@@ -635,14 +534,6 @@ struct Edit {
     replacement: String,
 }
 
-fn render_method(method: &ImplItemFn) -> String {
-    let signature = &method.sig;
-    format!(
-        "    {} {{\n        ::core::unimplemented!()\n    }}",
-        quote!(#signature)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,7 +580,8 @@ mod tests {
         let source = file.read();
         let ast = syn::parse_file(&source).unwrap();
         assert!(matches!(&ast.items[0], Item::Struct(item) if item.ident == "Query"));
-        assert!(source.contains("async fn r#hello"));
+        assert!(source.contains("fields::r#Query::r#hello"));
+        assert!(source.contains("async fn resolve"));
         assert!(source.contains("unimplemented"));
 
         file.synchronize("type Query { hello: String! }").unwrap();
@@ -697,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn adds_and_removes_methods_without_rewriting_retained_code() {
+    fn adds_and_removes_field_resolvers_without_rewriting_retained_code() {
         let file = ResolverFile::new();
         file.synchronize("type Query { hello: String! old: String! }")
             .unwrap();
@@ -711,8 +603,8 @@ mod tests {
             .unwrap();
         let updated = file.read();
         assert!(updated.contains("/* retain this comment */"));
-        assert!(updated.contains("async fn r#added"));
-        assert!(!updated.contains("async fn r#old"));
+        assert!(updated.contains("fields::r#Query::r#added"));
+        assert!(!updated.contains("fields::r#Query::r#old"));
         syn::parse_file(&updated).unwrap();
     }
 
@@ -727,13 +619,13 @@ mod tests {
                 .unwrap();
             let updated = file.read();
             assert!(updated.starts_with(prefix));
-            assert!(updated.contains("async fn r#hello"));
-            assert!(updated.contains("async fn r#added"));
+            assert!(updated.contains("fields::r#Query::r#hello"));
+            assert!(updated.contains("fields::r#Query::r#added"));
         }
     }
 
     #[test]
-    fn added_method_uses_the_existing_context_type() {
+    fn added_field_resolver_uses_the_existing_context_type() {
         let file = ResolverFile::new();
         file.synchronize("type Query { hello: String! }").unwrap();
         let source = file.read().replace(
@@ -749,7 +641,12 @@ mod tests {
             .items
             .iter()
             .find_map(|item| match item {
-                Item::Impl(item) => Some(item),
+                Item::Impl(item)
+                    if field_resolver_coordinate(item)
+                        == Some(("Query".to_owned(), "added".to_owned())) =>
+                {
+                    Some(item)
+                }
                 _ => None,
             })
             .unwrap();
@@ -757,7 +654,7 @@ mod tests {
             .items
             .iter()
             .find_map(|item| match item {
-                ImplItem::Fn(method) if method.sig.ident.unraw() == "added" => Some(method),
+                syn::ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
                 _ => None,
             })
             .unwrap();
@@ -784,19 +681,15 @@ mod tests {
                 "Expected one resolver Context",
             ),
             (
-                source.replace("async fn r#hello", "fn r#hello"),
-                "Expected an async resolver",
-            ),
-            (
                 source.replace(
-                    ", _args : crate :: generated :: types :: Query :: r#hello :: Args",
-                    "",
+                    "for self::Query {}",
+                    "for self::Query { async fn hello(&self) {} }",
                 ),
-                "Expected an async resolver",
+                "Expected an empty query root resolver marker",
             ),
             (
-                source.replace("    }\n}", "    }\n    async fn hello(&self) {}\n}"),
-                "Duplicate resolver methods",
+                format!("{source}\n{}", &source[source.rfind("impl<").unwrap()..]),
+                "Duplicate field resolver",
             ),
             ("not Rust source".to_owned(), "expected"),
         ];
