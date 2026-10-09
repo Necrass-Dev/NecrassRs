@@ -2439,6 +2439,114 @@ mod test {
     }
 
     #[test]
+    fn generated_consumer_resolves_union_members_by_runtime_object_type() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                union SearchResult = User | Organization
+                type Query { search(kind: String!): SearchResult! }
+                type User { name: String! }
+                type Organization { title: String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Union generation must succeed");
+        let consumer = r##"
+            use generated::{fields, types};
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User(String);
+            struct Organization(String);
+
+            impl Resolver<fields::Query::search, ()> for Query {
+                type Output = types::SearchResult<User, Organization>;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    args: <fields::Query::search as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(match args.kind.as_str() {
+                        "user" => types::SearchResult::User(User(String::from("Sheri"))),
+                        "organization" => types::SearchResult::Organization(Organization(
+                            String::from("Witch Court"),
+                        )),
+                        _ => return Err(necrassrs::ResolverError::new("unknown kind")),
+                    })
+                }
+            }
+
+            impl Resolver<fields::User::name, ()> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.0.clone())
+                }
+            }
+
+            impl Resolver<fields::Organization::title, ()> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Organization::title as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.0.clone())
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let document = r#"
+                    query Search($kind: String!) {
+                        search(kind: $kind) {
+                            __typename
+                            ... on User { label: name }
+                            ... on Organization { label: title }
+                        }
+                    }
+                "#;
+
+                for (kind, type_name, label) in [
+                    ("user", "User", "Sheri"),
+                    ("organization", "Organization", "Witch Court"),
+                ] {
+                    let request = necrassrs::Request::new(document).with_variables(
+                        serde_json::json!({ "kind": kind }).as_object().unwrap().clone(),
+                    );
+                    let future = necrassrs::execute(&schema, &request, &dispatcher, &());
+                    fn assert_send<T: Send>(_: &T) {}
+                    assert_send(&future);
+                    let response = futures::executor::block_on(future);
+
+                    assert_eq!(
+                        serde_json::to_value(response).unwrap(),
+                        serde_json::json!({
+                            "data": {
+                                "search": {
+                                    "__typename": type_name,
+                                    "label": label,
+                                },
+                            },
+                        }),
+                    );
+                }
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn one_of_members_cannot_shadow_input_conversion() {
         let schema = Schema::parse_and_validate(
             "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",
