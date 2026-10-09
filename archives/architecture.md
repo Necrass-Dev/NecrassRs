@@ -368,9 +368,9 @@ necrassrs/
 ├── docs/
 │   ├── package.json
 │   └── src/content/docs/docs/
-│       ├── index.md
-│       ├── graphiql.md
-│       └── tutorial.md
+│       ├── introduction/
+│       ├── guide/
+│       └── manual/
 ├── archives/
 │   ├── architecture.md
 │   ├── integration.md

@@ -31,7 +31,7 @@ Actix handles response negotiation through the adapter's extractor and responder
 
 `src/main.rs` owns the server, routes, schema state in `web::Data`, and Context construction. This greeting example uses `()` for its per-request Context. Each worker initializes its state through `configure`.
 
-GraphiQL loads pinned assets from `esm.sh` and requires browser network access. Remove or gate the GET route when the UI should not be exposed. Introspection is enabled independently; use `execute_with_options` with `ExecutionOptions { introspection: false }` in the handler to disable it. See [Introspection and GraphiQL](../../docs/src/content/docs/docs/graphiql.md).
+GraphiQL loads pinned assets from `esm.sh` and requires browser network access. Remove or gate the GET route when the UI should not be exposed. Introspection is enabled independently; use `execute_with_options` with `ExecutionOptions { introspection: false }` in the handler to disable it. See [Introspection and GraphiQL](../../docs/src/content/docs/docs/manual/graphiql.md).
 
 ## SDL and regeneration
 
