@@ -3056,6 +3056,45 @@ mod test {
     }
 
     #[test]
+    fn generated_abstract_results_exclude_non_member_object_variants() {
+        for (sdl, abstract_type) in [
+            (
+                "union Search = User | Organization \
+                 type Query { search: Search } \
+                 type User { id: ID! } \
+                 type Organization { id: ID! } \
+                 type Post { id: ID! }",
+                "Search",
+            ),
+            (
+                "interface Node { id: ID! } \
+                 type Query { node: Node } \
+                 type User implements Node { id: ID! } \
+                 type Organization implements Node { id: ID! } \
+                 type Post { id: ID! }",
+                "Node",
+            ),
+        ] {
+            let schema = Schema::parse_and_validate(sdl, "schema.graphql")
+                .expect("the test schema must be valid");
+            let generated = super::generate(&schema).expect("abstract generation must succeed");
+            let consumer = format!(
+                r#"
+                    struct User;
+                    struct Organization;
+                    struct Post;
+
+                    fn invalid() {{
+                        let _ = types::{abstract_type}::<User, Organization>::Post(Post);
+                    }}
+                "#,
+            );
+
+            assert_consumer_fails(&generated.to_string(), &consumer, "E0599");
+        }
+    }
+
+    #[test]
     fn one_of_members_cannot_shadow_input_conversion() {
         let schema = Schema::parse_and_validate(
             "input Choice @oneOf { from_graphql_value: String _from_graphql_value: String } type Query { echo(value: Choice!): String! }",

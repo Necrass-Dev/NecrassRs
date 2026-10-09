@@ -960,6 +960,10 @@ mod tests {
 
     struct ValueDispatcher(JsonValue);
 
+    struct InvalidAbstractDispatcher;
+
+    struct InvalidAbstractObject;
+
     struct CountingDispatcher(AtomicUsize);
 
     struct RecoveringDispatcher(AtomicUsize);
@@ -1016,6 +1020,38 @@ mod tests {
             _arguments: &'a JsonMap,
         ) -> Result<ResolvedValue, ResolverError> {
             Ok(ResolvedValue::Json(self.0.clone()))
+        }
+    }
+
+    impl super::Dispatcher<()> for InvalidAbstractDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> Result<ResolvedValue, ResolverError> {
+            Ok(ResolvedValue::Object(Box::new(InvalidAbstractObject)))
+        }
+    }
+
+    impl crate::ResolvedObject<()> for InvalidAbstractObject {
+        fn type_name(&self) -> &'static str {
+            "Post"
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = Result<ResolvedValue, ResolverError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { panic!("invalid abstract Object fields must not execute") })
         }
     }
 
@@ -1936,6 +1972,36 @@ mod tests {
                 .is_some_and(|message| !message.is_empty())
         );
         assert_eq!(response["errors"][0]["path"], json!(["viewer"]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_abstract_runtime_type_becomes_one_execution_error() {
+        let schema = Schema::parse_and_validate(
+            "union Search = User | Organization \
+             type Query { search: Search } \
+             type User { name: String! } \
+             type Organization { name: String! } \
+             type Post { name: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("{ result: search { __typename } }");
+
+        let response =
+            to_value(super::execute(&schema, &request, &InvalidAbstractDispatcher, &()).await)
+                .unwrap();
+
+        assert_eq!(response["data"], json!({ "result": null }));
+        assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            response["errors"][0]["message"],
+            "Runtime Object type 'Post' is not valid for 'Search'."
+        );
+        assert_eq!(response["errors"][0]["path"], json!(["result"]));
+        assert_eq!(
+            response["errors"][0]["locations"],
+            json!([{ "line": 1, "column": 11 }])
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
