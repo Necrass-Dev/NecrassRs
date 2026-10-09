@@ -91,9 +91,9 @@ GraphiQL loads browser assets from `esm.sh` and needs network access. See
 2. Run `cargo build` to generate contracts and synchronize `src/resolvers.rs`.
 3. Implement new resolver bodies and run the server.
 
-Retained fields keep their existing method bodies. New fields receive
-`unimplemented!()` stubs, which you must implement before calling them.
-Deleting or renaming a field removes its old resolver method, including its body.
+Retained fields keep their existing resolver bodies. New fields receive
+`unimplemented!()` stubs, which you must implement before calling them. Deleting
+or renaming a field removes its old resolver declaration, including its body.
 
 After initialization, ordinary builds and runs use Cargo; the CLI is not needed
 for schema changes. The starter configures `panic = "abort"` in development and
@@ -103,6 +103,8 @@ Return `ResolverError` for ordinary application errors.
 ## Explore the documentation
 
 - [Tutorial](/docs/tutorial/): build a web server and query it with GraphiQL or HTTP.
+- [Personnel Management System](/docs/personnel-management/): add Object, Interface,
+  and Union results to a working server.
 - [Types](/docs/types/): Rust type mappings, input presence, defaults, OneOf, and recursion.
 - [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
 

@@ -9,7 +9,7 @@
 NecrassRs is an SDL-first GraphQL server framework for Rust. Define your public API in GraphQL SDL, let Cargo generate Rust contracts and resolver scaffolding, and fill in the resolver bodies with your application logic.
 
 > [!WARNING]
-> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API supports built-in scalar and enum query results, ordinary and OneOf input objects, nullable and list forms, and recursive input layouts. Custom scalars, composite results, and generated mutation/subscription routing remain unsupported.
+> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API supports built-in scalar and enum results, ordinary and OneOf input objects, owned Object results, Interface and Union results, nullable and list forms, and recursive input and Object relationships. Custom scalars, borrowed Object results, and generated mutation/subscription routing remain unsupported.
 
 ## Quick start
 
@@ -36,7 +36,7 @@ The starter's NecrassRs dependencies are not pinned to the CLI's revision. The f
 Open [GraphiQL](http://127.0.0.1:3000/graphql) and run `{ hello(name: "Sheri") }`.
 The response is `{"data":{"hello":"Hello, Sheri"}}`.
 
-Follow the [installation and first-request guide](https://necrass.rs/docs/installation/#install-the-cli) for prerequisites, interactive setup, framework selection, and curl examples. See [Introspection and GraphiQL](docs/src/content/docs/docs/graphiql.md) for deployment settings.
+Follow the [installation and first-request guide](https://necrass.rs/docs/installation/#install-the-cli) for prerequisites, interactive setup, framework selection, and curl examples. See [Introspection and GraphiQL](docs/src/content/docs/docs/manual/graphiql.md) for deployment settings.
 
 ## From schema to resolver
 
@@ -51,7 +51,7 @@ type Query {
 Cargo runs `build.rs`, which calls `necrassrs_build::build("schema")`. The build library validates the SDL, generates argument types and resolver contracts, and synchronizes editable resolver declarations in `src/resolvers.rs`.
 
 > [!IMPORTANT]
-> Cargo builds write disposable generated code to `OUT_DIR` and update `src/resolvers.rs`. Retained fields keep their method bodies. Deleting or renaming a field removes its old resolver method, including any user-written body.
+> Cargo builds write disposable generated code to `OUT_DIR` and update `src/resolvers.rs`. Retained fields keep their resolver bodies. Deleting or renaming a field removes its old resolver declaration, including any user-written body.
 
 The starter already includes this working resolver:
 
@@ -71,7 +71,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {
 
 Your application owns routing and request Context construction. At runtime, NecrassRs validates the request, dispatches selected fields to your resolvers, and builds the GraphQL response. Return `ResolverError` for ordinary application errors.
 
-Follow the [Tutorial](docs/src/content/docs/docs/tutorial.md) to define a schema, implement resolvers, and query a running web server. See [Types](docs/src/content/docs/docs/types.md) for Rust type mappings, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
+Follow the [Tutorial](docs/src/content/docs/docs/guide/tutorial.md) to define a schema, implement resolvers, and query a running web server. Continue with the [Personnel Management System](docs/src/content/docs/docs/guide/personnel-management.md) for Object, Interface, and Union results. See [Types](docs/src/content/docs/docs/manual/types.md) for Rust type mappings, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
 
 ## Everyday development
 
@@ -80,18 +80,18 @@ Follow the [Tutorial](docs/src/content/docs/docs/tutorial.md) to define a schema
 3. Implement new resolver bodies in `src/resolvers.rs`.
 4. Run `cargo run` and query the server.
 
-Generated contracts in `OUT_DIR` are disposable. In `src/resolvers.rs`, SDL owns resolver declarations, while you own retained method bodies and unrelated application code.
+Generated contracts in `OUT_DIR` are disposable. In `src/resolvers.rs`, SDL owns resolver declarations, while you own retained resolver bodies and unrelated application code.
 
 | File | Purpose |
 | --- | --- |
 | `schema/**/*.graphql` | Your public GraphQL contract |
 | `build.rs` | Calls the build library during Cargo builds |
 | `src/main.rs` | Routing, request Context construction, and server setup |
-| `src/resolvers.rs` | Build-managed resolver declarations with your method bodies and application state |
+| `src/resolvers.rs` | Build-managed resolver declarations with your resolver bodies and application state |
 | `src/generated.rs` | Includes generated code from `OUT_DIR` |
 | `OUT_DIR/necrassrs.rs` | Disposable contracts, argument types, embedded SDL, and dispatch; do not edit |
 
-**Builds update `src/resolvers.rs`.** Retained methods keep their bodies, new fields receive `unimplemented!()` stubs, and deleted fields lose their methods, including their bodies. Renaming a field deletes the old method and adds a fresh stub. Unrelated application code is preserved; retained bodies may need edits when arguments change.
+**Builds update `src/resolvers.rs`.** Retained fields keep their resolver bodies, new fields receive `unimplemented!()` stubs, and deleted fields lose their resolver declarations, including their bodies. Renaming a field deletes the old declaration and adds a fresh stub. Unrelated application code is preserved; retained bodies may need edits when arguments or result types change.
 
 The starter configures `panic = "abort"` for development and release builds. Calling an unimplemented resolver terminates the process; unselected fields are not called. This setting affects all panics. Ordinary resolver errors return GraphQL responses.
 
@@ -112,7 +112,8 @@ Applications normally depend on their HTTP adapter, which uses `necrassrs-http` 
 
 - [Axum server example](examples/axum-server/README.md): run a workspace example and explore requests, errors, and manual setup details.
 - [Actix server example](examples/actix-server/README.md): run generated resolvers through Actix Web with built-in GraphiQL.
-- [Introspection and GraphiQL](docs/src/content/docs/docs/graphiql.md): configure the development UI and introspection policy.
+- [Personnel Management System](docs/src/content/docs/docs/guide/personnel-management.md): build Object, Interface, and Union result resolvers.
+- [Introspection and GraphiQL](docs/src/content/docs/docs/manual/graphiql.md): configure the development UI and introspection policy.
 
 To browse local API documentation from a checkout of this repository:
 

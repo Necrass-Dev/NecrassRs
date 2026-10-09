@@ -16,7 +16,7 @@ The example's `[dependencies]` contain the runtime, Axum adapter, Axum, and Toki
 
 ## Development UI
 
-The example serves GraphiQL on GET `/graphql` by default. Open `http://127.0.0.1:3000/graphql`; the page sends requests to POST `/graphql`. The browser loads version-pinned assets from `esm.sh` and needs network access. Remove or gate the GET handler when deploying an application that should not expose the UI. See [Introspection and GraphiQL](../../docs/src/content/docs/docs/graphiql.md) for endpoint configuration and production introspection policy.
+The example serves GraphiQL on GET `/graphql` by default. Open `http://127.0.0.1:3000/graphql`; the page sends requests to POST `/graphql`. The browser loads version-pinned assets from `esm.sh` and needs network access. Remove or gate the GET handler when deploying an application that should not expose the UI. See [Introspection and GraphiQL](../../docs/src/content/docs/docs/manual/graphiql.md) for endpoint configuration and production introspection policy.
 
 ## Requests
 
@@ -80,10 +80,10 @@ curl -i http://127.0.0.1:3000/graphql \
 | `build.rs` | Application-owned call to `necrassrs_build::build("schema")` |
 | `src/main.rs` | Application-owned routing, Context construction, and server setup |
 | `src/generated.rs` | Application-owned inclusion of `OUT_DIR/necrassrs.rs` |
-| `src/resolvers.rs` | Build-managed resolver declarations with application-owned retained method bodies and unrelated code |
+| `src/resolvers.rs` | Build-managed resolver declarations with application-owned retained resolver bodies and unrelated code |
 | `OUT_DIR/necrassrs.rs` | Disposable generated contracts, embedded SDL, and dispatch; never edit directly |
 
-Cargo regenerates contracts when SDL changes. The build library synchronizes resolver declarations in `src/resolvers.rs`: retained method bodies are preserved, new fields receive `unimplemented!()` stubs, and deleted fields lose their methods. A rename is a deletion plus a new stub.
+Cargo regenerates contracts when SDL changes. The build library synchronizes resolver declarations in `src/resolvers.rs`: retained resolver bodies are preserved, new fields receive `unimplemented!()` stubs, and deleted fields lose their resolver declarations. A rename is a deletion plus a new stub.
 
 ## Unimplemented resolver policy
 
@@ -119,13 +119,13 @@ The workspace test run included all five axum-server tests, the build-library Ca
 | Domain error, response path and location, root null propagation, and server availability | `axum-server::tests::unknown_name_returns_a_field_error_and_server_recovers` checks the exact response, alias path, variable error, and a later successful request |
 | Literal and variable arguments | `axum-server::tests::literal_and_variable_requests_match` checks matching success responses; the error test checks both forms for unknown names |
 | Missing, null, and incompatible arguments before resolver invocation | `axum-server::tests::invalid_inputs_are_request_errors` checks HTTP 422, errors, and omitted `data` for literals and variables; `necrassrs::execution::tests::invalid_variable_inputs_do_not_invoke_dispatcher` checks the invocation boundary directly |
-| SDL additions, deletions, renames, and retained business logic | `necrassrs-build/tests/cargo_build.rs` builds disposable consumers from SDL and checks synchronization and unchanged method bodies; no duplicate synchronization test is added to this example |
+| SDL additions, deletions, renames, and retained business logic | `necrassrs-build/tests/cargo_build.rs` builds disposable consumers from SDL and checks synchronization and unchanged resolver bodies; no duplicate synchronization test is added to this example |
 | Borrowed Context and complete `Send` execution future | `necrassrs-build::codegen::test::generated_resolver_accepts_borrowed_context_and_returns_send_future` and `necrassrs::execution::tests::handwritten_dispatch_receives_coerced_arguments_and_borrowed_context` |
 | Request Context isolation | `necrassrs::execution::tests::overlapping_requests_keep_their_context_values` and `necrassrs-axum/tests/http.rs::extracts_operation_variables_and_per_request_context`; this greeting example uses `()` per request |
 | Unselected fields and selected unimplemented resolver termination | `necrassrs-build::codegen::test::selected_unimplemented_field_aborts_dev_and_release_consumers` checks a partial consumer in separate dev and release processes |
 | Nullable list-item null propagation and other execution behavior | `necrassrs::execution::tests::null_non_null_item_nullifies_nullable_list` and related list, selection, and mutation tests |
 | HTTP methods, extraction, response status, and body limits | `necrassrs-axum` HTTP tests and the axum-server HTTP tests |
 
-Generated consumer contracts currently support `String!` field arguments and results. The list and mutation checks above belong to the runtime component and are not claims that this example can generate those types or roots. CLI initialization and packaged release builds are outside this example's scope.
+This greeting example deliberately exercises `String!` field arguments and results. Generated consumer coverage for broader input and result types, including composite results, lives in `necrassrs-build`; generated mutation and subscription routing remains unsupported. CLI initialization and packaged release builds are outside this example's scope.
 
 The GraphQL POST route includes `necrassrs_axum::negotiate_response` middleware. It negotiates `Accept` without applying GraphQL response rules to the HTML page. Syntax errors return 400, other GraphQL request errors 422, and execution results remain 200 even with errors.

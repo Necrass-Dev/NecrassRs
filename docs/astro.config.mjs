@@ -29,7 +29,7 @@ export default defineConfig({
         },
         {
           label: "Guide",
-          items: ["docs/installation", "docs/tutorial"],
+          items: ["docs/installation", "docs/tutorial", "docs/personnel-management"],
         },
         { label: "Manual", items: ["docs/types", "docs/graphiql", "docs/integration"] },
       ],

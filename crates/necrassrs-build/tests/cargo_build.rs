@@ -5,7 +5,10 @@ use std::{
     process::{Command, Output},
     sync::atomic::{AtomicUsize, Ordering},
 };
-use syn::{ImplItem, ImplItemFn, Item, ItemImpl, ext::IdentExt, spanned::Spanned};
+use syn::{
+    GenericArgument, ImplItem, ImplItemFn, Item, ItemImpl, PathArguments, Type, ext::IdentExt,
+    spanned::Spanned,
+};
 
 #[test]
 fn first_build_creates_query_and_explicit_unimplemented_methods_from_sdl() {
@@ -243,6 +246,82 @@ fn expanded_input_and_result_contracts_rebuild_without_replacing_user_body() {
 }
 
 #[test]
+fn composite_resolvers_are_created_preserved_and_execute() {
+    let consumer = Consumer::new("type Query { viewer: User! } type User { name: String! }");
+    consumer.bootstrap();
+
+    let mut ast = consumer.ast();
+    assert!(
+        ast.items
+            .iter()
+            .any(|item| matches!(item, Item::Struct(item) if item.ident.unraw() == "User"))
+    );
+    field_resolver(&mut ast, "Query", "viewer")
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+            _ => None,
+        })
+        .unwrap()
+        .block = syn::parse_quote!({ Ok(User) });
+    field_resolver(&mut ast, "User", "name")
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+            _ => None,
+        })
+        .unwrap()
+        .block = syn::parse_quote!({ Ok(String::from("Sheri")) });
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    let source = fs::read(consumer.resolvers()).unwrap();
+
+    let script = consumer.directory.join("build.rs");
+    let mut contents = fs::read_to_string(&script).unwrap();
+    contents.push('\n');
+    fs::write(script, contents).unwrap();
+    let build = consumer.build();
+    assert_success(&build);
+    assert_eq!(fs::read(consumer.resolvers()).unwrap(), source);
+
+    let executable = messages(&build)
+        .find_map(|message| message["executable"].as_str().map(PathBuf::from))
+        .expect("Cargo must report the consumer executable");
+    let run = Command::new(executable)
+        .arg("{ viewer { name } }")
+        .output()
+        .unwrap();
+    assert_success(&run);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&run.stdout).unwrap(),
+        serde_json::json!({"data": {"viewer": {"name": "Sheri"}}}),
+    );
+}
+
+#[test]
+fn composite_synchronization_supports_wrappers_and_abstract_types() {
+    let consumer = Consumer::new(
+        "interface Node { name: String! } \
+         type User implements Node { name: String! } \
+         type Organization implements Node { name: String! } \
+         union Search = User | Organization \
+         type Query { node: Node results: [Search!]! }",
+    );
+    consumer.bootstrap();
+
+    let mut ast = consumer.ast();
+    for (object, field) in [
+        ("Query", "node"),
+        ("Query", "results"),
+        ("User", "name"),
+        ("Organization", "name"),
+    ] {
+        field_resolver(&mut ast, object, field);
+    }
+}
+
+#[test]
 fn synchronization_uses_injective_names_without_matching_similar_methods() {
     let consumer = Consumer::new(
         "type Query { hello: String! Hello: String! type: String! self: String! _self: String! _: String! }",
@@ -396,6 +475,42 @@ fn resolver_impl(ast: &syn::File) -> &ItemImpl {
             _ => None,
         })
         .expect("the source file must contain an explicit QueryResolver implementation")
+}
+
+fn field_resolver<'a>(ast: &'a mut syn::File, object: &str, field: &str) -> &'a mut ItemImpl {
+    ast.items
+        .iter_mut()
+        .find_map(|item| {
+            let Item::Impl(item) = item else { return None };
+            let (_, trait_path, _) = item.trait_.as_ref()?;
+            let resolver = trait_path.segments.last()?;
+            if resolver.ident != "Resolver" {
+                return None;
+            }
+            let PathArguments::AngleBracketed(arguments) = &resolver.arguments else {
+                return None;
+            };
+            let field_matches = arguments.args.first().is_some_and(|argument| {
+                let GenericArgument::Type(Type::Path(ty)) = argument else {
+                    return false;
+                };
+                ty.path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident.unraw() == field)
+            });
+            let Type::Path(self_type) = item.self_ty.as_ref() else {
+                return None;
+            };
+            (field_matches
+                && self_type
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident.unraw() == object))
+            .then_some(item)
+        })
+        .unwrap_or_else(|| panic!("missing explicit resolver implementation for {object}.{field}"))
 }
 
 fn method_names(ast: &syn::File) -> Vec<String> {

@@ -7,7 +7,7 @@ use apollo_compiler::{
     Schema,
     ast::{NamedType, Type},
     parser::SourceSpan,
-    schema::ExtendedType,
+    schema::{ComponentName, ExtendedType},
     validation::Valid,
 };
 use proc_macro2::TokenStream;
@@ -25,8 +25,9 @@ use quote::{format_ident, quote};
 ///
 /// Returns [`CodegenError`] for unsupported types or mutation and subscription
 /// roots. Generated contracts support built-in scalars, enums, ordinary input
-/// objects, lists, and nullable wrappers. Custom scalars and composite output
-/// types are not yet supported.
+/// objects, lists, nullable wrappers, and owned Object results with nullable/list
+/// wrappers, leaf fields, recursive relationships, and abstract results. Custom
+/// scalars and borrowed Objects are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
@@ -39,6 +40,7 @@ use quote::{format_ident, quote};
 /// ```
 pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
     let types = generate_types(schema)?;
+    let fields = generate_fields(schema);
     let resolvers = generate_resolvers(schema)?;
     let dispatch = generate_dispatch(schema)?;
     let sdl = schema.to_string();
@@ -47,6 +49,7 @@ pub fn generate(schema: &Valid<Schema>) -> Result<String, CodegenError> {
         pub const SDL: &str = #sdl;
 
         #types
+        #fields
         #resolvers
         #dispatch
     }
@@ -198,6 +201,16 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                     #(#variants,)*
                 }
             });
+            continue;
+        }
+
+        if matches!(
+            definition,
+            ExtendedType::Union(_) | ExtendedType::Interface(_)
+        ) {
+            let members = abstract_member_names(schema, type_name)
+                .expect("abstract output type must have concrete members");
+            named_types.push(generate_abstract_output_enum(type_name.as_str(), &members));
             continue;
         }
 
@@ -429,12 +442,59 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
     }
 
     Ok(quote! {
-        #[allow(non_snake_case, non_camel_case_types)]
+        #[allow(dead_code, non_snake_case, non_camel_case_types)]
         pub mod types {
             #(#named_types)*
             #(#object_modules)*
         }
     })
+}
+
+fn generate_fields(schema: &Valid<Schema>) -> impl quote::ToTokens {
+    let object_modules = schema
+        .types
+        .iter()
+        .filter_map(|(type_name, definition)| {
+            if type_name.as_str().starts_with("__") {
+                return None;
+            }
+
+            let ExtendedType::Object(object) = definition else {
+                return None;
+            };
+
+            let object_name = format_ident!("r#{}", rust_name(type_name.as_str()));
+            let fields = object
+                .fields
+                .keys()
+                .map(|field_name| {
+                    let field_name = format_ident!("r#{}", rust_name(field_name.as_str()));
+
+                    quote! {
+                        pub struct #field_name;
+
+                        impl ::necrassrs::Field for #field_name {
+                            type Args =
+                                super::super::types::#object_name::#field_name::Args;
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            Some(quote! {
+                pub mod #object_name {
+                    #(#fields)*
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    quote! {
+        #[allow(dead_code, non_snake_case, non_camel_case_types)]
+        pub mod fields {
+            #(#object_modules)*
+        }
+    }
 }
 
 fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
@@ -452,6 +512,10 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         let resolver_name = format_ident!("{}Resolver", rust_name(type_name.as_str()));
         let mut methods = Vec::new();
         for (field_name, field) in &object.fields {
+            if composite_output_name(schema, &field.ty).is_some() {
+                continue;
+            }
+
             let method_name = format_ident!("r#{}", rust_name(field_name.as_str()));
             let return_type = resolver_return_type(
                 schema,
@@ -475,7 +539,7 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
         }
 
         resolvers.push(quote! {
-            #[allow(non_camel_case_types, non_snake_case)]
+            #[allow(dead_code, non_camel_case_types, non_snake_case)]
             pub trait #resolver_name<C> {
                 #(#methods)*
             }
@@ -487,6 +551,440 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
             #(#resolvers)*
         }
     })
+}
+
+pub(crate) fn composite_output_name<'a>(schema: &Schema, ty: &'a Type) -> Option<&'a NamedType> {
+    let name = ty.inner_named_type();
+    matches!(
+        schema.types.get(name),
+        Some(ExtendedType::Object(_) | ExtendedType::Interface(_) | ExtendedType::Union(_))
+    )
+    .then_some(name)
+}
+
+fn object_type_ident(type_name: &str) -> proc_macro2::Ident {
+    format_ident!("{}ObjectType", rust_name(type_name))
+}
+
+fn object_variant_ident(type_name: &str) -> proc_macro2::Ident {
+    format_ident!("r#{}", rust_name(type_name))
+}
+
+pub(crate) fn abstract_member_names<'a>(
+    schema: &'a Schema,
+    name: &NamedType,
+) -> Option<Vec<&'a str>> {
+    match schema.types.get(name)? {
+        ExtendedType::Union(union_type) => Some(
+            union_type
+                .members
+                .iter()
+                .map(<ComponentName as AsRef<str>>::as_ref)
+                .collect(),
+        ),
+        ExtendedType::Interface(_) => Some(
+            schema
+                .types
+                .iter()
+                .filter_map(|(type_name, definition)| {
+                    let ExtendedType::Object(object) = definition else {
+                        return None;
+                    };
+                    object
+                        .implements_interfaces
+                        .iter()
+                        .any(|interface| interface == name)
+                        .then(|| type_name.as_str())
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn generate_abstract_output_enum(type_name: &str, members: &[&str]) -> TokenStream {
+    let name = format_ident!("r#{}", rust_name(type_name));
+    let (member_types, variants): (Vec<_>, Vec<_>) = members
+        .iter()
+        .map(|member| {
+            let member_type = object_type_ident(member);
+            let variant = object_variant_ident(member);
+            (member_type.clone(), quote! { #variant(#member_type) })
+        })
+        .unzip();
+
+    if member_types.is_empty() {
+        quote! { pub enum #name {} }
+    } else {
+        quote! {
+            pub enum #name<#(#member_types),*> {
+                #(#variants,)*
+            }
+        }
+    }
+}
+
+pub(crate) fn reachable_object_names(schema: &Schema, query_type: &str) -> Vec<String> {
+    let mut pending = vec![query_type.to_owned()];
+    let mut reachable = std::collections::HashSet::new();
+
+    while let Some(parent_name) = pending.pop() {
+        let Some(parent) = schema.get_object(&parent_name) else {
+            continue;
+        };
+
+        for field in parent.fields.values() {
+            let Some(name) = composite_output_name(schema, &field.ty) else {
+                continue;
+            };
+
+            match schema.types.get(name) {
+                Some(ExtendedType::Object(_)) => {
+                    let name = name.as_str();
+                    if name != query_type && reachable.insert(name.to_owned()) {
+                        pending.push(name.to_owned());
+                    }
+                }
+                Some(ExtendedType::Interface(_) | ExtendedType::Union(_)) => {
+                    for member in abstract_member_names(schema, name)
+                        .expect("abstract output type must have concrete members")
+                    {
+                        if member != query_type && reachable.insert(member.to_owned()) {
+                            pending.push(member.to_owned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    schema
+        .types
+        .keys()
+        .map(NamedType::as_str)
+        .filter(|name| reachable.contains(*name))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn named_composite_output_type(
+    schema: &Schema,
+    name: &NamedType,
+    query_type: &str,
+) -> Option<TokenStream> {
+    match schema.types.get(name)? {
+        ExtendedType::Object(_) if name.as_str() != query_type => {
+            let object_type = object_type_ident(name.as_str());
+            Some(quote! { #object_type })
+        }
+        ExtendedType::Interface(_) | ExtendedType::Union(_) => {
+            let output_name = format_ident!("r#{}", rust_name(name.as_str()));
+            let members = abstract_member_names(schema, name)?
+                .into_iter()
+                .map(|member| (member != query_type).then(|| object_type_ident(member)))
+                .collect::<Option<Vec<_>>>()?;
+            if members.is_empty() {
+                Some(quote! { super::types::#output_name })
+            } else {
+                Some(quote! { super::types::#output_name<#(#members),*> })
+            }
+        }
+        _ => None,
+    }
+}
+
+fn composite_output_type(schema: &Schema, ty: &Type, query_type: &str) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => named_composite_output_type(schema, name, query_type),
+        Type::Named(name) => {
+            let output = named_composite_output_type(schema, name, query_type)?;
+            Some(quote! { ::core::option::Option<#output> })
+        }
+        Type::NonNullList(item) => {
+            let item = composite_output_type(schema, item, query_type)?;
+            Some(quote! { ::std::vec::Vec<#item> })
+        }
+        Type::List(item) => {
+            let item = composite_output_type(schema, item, query_type)?;
+            Some(quote! { ::core::option::Option<::std::vec::Vec<#item>> })
+        }
+    }
+}
+
+fn named_composite_output_value(
+    schema: &Schema,
+    name: &NamedType,
+    value: &TokenStream,
+    query_type: &str,
+    object_types: &[proc_macro2::Ident],
+) -> Option<TokenStream> {
+    match schema.types.get(name)? {
+        ExtendedType::Object(_) if name.as_str() != query_type => {
+            let variant = object_variant_ident(name.as_str());
+            Some(quote! {
+                ::necrassrs::ResolvedValue::Object(Box::new(
+                    ObjectValue::<#(#object_types),*>::#variant(#value)
+                ))
+            })
+        }
+        ExtendedType::Interface(_) | ExtendedType::Union(_) => {
+            let abstract_name = format_ident!("r#{}", rust_name(name.as_str()));
+            let arms = abstract_member_names(schema, name)?
+                .into_iter()
+                .map(|member| {
+                    if member == query_type {
+                        return None;
+                    }
+                    let variant = object_variant_ident(member);
+                    Some(quote! {
+                        super::types::#abstract_name::#variant(value) =>
+                            ::necrassrs::ResolvedValue::Object(Box::new(
+                                ObjectValue::<#(#object_types),*>::#variant(value)
+                            ))
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(quote! {
+                match #value {
+                    #(#arms,)*
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+fn composite_output_value(
+    schema: &Schema,
+    ty: &Type,
+    value: &TokenStream,
+    query_type: &str,
+    object_types: &[proc_macro2::Ident],
+) -> Option<TokenStream> {
+    match ty {
+        Type::NonNullNamed(name) => {
+            named_composite_output_value(schema, name, value, query_type, object_types)
+        }
+        Type::Named(name) => {
+            let output = named_composite_output_value(
+                schema,
+                name,
+                &quote! { value },
+                query_type,
+                object_types,
+            )?;
+            Some(quote! {
+                match #value {
+                    None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
+                    Some(value) => #output,
+                }
+            })
+        }
+        Type::NonNullList(item) => {
+            let item =
+                composite_output_value(schema, item, &quote! { item }, query_type, object_types)?;
+            Some(quote! {
+                {
+                    let mut items = ::std::vec::Vec::new();
+                    for item in #value {
+                        items.push(#item);
+                    }
+                    ::necrassrs::ResolvedValue::List(items)
+                }
+            })
+        }
+        Type::List(item) => {
+            let item =
+                composite_output_value(schema, item, &quote! { item }, query_type, object_types)?;
+            Some(quote! {
+                match #value {
+                    None => ::necrassrs::ResolvedValue::Json(::necrassrs::JsonValue::Null),
+                    Some(value) => {
+                        let mut items = ::std::vec::Vec::new();
+                        for item in value {
+                            items.push(#item);
+                        }
+                        ::necrassrs::ResolvedValue::List(items)
+                    }
+                }
+            })
+        }
+    }
+}
+
+fn generate_object_dispatcher(
+    schema: &Valid<Schema>,
+    query_type: &str,
+) -> Result<(TokenStream, Vec<TokenStream>, Vec<proc_macro2::Ident>), CodegenError> {
+    let object_names = reachable_object_names(schema, query_type);
+    let object_types = object_names
+        .iter()
+        .map(|name| object_type_ident(name))
+        .collect::<Vec<_>>();
+
+    if object_names.is_empty() {
+        return Ok((quote! {}, Vec::new(), object_types));
+    }
+
+    let mut bounds = object_types
+        .iter()
+        .map(|object_type| {
+            quote! {
+                #object_type: ::core::marker::Send + ::core::marker::Sync + 'static
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut branches = Vec::new();
+
+    for (graphql_type_name, rust_type) in object_names.iter().zip(&object_types) {
+        let object = schema
+            .get_object(graphql_type_name)
+            .expect("reachable Object type must exist");
+        let object_name = format_ident!("r#{}", rust_name(graphql_type_name));
+        let variant = object_variant_ident(graphql_type_name);
+
+        for (field_name, field) in &object.fields {
+            let graphql_field_name = field_name.as_str();
+            let field_name = format_ident!("r#{}", rust_name(graphql_field_name));
+            let field_type = quote! { super::fields::#object_name::#field_name };
+            let arguments = field
+                .arguments
+                .iter()
+                .map(|argument| {
+                    let name = argument.name.as_str();
+                    let member = format_ident!("r#{}", rust_name(name));
+                    let coordinate = format!("{graphql_type_name}.{graphql_field_name}({name})");
+                    let value = argument_value(
+                        schema,
+                        argument.ty.as_ref(),
+                        name,
+                        &coordinate,
+                        &quote! { super::types },
+                    )
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            format!("Unsupported argument type at {coordinate}: {}", argument.ty),
+                            schema,
+                            argument.ty.location(),
+                        )
+                    })?;
+
+                    Ok(quote! { #member: #value, })
+                })
+                .collect::<Result<Vec<_>, CodegenError>>()?;
+            let coordinate = format!("{graphql_type_name}.{graphql_field_name}");
+            let (return_type, conversion) =
+                if let Some(return_type) = composite_output_type(schema, &field.ty, query_type) {
+                    let conversion = composite_output_value(
+                        schema,
+                        &field.ty,
+                        &quote! { value },
+                        query_type,
+                        &object_types,
+                    )
+                    .expect("Object output type and conversion must agree");
+                    (return_type, conversion)
+                } else {
+                    let return_type = resolver_return_type(
+                        schema,
+                        graphql_type_name,
+                        graphql_field_name,
+                        &field.ty,
+                        &quote! { super::types },
+                    )?;
+                    let conversion = output_value(
+                        schema,
+                        &field.ty,
+                        &quote! { value },
+                        &coordinate,
+                        &quote! { super::types },
+                    )
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            format!("Unsupported result type at {coordinate}: {}", field.ty),
+                            schema,
+                            field.ty.inner_named_type().location(),
+                        )
+                    })?;
+                    (return_type, conversion)
+                };
+
+            bounds.push(quote! {
+                #rust_type: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
+            });
+            branches.push(quote! {
+                (ObjectValue::#variant(object), #graphql_field_name) => {
+                    let args = super::types::#object_name::#field_name::Args {
+                        #(#arguments)*
+                    };
+                    let value = <#rust_type as ::necrassrs::Resolver<#field_type, C>>::resolve(
+                        object,
+                        context,
+                        args,
+                    )
+                    .await?;
+                    Ok(#conversion)
+                }
+            });
+        }
+    }
+
+    let variants = object_names.iter().zip(&object_types).map(|(name, ty)| {
+        let variant = object_variant_ident(name);
+        quote! { #variant(#ty) }
+    });
+    let type_names = object_names.iter().map(|name| {
+        let variant = object_variant_ident(name);
+        quote! { Self::#variant(_) => #name }
+    });
+
+    let generated = quote! {
+        #[allow(dead_code, non_camel_case_types)]
+        enum ObjectValue<#(#object_types),*> {
+            #(#variants,)*
+        }
+
+        impl<C, #(#object_types),*> ::necrassrs::ResolvedObject<C>
+            for ObjectValue<#(#object_types),*>
+        where
+            C: ::core::marker::Sync,
+            #(#bounds,)*
+        {
+            fn type_name(&self) -> &'static str {
+                match self {
+                    #(#type_names,)*
+                }
+            }
+
+            fn resolve<'a>(
+                &'a self,
+                context: &'a C,
+                coordinate: ::necrassrs::FieldCoordinate<'a>,
+                _arguments: &'a ::necrassrs::JsonMap,
+            ) -> ::core::pin::Pin<Box<
+                dyn ::core::future::Future<
+                    Output = ::core::result::Result<
+                        ::necrassrs::ResolvedValue<C>,
+                        ::necrassrs::ResolverError,
+                    >,
+                > + ::core::marker::Send + 'a,
+            >> {
+                Box::pin(async move {
+                    match (self, coordinate.field) {
+                        #(#branches,)*
+                        _ => Err(::necrassrs::ResolverError::new(::std::format!(
+                            "Unknown field {}.{}",
+                            coordinate.parent_type,
+                            coordinate.field,
+                        ))),
+                    }
+                })
+            }
+        }
+    };
+
+    Ok((generated, bounds, object_types))
 }
 
 fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
@@ -517,7 +1015,11 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
     let type_name = query.name.as_str();
     let object_name = format_ident!("r#{}", rust_name(type_name));
     let resolver_name = format_ident!("{}Resolver", rust_name(type_name));
+    let (object_dispatcher, object_bounds, object_types) =
+        generate_object_dispatcher(schema, type_name)?;
     let mut branches = Vec::new();
+    let mut dispatcher_bounds = object_bounds;
+    let mut uses_root_resolver = false;
 
     for (field_name, field) in &query.fields {
         let field_name = field_name.as_str();
@@ -551,35 +1053,79 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             .collect::<Result<Vec<_>, CodegenError>>()?;
 
         let coordinate = format!("{type_name}.{field_name}");
-        let conversion = output_value(
-            schema,
-            &field.ty,
-            &quote! { value },
-            &coordinate,
-            &quote! { super::types },
-        )
-        .ok_or_else(|| {
-            CodegenError::new(
-                format!("Unsupported result type at {coordinate}: {}", field.ty),
+        if let Some(return_type) = composite_output_type(schema, &field.ty, type_name) {
+            let field_type = quote! { super::fields::#object_name::#method_name };
+            let conversion = composite_output_value(
                 schema,
-                field.ty.inner_named_type().location(),
+                &field.ty,
+                &quote! { value },
+                type_name,
+                &object_types,
             )
-        })?;
+            .expect("Object output type and conversion must agree");
 
-        branches.push(quote! {
-            (#type_name, #field_name) => {
-                let args = super::types::#object_name::#method_name::Args {
-                    #(#arguments)*
-                };
-                let value = super::resolvers::#resolver_name::#method_name(&self.query, context, args)
+            dispatcher_bounds.push(quote! {
+                Q: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
+            });
+
+            branches.push(quote! {
+                (#type_name, #field_name) => {
+                    let args = super::types::#object_name::#method_name::Args {
+                        #(#arguments)*
+                    };
+                    let value = <Q as ::necrassrs::Resolver<#field_type, C>>::resolve(
+                        &self.query,
+                        context,
+                        args,
+                    )
                     .await?;
-                Ok(#conversion)
-            }
+                    Ok(#conversion)
+                }
+            });
+        } else {
+            uses_root_resolver = true;
+            let conversion = output_value(
+                schema,
+                &field.ty,
+                &quote! { value },
+                &coordinate,
+                &quote! { super::types },
+            )
+            .ok_or_else(|| {
+                CodegenError::new(
+                    format!("Unsupported result type at {coordinate}: {}", field.ty),
+                    schema,
+                    field.ty.inner_named_type().location(),
+                )
+            })?;
+
+            branches.push(quote! {
+                (#type_name, #field_name) => {
+                    let args = super::types::#object_name::#method_name::Args {
+                        #(#arguments)*
+                    };
+                    let value = super::resolvers::#resolver_name::#method_name(
+                        &self.query,
+                        context,
+                        args,
+                    )
+                    .await?;
+                    Ok(#conversion)
+                }
+            });
+        }
+    }
+
+    if uses_root_resolver {
+        dispatcher_bounds.push(quote! {
+            Q: super::resolvers::#resolver_name<C>
         });
     }
 
     Ok(quote! {
         pub mod dispatch {
+            #object_dispatcher
+
             pub struct SchemaDispatcher<Q> {
                 query: Q,
             }
@@ -590,17 +1136,21 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                 }
             }
 
-            impl<C, Q> ::necrassrs::Dispatcher<C> for SchemaDispatcher<Q>
+            impl<C, Q #(, #object_types)*> ::necrassrs::Dispatcher<C> for SchemaDispatcher<Q>
             where
                 C: ::core::marker::Sync,
-                Q: super::resolvers::#resolver_name<C> + ::core::marker::Sync,
+                Q: ::core::marker::Sync,
+                #(#dispatcher_bounds,)*
             {
                 async fn resolve<'a>(
                     &'a self,
                     context: &'a C,
                     coordinate: ::necrassrs::FieldCoordinate<'a>,
                     _arguments: &'a ::necrassrs::JsonMap,
-                ) -> ::core::result::Result<::necrassrs::ResolvedValue, ::necrassrs::ResolverError> {
+                ) -> ::core::result::Result<
+                    ::necrassrs::ResolvedValue<C>,
+                    ::necrassrs::ResolverError,
+                > {
                     match (coordinate.parent_type, coordinate.field) {
                         #(#branches,)*
                         _ => Err(::necrassrs::ResolverError::new(::std::format!(
@@ -1070,7 +1620,7 @@ fn output_list_value(
 
     Some(quote! {
         {
-            let mut items = ::std::vec::Vec::<::necrassrs::ResolvedValue>::new();
+            let mut items = ::std::vec::Vec::new();
 
             for item in #value {
                 items.push(#converted_item);
@@ -1518,6 +2068,1030 @@ mod test {
         "#;
 
         assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_resolves_a_nested_field_against_its_parent_object() {
+        let schema = Schema::parse_and_validate(
+            "type Query { viewer: User! } type User { name: String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("composite generation must succeed");
+        let consumer = r#"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User { name: String }
+
+            impl<C: Sync> Resolver<fields::Query::viewer, C> for Query {
+                type Output = User;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::viewer as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(User { name: String::from("Sheri") })
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::User::name, C> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.name.clone())
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let request = necrassrs::Request::new("{ viewer { name } }");
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &());
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "viewer": { "name": "Sheri" } } }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_resolves_object_list_items_against_each_parent() {
+        let schema = Schema::parse_and_validate(
+            "type Query { users: [User!]! } type User { greeting(prefix: String!): String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Object list generation must succeed");
+        let consumer = r#"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User { name: String }
+            struct Context<'a> { punctuation: &'a str }
+
+            impl<C: Sync> Resolver<fields::Query::users, C> for Query {
+                type Output = Vec<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::users as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(vec![
+                        User { name: String::from("Sheri") },
+                        User { name: String::from("Riri") },
+                    ])
+                }
+            }
+
+            impl<'ctx> Resolver<fields::User::greeting, Context<'ctx>> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    args: <fields::User::greeting as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(format!("{}, {}{}", args.prefix, self.name, context.punctuation))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let punctuation = String::from("!");
+                let context = Context { punctuation: &punctuation };
+                let request = necrassrs::Request::new(
+                    "{ users { greeting(prefix: \"Hello\") } }",
+                );
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &context);
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": {
+                            "users": [
+                                { "greeting": "Hello, Sheri!" },
+                                { "greeting": "Hello, Riri!" },
+                            ],
+                        },
+                    }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_preserves_nullable_object_containers_and_items() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query {
+                    present: User
+                    missing: User
+                    users: [User]
+                    missingUsers: [User]
+                }
+                type User { name: String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("nullable Object generation must succeed");
+        let consumer = r#"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User { name: String }
+
+            impl<C: Sync> Resolver<fields::Query::present, C> for Query {
+                type Output = Option<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::present as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(User { name: String::from("Sheri") }))
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::Query::missing, C> for Query {
+                type Output = Option<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::missing as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(None)
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::Query::users, C> for Query {
+                type Output = Option<Vec<Option<User>>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::users as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(vec![
+                        Some(User { name: String::from("Sheri") }),
+                        None,
+                        Some(User { name: String::from("Riri") }),
+                    ]))
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::Query::missingUsers, C> for Query {
+                type Output = Option<Vec<Option<User>>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::Query::missingUsers as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(None)
+                }
+            }
+
+            impl<C: Sync> Resolver<fields::User::name, C> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &C,
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.name.clone())
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let request = necrassrs::Request::new(
+                    "{ present { name } missing { name } users { name } missingUsers { name } }",
+                );
+                let future = necrassrs::execute(
+                    &schema,
+                    &request,
+                    &dispatcher,
+                    &(),
+                );
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": {
+                            "present": { "name": "Sheri" },
+                            "missing": null,
+                            "users": [
+                                { "name": "Sheri" },
+                                null,
+                                { "name": "Riri" },
+                            ],
+                            "missingUsers": null,
+                        },
+                    }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_composite_errors_follow_nullability_and_recover() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query {
+                    sibling: String!
+                    object: User
+                    items: [User]
+                    list: [User!]
+                    abstract: Search
+                    strict(fail: Boolean!): User!
+                }
+                union Search = User | Organization
+                type User { value: String! }
+                type Organization { value: String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("composite generation must succeed");
+        let consumer = r##"
+            use generated::{fields, resolvers::QueryResolver, types};
+            use necrassrs::{Field, Resolver};
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            struct Query;
+            struct Context { calls: AtomicUsize }
+            struct User { value: &'static str, fail: bool }
+            struct Organization;
+
+            impl QueryResolver<Context> for Query {
+                async fn sibling(
+                    &self,
+                    _context: &Context,
+                    _args: types::Query::sibling::Args,
+                ) -> Result<String, necrassrs::ResolverError> {
+                    Ok(String::from("safe"))
+                }
+            }
+
+            impl Resolver<fields::Query::object, Context> for Query {
+                type Output = Option<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Query::object as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(User { value: "object", fail: true }))
+                }
+            }
+
+            impl Resolver<fields::Query::items, Context> for Query {
+                type Output = Option<Vec<Option<User>>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Query::items as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(vec![
+                        Some(User { value: "first", fail: false }),
+                        Some(User { value: "second", fail: true }),
+                        Some(User { value: "third", fail: false }),
+                    ]))
+                }
+            }
+
+            impl Resolver<fields::Query::list, Context> for Query {
+                type Output = Option<Vec<User>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Query::list as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(vec![
+                        User { value: "first", fail: false },
+                        User { value: "second", fail: true },
+                        User { value: "unreached", fail: false },
+                    ]))
+                }
+            }
+
+            impl Resolver<fields::Query::r#abstract, Context> for Query {
+                type Output = Option<types::Search<User, Organization>>;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Query::r#abstract as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(types::Search::User(User { value: "abstract", fail: true })))
+                }
+            }
+
+            impl Resolver<fields::Query::strict, Context> for Query {
+                type Output = User;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    args: <fields::Query::strict as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    if args.fail {
+                        Err(necrassrs::ResolverError::new("value failed")
+                            .with_extension("code", "VALUE_FAILED"))
+                    } else {
+                        Ok(User { value: "recovered", fail: false })
+                    }
+                }
+            }
+
+            impl Resolver<fields::User::value, Context> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context,
+                    _args: <fields::User::value as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    context.calls.fetch_add(1, Ordering::Relaxed);
+                    if self.fail {
+                        Err(necrassrs::ResolverError::new("value failed")
+                            .with_extension("code", "VALUE_FAILED"))
+                    } else {
+                        Ok(String::from(self.value))
+                    }
+                }
+            }
+
+            impl Resolver<fields::Organization::value, Context> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context,
+                    _args: <fields::Organization::value as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(String::from("organization"))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let context = Context { calls: AtomicUsize::new(0) };
+                let run = |document| {
+                    let request = necrassrs::Request::new(document);
+                    serde_json::to_value(futures::executor::block_on(
+                        necrassrs::execute(&schema, &request, &dispatcher, &context),
+                    )).unwrap()
+                };
+                let assert_failure = |response: &serde_json::Value,
+                                      data: serde_json::Value,
+                                      path: serde_json::Value| {
+                    assert_eq!(response["data"], data);
+                    assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+                    assert_eq!(response["errors"][0]["message"], "value failed");
+                    assert_eq!(response["errors"][0]["extensions"]["code"], "VALUE_FAILED");
+                    assert_eq!(response["errors"][0]["path"], path);
+                };
+
+                let object = run("{ sibling nested: object { broken: value } }");
+                assert_failure(
+                    &object,
+                    serde_json::json!({ "sibling": "safe", "nested": null }),
+                    serde_json::json!(["nested", "broken"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 1);
+
+                let items = run("{ sibling nullableItems: items { value } }");
+                assert_failure(
+                    &items,
+                    serde_json::json!({
+                        "sibling": "safe",
+                        "nullableItems": [
+                            { "value": "first" },
+                            null,
+                            { "value": "third" },
+                        ],
+                    }),
+                    serde_json::json!(["nullableItems", 1, "value"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 4);
+
+                let list = run("{ sibling nullableList: list { value } }");
+                assert_failure(
+                    &list,
+                    serde_json::json!({ "sibling": "safe", "nullableList": null }),
+                    serde_json::json!(["nullableList", 1, "value"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 6);
+
+                let abstract_value = run(
+                    "{ sibling result: abstract { ... on User { broken: value } } }",
+                );
+                assert_failure(
+                    &abstract_value,
+                    serde_json::json!({ "sibling": "safe", "result": null }),
+                    serde_json::json!(["result", "broken"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 7);
+
+                let strict = run("{ sibling root: strict(fail: true) { value } }");
+                assert_failure(
+                    &strict,
+                    serde_json::Value::Null,
+                    serde_json::json!(["root"]),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 7);
+
+                assert_eq!(
+                    run("{ root: strict(fail: false) { value } }") ,
+                    serde_json::json!({
+                        "data": { "root": { "value": "recovered" } },
+                    }),
+                );
+                assert_eq!(context.calls.load(Ordering::Relaxed), 8);
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_resolves_multilevel_objects_once_against_each_parent() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query { viewer: User! }
+                type User { organization(code: String!): Organization! }
+                type Organization {
+                    label(prefix: String!): String!
+                    secret: String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated =
+            super::generate(&schema).expect("multilevel Object generation must succeed");
+        let consumer = r##"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+            use std::sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            };
+
+            struct Query { calls: Arc<AtomicUsize> }
+            struct User {
+                organization_name: String,
+                calls: Arc<AtomicUsize>,
+            }
+            struct Organization {
+                name: String,
+                calls: Arc<AtomicUsize>,
+            }
+            struct Context<'a> { punctuation: &'a str }
+
+            impl<'ctx> Resolver<fields::Query::viewer, Context<'ctx>> for Query {
+                type Output = User;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context<'ctx>,
+                    _args: <fields::Query::viewer as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(User {
+                        organization_name: String::from("Sheri Labs"),
+                        calls: Arc::clone(&self.calls),
+                    })
+                }
+            }
+
+            impl<'ctx> Resolver<fields::User::organization, Context<'ctx>> for User {
+                type Output = Organization;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context<'ctx>,
+                    args: <fields::User::organization as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Organization {
+                        name: format!("{}-{}", self.organization_name, args.code),
+                        calls: Arc::clone(&self.calls),
+                    })
+                }
+            }
+
+            impl<'ctx> Resolver<fields::Organization::label, Context<'ctx>> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    args: <fields::Organization::label as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    self.calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(format!("{}: {}{}", args.prefix, self.name, context.punctuation))
+                }
+            }
+
+            impl<'ctx> Resolver<fields::Organization::secret, Context<'ctx>> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context<'ctx>,
+                    _args: <fields::Organization::secret as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    panic!("unselected field must not execute")
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let calls = Arc::new(AtomicUsize::new(0));
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query {
+                    calls: Arc::clone(&calls),
+                });
+                let punctuation = String::from("!");
+                let context = Context { punctuation: &punctuation };
+                let request = necrassrs::Request::new(r#"
+                    query {
+                        viewer {
+                            company: organization(code: "42") {
+                                display: label(prefix: "Org")
+                                ...OrganizationLabel
+                            }
+                        }
+                    }
+                    fragment OrganizationLabel on Organization {
+                        display: label(prefix: "Org")
+                    }
+                "#);
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &context);
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(calls.load(Ordering::Relaxed), 1);
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": {
+                            "viewer": {
+                                "company": {
+                                    "display": "Org: Sheri Labs-42!",
+                                },
+                            },
+                        },
+                    }),
+                );
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_resolves_recursive_objects_to_a_finite_depth() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query { viewer: User! }
+                type User {
+                    name: String!
+                    friend: User
+                }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("recursive Object generation must succeed");
+        let consumer = r##"
+            use generated::fields;
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User { remaining: u8 }
+
+            impl Resolver<fields::Query::viewer, ()> for Query {
+                type Output = User;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Query::viewer as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(User { remaining: 2 })
+                }
+            }
+
+            impl Resolver<fields::User::name, ()> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(format!("User {}", self.remaining))
+                }
+            }
+
+            impl Resolver<fields::User::friend, ()> for User {
+                type Output = Option<User>;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::friend as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.remaining.checked_sub(1).map(|remaining| User { remaining }))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let request = necrassrs::Request::new(r#"
+                    query {
+                        viewer {
+                            name
+                            friend {
+                                name
+                                friend {
+                                    name
+                                    friend { name }
+                                }
+                            }
+                        }
+                    }
+                "#);
+                let future = necrassrs::execute(&schema, &request, &dispatcher, &());
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": {
+                            "viewer": {
+                                "name": "User 2",
+                                "friend": {
+                                    "name": "User 1",
+                                    "friend": {
+                                        "name": "User 0",
+                                        "friend": null,
+                                    },
+                                },
+                            },
+                        },
+                    }),
+                );
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_resolves_union_members_by_runtime_object_type() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                union SearchResult = User | Organization
+                type Query { search(kind: String!): SearchResult! }
+                type User { name: String! }
+                type Organization { title: String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Union generation must succeed");
+        let consumer = r##"
+            use generated::{fields, types};
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User(String);
+            struct Organization(String);
+
+            impl Resolver<fields::Query::search, ()> for Query {
+                type Output = types::SearchResult<User, Organization>;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    args: <fields::Query::search as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(match args.kind.as_str() {
+                        "user" => types::SearchResult::User(User(String::from("Sheri"))),
+                        "organization" => types::SearchResult::Organization(Organization(
+                            String::from("Witch Court"),
+                        )),
+                        _ => return Err(necrassrs::ResolverError::new("unknown kind")),
+                    })
+                }
+            }
+
+            impl Resolver<fields::User::name, ()> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.0.clone())
+                }
+            }
+
+            impl Resolver<fields::Organization::title, ()> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Organization::title as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(self.0.clone())
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let document = r#"
+                    query Search($kind: String!) {
+                        search(kind: $kind) {
+                            __typename
+                            ... on User { label: name }
+                            ... on Organization { label: title }
+                        }
+                    }
+                "#;
+
+                for (kind, type_name, label) in [
+                    ("user", "User", "Sheri"),
+                    ("organization", "Organization", "Witch Court"),
+                ] {
+                    let request = necrassrs::Request::new(document).with_variables(
+                        serde_json::from_value(serde_json::json!({ "kind": kind })).unwrap(),
+                    );
+                    let future = necrassrs::execute(&schema, &request, &dispatcher, &());
+                    fn assert_send<T: Send>(_: &T) {}
+                    assert_send(&future);
+                    let response = futures::executor::block_on(future);
+
+                    assert_eq!(
+                        serde_json::to_value(response).unwrap(),
+                        serde_json::json!({
+                            "data": {
+                                "search": {
+                                    "__typename": type_name,
+                                    "label": label,
+                                },
+                            },
+                        }),
+                    );
+                }
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_consumer_resolves_interface_implementers_and_inherited_fragments() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                interface Node { id: ID! }
+                interface Named implements Node {
+                    id: ID!
+                    name: String!
+                }
+                type User implements Node & Named {
+                    id: ID!
+                    name: String!
+                }
+                type Organization implements Node & Named {
+                    id: ID!
+                    name: String!
+                }
+                type Query { entity(kind: String!): Node! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("Interface generation must succeed");
+        let consumer = r##"
+            use generated::{fields, types};
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct User;
+            struct Organization;
+
+            impl Resolver<fields::Query::entity, ()> for Query {
+                type Output = types::Node<User, Organization>;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    args: <fields::Query::entity as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(match args.kind.as_str() {
+                        "user" => types::Node::User(User),
+                        "organization" => types::Node::Organization(Organization),
+                        _ => return Err(necrassrs::ResolverError::new("unknown kind")),
+                    })
+                }
+            }
+
+            impl Resolver<fields::User::id, ()> for User {
+                type Output = necrassrs::Id;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::id as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(necrassrs::Id::from("user-1"))
+                }
+            }
+
+            impl Resolver<fields::User::name, ()> for User {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::User::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(String::from("Sheri"))
+                }
+            }
+
+            impl Resolver<fields::Organization::id, ()> for Organization {
+                type Output = necrassrs::Id;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Organization::id as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(necrassrs::Id::from("organization-1"))
+                }
+            }
+
+            impl Resolver<fields::Organization::name, ()> for Organization {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Organization::name as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(String::from("Witch Court"))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let document = r#"
+                    query Entity($kind: String!) {
+                        entity(kind: $kind) {
+                            __typename
+                            id
+                            ... on Named { name }
+                        }
+                    }
+                "#;
+
+                for (kind, type_name, id, name) in [
+                    ("user", "User", "user-1", "Sheri"),
+                    (
+                        "organization",
+                        "Organization",
+                        "organization-1",
+                        "Witch Court",
+                    ),
+                ] {
+                    let request = necrassrs::Request::new(document).with_variables(
+                        serde_json::from_value(serde_json::json!({ "kind": kind })).unwrap(),
+                    );
+                    let response = futures::executor::block_on(necrassrs::execute(
+                        &schema,
+                        &request,
+                        &dispatcher,
+                        &(),
+                    ));
+
+                    assert_eq!(
+                        serde_json::to_value(response).unwrap(),
+                        serde_json::json!({
+                            "data": {
+                                "entity": {
+                                    "__typename": type_name,
+                                    "id": id,
+                                    "name": name,
+                                },
+                            },
+                        }),
+                    );
+                }
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_abstract_results_exclude_non_member_object_variants() {
+        for (sdl, abstract_type) in [
+            (
+                "union Search = User | Organization \
+                 type Query { search: Search } \
+                 type User { id: ID! } \
+                 type Organization { id: ID! } \
+                 type Post { id: ID! }",
+                "Search",
+            ),
+            (
+                "interface Node { id: ID! } \
+                 type Query { node: Node } \
+                 type User implements Node { id: ID! } \
+                 type Organization implements Node { id: ID! } \
+                 type Post { id: ID! }",
+                "Node",
+            ),
+        ] {
+            let schema = Schema::parse_and_validate(sdl, "schema.graphql")
+                .expect("the test schema must be valid");
+            let generated = super::generate(&schema).expect("abstract generation must succeed");
+            let consumer = format!(
+                r#"
+                    struct User;
+                    struct Organization;
+                    struct Post;
+
+                    fn invalid() {{
+                        let _ = types::{abstract_type}::<User, Organization>::Post(Post);
+                    }}
+                "#,
+            );
+
+            assert_consumer_fails(&generated.to_string(), &consumer, "E0599");
+        }
     }
 
     #[test]
@@ -3295,5 +4869,47 @@ mod test {
             .expect("rustc must be available");
         write!(rustc.stdin.take().unwrap(), "{generated}\n{consumer}").unwrap();
         rustc.wait_with_output().unwrap()
+    }
+
+    #[test]
+    fn generated_field_identities_reuse_argument_types() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! ping: String! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("generation must succeed");
+        let consumer = r#"
+            use generated::{
+                dispatch::SchemaDispatcher,
+                fields,
+                resolvers::QueryResolver,
+                types,
+            };
+            use necrassrs::Field;
+
+            struct Query;
+
+            impl QueryResolver<()> for Query {}
+
+            fn assert_field<F: Field<Args = types::Query::hello::Args>>() {}
+
+            fn main() {
+                assert_field::<fields::Query::hello>();
+
+                let args = types::Query::hello::Args {
+                    name: String::from("Sheri"),
+                };
+                assert_eq!(args.name, "Sheri");
+
+                let _: <fields::Query::ping as Field>::Args =
+                    types::Query::ping::Args {};
+
+                let _ = generated::SDL;
+                let _ = SchemaDispatcher::new(Query);
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
     }
 }

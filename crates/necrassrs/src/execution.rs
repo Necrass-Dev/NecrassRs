@@ -11,7 +11,7 @@ use apollo_compiler::{
 };
 
 use crate::{
-    Request, ResolvedValue, ResolverError, Response,
+    Request, ResolvedObject, ResolvedValue, ResolverError, Response,
     input::literal_to_json as input_literal_to_json,
     request::{PreparedRequest, prepare_request},
 };
@@ -43,7 +43,7 @@ pub trait Dispatcher<C> {
         context: &'a C,
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
-    ) -> impl Future<Output = Result<ResolvedValue, ResolverError>> + Send + 'a;
+    ) -> impl Future<Output = Result<ResolvedValue<C>, ResolverError>> + Send + 'a;
 }
 
 /// Server-controlled execution settings.
@@ -79,7 +79,7 @@ impl Default for ExecutionOptions {
 ///     async fn resolve<'a>(
 ///         &'a self, _context: &'a (), coordinate: FieldCoordinate<'a>,
 ///         _arguments: &'a JsonMap,
-///     ) -> Result<ResolvedValue, ResolverError> {
+///     ) -> Result<ResolvedValue<()>, ResolverError> {
 ///         match (coordinate.parent_type, coordinate.field) {
 ///             ("Query", "hello") => Ok(ResolvedValue::Json("Hello, Sheri".into())),
 ///             _ => Err(ResolverError::new("Unknown field")),
@@ -266,12 +266,15 @@ where
         let value = match complete_value(
             schema,
             &prepared,
-            field,
+            &fields,
             &definition.ty,
             value,
+            context,
             &mut path,
             &mut errors,
-        ) {
+        )
+        .await
+        {
             Ok(value) => value,
             Err(PropagateNull) => return Response::execution(None, errors),
         };
@@ -588,162 +591,388 @@ fn new_execution_error(
 
 struct PropagateNull;
 
-fn complete_value(
+type CompletionResult = Result<JsonValue, PropagateNull>;
+type CompletionFuture<'a> =
+    ::core::pin::Pin<Box<dyn Future<Output = CompletionResult> + Send + 'a>>;
+
+#[allow(clippy::too_many_arguments)]
+fn complete_value<'a, C>(
+    schema: &'a Valid<Schema>,
+    prepared: &'a PreparedRequest,
+    fields: &'a [&'a Field],
+    ty: &'a Type,
+    value: ResolvedValue<C>,
+    context: &'a C,
+    path: &'a mut Vec<ResponseDataPathSegment>,
+    errors: &'a mut Vec<GraphQLError>,
+) -> CompletionFuture<'a>
+where
+    C: Sync + 'a,
+{
+    Box::pin(async move {
+        let field = fields[0];
+        let value = match value {
+            ResolvedValue::Error(error) => {
+                errors.push(*resolver_error_to_graphql_error(
+                    prepared, field, path, error,
+                ));
+                return complete_null(ty);
+            }
+            value => value,
+        };
+
+        if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
+            if ty.is_non_null() {
+                errors.push(*new_execution_error(
+                    prepared,
+                    path,
+                    format!(
+                        "Cannot return null for non-nullable field '{}'.",
+                        field.name
+                    ),
+                    field.name.location(),
+                ));
+            }
+            return complete_null(ty);
+        }
+
+        match ty {
+            Type::List(item_type) | Type::NonNullList(item_type) => {
+                complete_list_value(
+                    schema, prepared, fields, ty, item_type, value, context, path, errors,
+                )
+                .await
+            }
+            Type::Named(name) | Type::NonNullNamed(name) => {
+                complete_named_value(
+                    schema, prepared, fields, ty, name, value, context, path, errors,
+                )
+                .await
+            }
+        }
+    })
+}
+
+fn complete_null(ty: &Type) -> CompletionResult {
+    if ty.is_non_null() {
+        Err(PropagateNull)
+    } else {
+        Ok(JsonValue::Null)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_list_value<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    ty: &Type,
+    item_type: &Type,
+    value: ResolvedValue<C>,
+    context: &C,
+    path: &mut Vec<ResponseDataPathSegment>,
+    errors: &mut Vec<GraphQLError>,
+) -> CompletionResult
+where
+    C: Sync,
+{
+    let field = fields[0];
+    let values = match value {
+        ResolvedValue::List(values) => values,
+        ResolvedValue::Json(JsonValue::Array(values)) => {
+            values.into_iter().map(ResolvedValue::Json).collect()
+        }
+        _ => {
+            errors.push(*new_execution_error(
+                prepared,
+                path,
+                format!("Expected field '{}' to return a list.", field.name),
+                field.name.location(),
+            ));
+            return complete_null(ty);
+        }
+    };
+
+    let mut completed = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        path.push(ResponseDataPathSegment::ListIndex(index));
+        let item = complete_value(
+            schema, prepared, fields, item_type, value, context, path, errors,
+        )
+        .await;
+        path.pop();
+
+        match item {
+            Ok(value) => completed.push(value),
+            Err(PropagateNull) => return complete_null(ty),
+        }
+    }
+
+    Ok(completed.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_named_value<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    ty: &Type,
+    name: &Name,
+    value: ResolvedValue<C>,
+    context: &C,
+    path: &mut Vec<ResponseDataPathSegment>,
+    errors: &mut Vec<GraphQLError>,
+) -> CompletionResult
+where
+    C: Sync,
+{
+    if matches!(
+        schema.types.get(name),
+        Some(ExtendedType::Object(_) | ExtendedType::Interface(_) | ExtendedType::Union(_))
+    ) {
+        complete_object_value(
+            schema, prepared, fields, ty, name, value, context, path, errors,
+        )
+        .await
+    } else {
+        complete_leaf_value(schema, prepared, fields[0], ty, name, value, path, errors)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_object_value<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    ty: &Type,
+    name: &Name,
+    value: ResolvedValue<C>,
+    context: &C,
+    path: &mut Vec<ResponseDataPathSegment>,
+    errors: &mut Vec<GraphQLError>,
+) -> CompletionResult
+where
+    C: Sync,
+{
+    let field = fields[0];
+    let ResolvedValue::Object(object) = value else {
+        errors.push(*new_execution_error(
+            prepared,
+            path,
+            format!("Expected field '{}' to return an Object value.", field.name),
+            field.name.location(),
+        ));
+        return complete_null(ty);
+    };
+
+    let Some(object_type) = schema.get_object(object.type_name()) else {
+        errors.push(*new_execution_error(
+            prepared,
+            path,
+            format!("Unknown runtime Object type '{}'.", object.type_name()),
+            field.name.location(),
+        ));
+        return complete_null(ty);
+    };
+
+    if !does_fragment_type_apply(schema, object_type, name) {
+        errors.push(*new_execution_error(
+            prepared,
+            path,
+            format!(
+                "Runtime Object type '{}' is not valid for '{name}'.",
+                object_type.name
+            ),
+            field.name.location(),
+        ));
+        return complete_null(ty);
+    }
+
+    let mut subfields = IndexMap::default();
+    let mut visited_fragments = HashSet::default();
+    for field in fields {
+        collect_selections(
+            schema,
+            object_type,
+            prepared,
+            &field.selection_set.selections,
+            &mut visited_fragments,
+            &mut subfields,
+        );
+    }
+
+    let mut completed = JsonMap::new();
+    for (response_key, fields) in subfields {
+        let selected_field = fields[0];
+        path.push(ResponseDataPathSegment::Field(response_key.clone()));
+
+        if selected_field.name.as_str() == "__typename" {
+            completed.insert(
+                response_key.as_str(),
+                JsonValue::from(object_type.name.as_str()),
+            );
+            path.pop();
+            continue;
+        }
+
+        let definition = schema
+            .type_field(object_type.name.as_str(), selected_field.name.as_str())
+            .expect("validated Object selection must have a field definition");
+        let (field_value, has_error) = resolve_object_field(
+            schema,
+            prepared,
+            selected_field,
+            definition,
+            object.as_ref(),
+            object_type,
+            context,
+            path,
+            errors,
+        )
+        .await;
+
+        if has_error
+            && matches!(&field_value, ResolvedValue::Json(value) if value.is_null())
+            && definition.ty.is_non_null()
+        {
+            path.pop();
+            return complete_null(ty);
+        }
+
+        let field_value = complete_value(
+            schema,
+            prepared,
+            &fields,
+            &definition.ty,
+            field_value,
+            context,
+            path,
+            errors,
+        )
+        .await;
+        path.pop();
+
+        match field_value {
+            Ok(value) => {
+                completed.insert(response_key.as_str(), value);
+            }
+            Err(PropagateNull) => return complete_null(ty),
+        }
+    }
+
+    Ok(completed.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resolve_object_field<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    field: &Field,
+    definition: &FieldDefinition,
+    object: &dyn ResolvedObject<C>,
+    object_type: &ObjectType,
+    context: &C,
+    path: &[ResponseDataPathSegment],
+    errors: &mut Vec<GraphQLError>,
+) -> (ResolvedValue<C>, bool)
+where
+    C: Sync,
+{
+    let arguments = match coerce_argument_values(schema, prepared, path, field, definition) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            errors.push(*error);
+            return (ResolvedValue::Json(JsonValue::Null), true);
+        }
+    };
+
+    match object
+        .resolve(
+            context,
+            FieldCoordinate {
+                parent_type: object_type.name.as_str(),
+                field: field.name.as_str(),
+            },
+            &arguments,
+        )
+        .await
+    {
+        Ok(value) => (value, false),
+        Err(error) => {
+            errors.push(*resolver_error_to_graphql_error(
+                prepared, field, path, error,
+            ));
+            (ResolvedValue::Json(JsonValue::Null), true)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_leaf_value<C>(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
     field: &Field,
     ty: &Type,
-    value: ResolvedValue,
-    path: &mut Vec<ResponseDataPathSegment>,
+    name: &Name,
+    value: ResolvedValue<C>,
+    path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
-) -> Result<JsonValue, PropagateNull> {
-    let value = match value {
-        ResolvedValue::Error(error) => {
-            errors.push(*resolver_error_to_graphql_error(
-                prepared, field, path, error,
-            ));
-
-            return if ty.is_non_null() {
-                Err(PropagateNull)
-            } else {
-                Ok(JsonValue::Null)
-            };
-        }
-        value => value,
+) -> CompletionResult {
+    let ResolvedValue::Json(value) = value else {
+        errors.push(*new_execution_error(
+            prepared,
+            path,
+            format!("Expected field '{}' to return a leaf value.", field.name),
+            field.name.location(),
+        ));
+        return complete_null(ty);
     };
 
-    if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
-        return if ty.is_non_null() {
-            errors.push(*new_execution_error(
-                prepared,
-                path,
-                format!(
-                    "Cannot return null for non-nullable field '{}'.",
-                    field.name
-                ),
-                field.name.location(),
-            ));
-
-            Err(PropagateNull)
-        } else {
-            Ok(JsonValue::Null)
-        };
-    }
-
-    match ty {
-        Type::List(item_type) | Type::NonNullList(item_type) => {
-            let values = match value {
-                ResolvedValue::List(values) => values,
-                ResolvedValue::Json(JsonValue::Array(values)) => {
-                    values.into_iter().map(ResolvedValue::Json).collect()
-                }
-                _ => {
-                    errors.push(*new_execution_error(
-                        prepared,
-                        path,
-                        format!("Expected field '{}' to return a list.", field.name),
-                        field.name.location(),
-                    ));
-
-                    return if ty.is_non_null() {
-                        Err(PropagateNull)
-                    } else {
-                        Ok(JsonValue::Null)
-                    };
-                }
-            };
-
-            let completed = values
-                .into_iter()
-                .enumerate()
-                .map(|(index, value)| {
-                    path.push(ResponseDataPathSegment::ListIndex(index));
-
-                    let completed =
-                        complete_value(schema, prepared, field, item_type, value, path, errors);
-
-                    path.pop();
-
-                    completed
-                })
-                .collect::<Result<Vec<_>, _>>();
-
-            match completed {
-                Ok(values) => Ok(values.into()),
-                Err(PropagateNull) if ty.is_non_null() => Err(PropagateNull),
-                Err(PropagateNull) => Ok(JsonValue::Null),
-            }
+    let message = match schema.types.get(name) {
+        Some(ExtendedType::Scalar(_)) if valid_builtin_scalar(name, &value) => return Ok(value),
+        Some(ExtendedType::Scalar(_)) if is_builtin_scalar(name) => {
+            format!("Expected field '{}' to return a {name}.", field.name)
         }
-        Type::Named(name) | Type::NonNullNamed(name) => {
-            let ResolvedValue::Json(value) = value else {
-                errors.push(*new_execution_error(
-                    prepared,
-                    path,
-                    format!("Expected field '{}' to return a leaf value.", field.name),
-                    field.name.location(),
-                ));
-
-                return if ty.is_non_null() {
-                    Err(PropagateNull)
-                } else {
-                    Ok(JsonValue::Null)
-                };
-            };
-
-            let message = match schema.types.get(name) {
-                Some(ExtendedType::Scalar(_))
-                    if match name.as_str() {
-                        "Int" => value
-                            .as_i64()
-                            .is_some_and(|value| i32::try_from(value).is_ok()),
-                        "Float" => value.as_f64().is_some_and(f64::is_finite),
-                        "String" | "ID" => value.is_string(),
-                        "Boolean" => value.as_bool().is_some(),
-                        _ => false,
-                    } =>
-                {
-                    return Ok(value);
-                }
-                Some(ExtendedType::Scalar(_))
-                    if matches!(name.as_str(), "Int" | "Float" | "String" | "Boolean" | "ID") =>
-                {
-                    format!("Expected field '{}' to return a {name}.", field.name)
-                }
-                Some(ExtendedType::Enum(enum_type))
-                    if value
-                        .as_str()
-                        .is_some_and(|value| enum_type.values.contains_key(value)) =>
-                {
-                    return Ok(value);
-                }
-                Some(ExtendedType::Enum(_)) => {
-                    format!(
-                        "Expected field '{}' to return a {name} enum value.",
-                        field.name
-                    )
-                }
-                Some(_) => {
-                    format!("Result completion for type '{name}' is not supported.")
-                }
-                None => {
-                    format!("Unknown output type '{name}'.")
-                }
-            };
-
-            errors.push(*new_execution_error(
-                prepared,
-                path,
-                message,
-                field.name.location(),
-            ));
-
-            if ty.is_non_null() {
-                Err(PropagateNull)
-            } else {
-                Ok(JsonValue::Null)
-            }
+        Some(ExtendedType::Enum(enum_type))
+            if value
+                .as_str()
+                .is_some_and(|value| enum_type.values.contains_key(value)) =>
+        {
+            return Ok(value);
         }
+        Some(ExtendedType::Enum(_)) => {
+            format!(
+                "Expected field '{}' to return a {name} enum value.",
+                field.name
+            )
+        }
+        Some(_) => format!("Result completion for type '{name}' is not supported."),
+        None => format!("Unknown output type '{name}'."),
+    };
+
+    errors.push(*new_execution_error(
+        prepared,
+        path,
+        message,
+        field.name.location(),
+    ));
+    complete_null(ty)
+}
+
+fn valid_builtin_scalar(name: &Name, value: &JsonValue) -> bool {
+    match name.as_str() {
+        "Int" => value
+            .as_i64()
+            .is_some_and(|value| i32::try_from(value).is_ok()),
+        "Float" => value.as_f64().is_some_and(f64::is_finite),
+        "String" | "ID" => value.is_string(),
+        "Boolean" => value.as_bool().is_some(),
+        _ => false,
     }
+}
+
+fn is_builtin_scalar(name: &Name) -> bool {
+    matches!(name.as_str(), "Int" | "Float" | "String" | "Boolean" | "ID")
 }
 
 fn directive_condition(selection: &Selection, name: &str, variables: &JsonMap) -> Option<bool> {
@@ -767,7 +996,7 @@ fn should_include(selection: &Selection, variables: &JsonMap) -> bool {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -792,11 +1021,26 @@ mod tests {
 
     struct ValueDispatcher(JsonValue);
 
+    struct InvalidAbstractDispatcher;
+
+    struct InvalidAbstractObject;
+
     struct CountingDispatcher(AtomicUsize);
 
     struct RecoveringDispatcher(AtomicUsize);
 
     struct OrderingDispatcher(Mutex<Vec<String>>);
+
+    struct MergedObjectDispatcher {
+        viewer_calls: AtomicUsize,
+        friend_calls: Arc<AtomicUsize>,
+    }
+
+    struct MergedObject {
+        name: &'static str,
+        id: &'static str,
+        friend_calls: Arc<AtomicUsize>,
+    }
 
     impl<'context> super::Dispatcher<TestContext<'context>> for TestDispatcher {
         async fn resolve<'a>(
@@ -804,7 +1048,7 @@ mod tests {
             context: &'a TestContext<'context>,
             coordinate: FieldCoordinate<'a>,
             arguments: &'a JsonMap,
-        ) -> Result<ResolvedValue, ResolverError> {
+        ) -> Result<ResolvedValue<TestContext<'context>>, ResolverError> {
             tokio::task::yield_now().await;
 
             assert_eq!(coordinate.field, "hello");
@@ -851,6 +1095,38 @@ mod tests {
         }
     }
 
+    impl super::Dispatcher<()> for InvalidAbstractDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> Result<ResolvedValue, ResolverError> {
+            Ok(ResolvedValue::Object(Box::new(InvalidAbstractObject)))
+        }
+    }
+
+    impl crate::ResolvedObject<()> for InvalidAbstractObject {
+        fn type_name(&self) -> &'static str {
+            "Post"
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = Result<ResolvedValue, ResolverError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { panic!("invalid abstract Object fields must not execute") })
+        }
+    }
+
     impl super::Dispatcher<()> for CountingDispatcher {
         async fn resolve<'a>(
             &'a self,
@@ -889,6 +1165,65 @@ mod tests {
             self.0.lock().unwrap().push(coordinate.field.to_owned());
 
             Ok(ResolvedValue::Json(json!(coordinate.field)))
+        }
+    }
+
+    impl super::Dispatcher<()> for MergedObjectDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> Result<ResolvedValue, ResolverError> {
+            assert_eq!(
+                coordinate,
+                FieldCoordinate {
+                    parent_type: "Query",
+                    field: "viewer",
+                }
+            );
+            self.viewer_calls.fetch_add(1, Ordering::Relaxed);
+
+            Ok(ResolvedValue::Object(Box::new(MergedObject {
+                name: "Viewer",
+                id: "viewer-id",
+                friend_calls: Arc::clone(&self.friend_calls),
+            })))
+        }
+    }
+
+    impl crate::ResolvedObject<()> for MergedObject {
+        fn type_name(&self) -> &'static str {
+            "User"
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = Result<ResolvedValue, ResolverError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                match coordinate.field {
+                    "name" => Ok(ResolvedValue::Json(json!(self.name))),
+                    "id" => Ok(ResolvedValue::Json(json!(self.id))),
+                    "friend" => {
+                        self.friend_calls.fetch_add(1, Ordering::Relaxed);
+                        Ok(ResolvedValue::Object(Box::new(Self {
+                            name: "Friend",
+                            id: "friend-id",
+                            friend_calls: Arc::clone(&self.friend_calls),
+                        })))
+                    }
+                    field => Err(ResolverError::new(format!("Unknown User field '{field}'"))),
+                }
+            })
         }
     }
 
@@ -1004,6 +1339,48 @@ mod tests {
             json!({ "data": { "hello": "unexpected resolver call" } })
         );
         assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_object_fields_complete_every_subselection_once() {
+        let schema = Schema::parse_and_validate(
+            "type Query { viewer: User! } type User { name: String! id: ID! friend: User! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            r#"
+                query {
+                    viewer { name friend { name } }
+                    viewer { id friend { id } }
+                }
+            "#,
+        );
+        let friend_calls = Arc::new(AtomicUsize::new(0));
+        let dispatcher = MergedObjectDispatcher {
+            viewer_calls: AtomicUsize::new(0),
+            friend_calls: Arc::clone(&friend_calls),
+        };
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+
+        assert_eq!(
+            to_value(response).unwrap(),
+            json!({
+                "data": {
+                    "viewer": {
+                        "name": "Viewer",
+                        "id": "viewer-id",
+                        "friend": {
+                            "name": "Friend",
+                            "id": "friend-id",
+                        },
+                    },
+                },
+            })
+        );
+        assert_eq!(dispatcher.viewer_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(friend_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1768,6 +2145,36 @@ mod tests {
                 .is_some_and(|message| !message.is_empty())
         );
         assert_eq!(response["errors"][0]["path"], json!(["viewer"]));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_abstract_runtime_type_becomes_one_execution_error() {
+        let schema = Schema::parse_and_validate(
+            "union Search = User | Organization \
+             type Query { search: Search } \
+             type User { name: String! } \
+             type Organization { name: String! } \
+             type Post { name: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("{ result: search { __typename } }");
+
+        let response =
+            to_value(super::execute(&schema, &request, &InvalidAbstractDispatcher, &()).await)
+                .unwrap();
+
+        assert_eq!(response["data"], json!({ "result": null }));
+        assert_eq!(response["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            response["errors"][0]["message"],
+            "Runtime Object type 'Post' is not valid for 'Search'."
+        );
+        assert_eq!(response["errors"][0]["path"], json!(["result"]));
+        assert_eq!(
+            response["errors"][0]["locations"],
+            json!([{ "line": 1, "column": 11 }])
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
