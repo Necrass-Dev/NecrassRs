@@ -31,7 +31,10 @@ export default defineConfig({
           label: "Guide",
           items: ["docs/installation", "docs/tutorial", "docs/personnel-management"],
         },
-        { label: "Manual", items: ["docs/types", "docs/graphiql", "docs/integration"] },
+        {
+          label: "Manual",
+          items: ["docs/types", "docs/resolver-files", "docs/graphiql", "docs/integration"],
+        },
       ],
     }),
   ],

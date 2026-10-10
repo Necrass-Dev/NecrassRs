@@ -1,7 +1,14 @@
 use apollo_compiler::{Schema, ast::Type as GraphqlType, schema::ExtendedType, validation::Valid};
 use quote::{ToTokens, format_ident, quote};
-use std::{collections::BTreeMap, fs, ops::Range, path::Path};
-use syn::{GenericArgument, Item, PathArguments, Type, ext::IdentExt, spanned::Spanned};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    ops::Range,
+    path::{Path, PathBuf},
+};
+use syn::{
+    GenericArgument, Item, PathArguments, Type, ext::IdentExt, spanned::Spanned, visit::Visit,
+};
 
 use crate::{BuildError, codegen};
 
@@ -42,6 +49,11 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 schema,
                 query.name.as_str(),
                 name.as_str(),
+                field
+                    .arguments
+                    .iter()
+                    .map(|argument| codegen::rust_name(argument.name.as_str()))
+                    .collect(),
                 &field.ty,
                 query.name.as_str(),
             )
@@ -63,6 +75,11 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                         schema,
                         object_name,
                         name.as_str(),
+                        field
+                            .arguments
+                            .iter()
+                            .map(|argument| codegen::rust_name(argument.name.as_str()))
+                            .collect(),
                         &field.ty,
                         query.name.as_str(),
                     )
@@ -71,6 +88,8 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         );
     }
 
+    let mut writes = Vec::new();
+    let mut watched_paths = BTreeSet::from([path.to_owned()]);
     let updated = match existing
         .as_deref()
         .filter(|source| !source.trim().is_empty())
@@ -108,26 +127,470 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                     "\n"
                 }
         }
-        Some(source) => update_existing(source, &object, &resolver, &objects, &field_resolvers)
-            .map_err(source_error)?,
+        Some(source) => {
+            let external = reconcile_external_modules(path, source, &field_resolvers)?;
+            watched_paths.extend(external.paths);
+            writes.extend(external.writes);
+            update_existing(
+                path,
+                source,
+                &object,
+                &resolver,
+                &objects,
+                &field_resolvers,
+                &external.fields,
+            )
+            .map_err(source_error)?
+        }
     };
     syn::parse_file(&updated).map_err(source_error)?;
 
     if existing.as_deref() != Some(updated.as_str()) {
-        if read_existing(path)? != existing {
-            return Err(source_error(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Resolver source changed during synchronization",
-            )));
-        }
-        // ponytail: direct writes are not atomic; use atomic replacement if required later.
-        fs::write(path, updated).map_err(|source| BuildError::Io {
+        writes.push(PlannedWrite {
             path: path.to_owned(),
+            original: existing,
+            updated,
+        });
+    }
+    for write in &writes {
+        if read_existing(&write.path)? != write.original {
+            return Err(BuildError::ResolverSource {
+                path: write.path.clone(),
+                source: syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "Resolver source changed during synchronization",
+                ),
+            });
+        }
+    }
+    commit_writes(writes)?;
+    for path in watched_paths {
+        println!("cargo::rerun-if-changed={}", path.display());
+    }
+    Ok(())
+}
+
+struct ExternalReconciliation {
+    fields: BTreeMap<(String, String), PathBuf>,
+    paths: BTreeSet<PathBuf>,
+    writes: Vec<PlannedWrite>,
+}
+
+struct PlannedWrite {
+    path: PathBuf,
+    original: Option<String>,
+    updated: String,
+}
+
+fn commit_writes(writes: Vec<PlannedWrite>) -> Result<(), BuildError> {
+    commit_writes_with(writes, replace_file, |path| fs::remove_file(path))
+}
+
+fn replace_file(path: &Path, source: &str) -> std::io::Result<()> {
+    replace_file_with(
+        path,
+        source,
+        |_, staged, source| {
+            match fs::metadata(path) {
+                Ok(metadata) => staged.set_permissions(metadata.permissions())?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            std::io::Write::write_all(staged, source.as_bytes())
+        },
+        |staged, target| fs::rename(staged, target),
+    )
+}
+
+fn replace_file_with(
+    path: &Path,
+    source: &str,
+    write_staged: impl FnOnce(&Path, &mut fs::File, &str) -> std::io::Result<()>,
+    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    static NEXT_STAGING_FILE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut attempt = 0;
+    let (staged_path, mut staged) = loop {
+        let sequence = NEXT_STAGING_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let staged_path = parent.join(format!(".necrassrs-{}-{sequence}.tmp", std::process::id()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_path)
+        {
+            Ok(staged) => break (staged_path, staged),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 127 => {
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+
+    let result = write_staged(&staged_path, &mut staged, source);
+    drop(staged);
+    let result = result.and_then(|()| replace(&staged_path, path));
+    if let Err(error) = result {
+        return match fs::remove_file(&staged_path) {
+            Ok(()) => Err(error),
+            Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => Err(error),
+            Err(cleanup) => Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}; could not remove staging file {}: {cleanup}",
+                    staged_path.display()
+                ),
+            )),
+        };
+    }
+    Ok(())
+}
+
+fn commit_writes_with(
+    writes: Vec<PlannedWrite>,
+    mut write_file: impl FnMut(&Path, &str) -> std::io::Result<()>,
+    mut remove_file: impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), BuildError> {
+    for (index, write) in writes.iter().enumerate() {
+        let failure = match read_existing(&write.path) {
+            Ok(current) if current != write.original => Some(std::io::Error::other(
+                "Resolver source changed during synchronization",
+            )),
+            Ok(_) => write_file(&write.path, &write.updated).err(),
+            Err(error) => Some(std::io::Error::other(error.to_string())),
+        };
+        let Some(source) = failure else {
+            continue;
+        };
+        return rollback_writes(
+            &writes[..index],
+            &write.path,
+            source,
+            &mut write_file,
+            &mut remove_file,
+        );
+    }
+    Ok(())
+}
+
+fn rollback_writes(
+    writes: &[PlannedWrite],
+    failed_path: &Path,
+    commit_error: std::io::Error,
+    write_file: &mut impl FnMut(&Path, &str) -> std::io::Result<()>,
+    remove_file: &mut impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), BuildError> {
+    let mut rollback_failure = None;
+    for write in writes.iter().rev() {
+        let result = match read_existing(&write.path) {
+            Ok(Some(current)) if current == write.updated => match &write.original {
+                Some(original) => write_file(&write.path, original),
+                None => match remove_file(&write.path) {
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    result => result,
+                },
+            },
+            Ok(_) => Err(std::io::Error::other(
+                "Resolver source changed during rollback",
+            )),
+            Err(error) => Err(std::io::Error::other(error.to_string())),
+        };
+        if let Err(source) = result
+            && rollback_failure.is_none()
+        {
+            rollback_failure = Some((write.path.clone(), source));
+        }
+    }
+    if let Some((rollback_path, rollback_error)) = rollback_failure {
+        return Err(BuildError::Io {
+            path: rollback_path.clone(),
+            source: std::io::Error::other(format!(
+                "Commit failed for {}: {commit_error}; rollback failed for {}: {rollback_error}",
+                failed_path.display(),
+                rollback_path.display()
+            )),
+        });
+    }
+    Err(BuildError::Io {
+        path: failed_path.to_owned(),
+        source: commit_error,
+    })
+}
+
+fn reconcile_external_modules(
+    entry_path: &Path,
+    entry_source: &str,
+    field_resolvers: &[FieldResolver],
+) -> Result<ExternalReconciliation, BuildError> {
+    let entry = syn::parse_file(entry_source).map_err(|source| BuildError::ResolverSource {
+        path: entry_path.to_owned(),
+        source,
+    })?;
+    let desired = field_resolvers
+        .iter()
+        .map(|resolver| (resolver.coordinate(), resolver))
+        .collect::<BTreeMap<_, _>>();
+    let mut fields = BTreeMap::new();
+    let mut paths = BTreeSet::new();
+    let mut writes = Vec::new();
+
+    reconcile_external_children(
+        entry_path,
+        &entry,
+        &desired,
+        &mut fields,
+        &mut paths,
+        &mut writes,
+    )?;
+
+    Ok(ExternalReconciliation {
+        fields,
+        paths,
+        writes,
+    })
+}
+
+fn reconcile_external_children(
+    parent_path: &Path,
+    parent: &syn::File,
+    desired: &BTreeMap<(String, String), &FieldResolver>,
+    fields: &mut BTreeMap<(String, String), PathBuf>,
+    paths: &mut BTreeSet<PathBuf>,
+    writes: &mut Vec<PlannedWrite>,
+) -> Result<(), BuildError> {
+    let module_directory = if parent_path.ends_with("mod.rs") {
+        parent_path.parent().unwrap_or(Path::new("")).to_owned()
+    } else {
+        parent_path.with_extension("")
+    };
+    reconcile_external_children_in(
+        parent_path,
+        &parent.items,
+        &module_directory,
+        desired,
+        fields,
+        paths,
+        writes,
+    )
+}
+
+fn reconcile_external_children_in(
+    source_path: &Path,
+    items: &[Item],
+    module_directory: &Path,
+    desired: &BTreeMap<(String, String), &FieldResolver>,
+    fields: &mut BTreeMap<(String, String), PathBuf>,
+    paths: &mut BTreeSet<PathBuf>,
+    writes: &mut Vec<PlannedWrite>,
+) -> Result<(), BuildError> {
+    if let Some(item) = items.iter().find_map(|item| match item {
+        Item::Macro(item) if item.ident.is_none() => Some(item),
+        _ => None,
+    }) {
+        let path = &item.mac.path;
+        return Err(BuildError::ResolverSource {
+            path: source_path.to_owned(),
+            source: syn::Error::new_spanned(
+                item,
+                format!(
+                    "Resolver module discovery does not support {}!",
+                    quote!(#path)
+                ),
+            ),
+        });
+    }
+    for module in items.iter().filter_map(|item| match item {
+        Item::Mod(module) => Some(module),
+        _ => None,
+    }) {
+        if is_cfg_test_module(module) {
+            continue;
+        }
+        let unsupported_attribute = module.attrs.iter().find_map(|attribute| {
+            if attribute.path().is_ident("path") {
+                Some("path")
+            } else if attribute.path().is_ident("cfg") {
+                Some("cfg")
+            } else if attribute.path().is_ident("cfg_attr") {
+                Some("cfg_attr")
+            } else {
+                None
+            }
+        });
+        if let Some(attribute) = unsupported_attribute {
+            return Err(BuildError::ResolverSource {
+                path: source_path.to_owned(),
+                source: syn::Error::new_spanned(
+                    module,
+                    format!("Resolver modules with #[{attribute}] are not supported"),
+                ),
+            });
+        }
+        let module_name = module.ident.unraw().to_string();
+        if let Some((_, inline_items)) = &module.content {
+            reconcile_external_children_in(
+                source_path,
+                inline_items,
+                &module_directory.join(module_name),
+                desired,
+                fields,
+                paths,
+                writes,
+            )?;
+            continue;
+        }
+        let file_path = module_directory.join(format!("{module_name}.rs"));
+        let mod_path = module_directory.join(&module_name).join("mod.rs");
+        let path = match (source_exists(&file_path)?, source_exists(&mod_path)?) {
+            (true, false) => file_path,
+            (false, true) => mod_path,
+            (true, true) => {
+                return Err(BuildError::ResolverSource {
+                    path: source_path.to_owned(),
+                    source: syn::Error::new_spanned(
+                        module,
+                        format!(
+                            "Resolver module is ambiguous; both {} and {} exist",
+                            file_path.display(),
+                            mod_path.display()
+                        ),
+                    ),
+                });
+            }
+            (false, false) => {
+                return Err(BuildError::ResolverSource {
+                    path: source_path.to_owned(),
+                    source: syn::Error::new_spanned(
+                        module,
+                        format!(
+                            "Resolver module source does not exist; expected {} or {}",
+                            file_path.display(),
+                            mod_path.display()
+                        ),
+                    ),
+                });
+            }
+        };
+        let source = read_existing(&path)?.ok_or_else(|| BuildError::Io {
+            path: path.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Resolver module source does not exist",
+            ),
+        })?;
+        let ast = syn::parse_file(&source).map_err(|source| BuildError::ResolverSource {
+            path: path.clone(),
             source,
         })?;
+        let source_offset = if source.starts_with('\u{feff}') { 3 } else { 0 }
+            + ast.shebang.as_ref().map_or(0, String::len);
+        let mut edits = Vec::new();
+        let mut anchor = None;
+        for implementation in ast.items.iter().filter_map(|item| match item {
+            Item::Impl(item) => Some(item),
+            _ => None,
+        }) {
+            let Some(coordinate) = field_resolver_coordinate(implementation) else {
+                continue;
+            };
+            let Some(resolver) = desired.get(&coordinate) else {
+                anchor.get_or_insert(implementation);
+                reconcile_stale_field_resolver(
+                    implementation,
+                    &coordinate,
+                    &source,
+                    source_offset,
+                    &mut edits,
+                )
+                .map_err(|source| BuildError::ResolverSource {
+                    path: path.clone(),
+                    source,
+                })?;
+                continue;
+            };
+            if let Some(first_path) = fields.get(&coordinate) {
+                return Err(BuildError::ResolverSource {
+                    path: path.clone(),
+                    source: syn::Error::new_spanned(
+                        implementation,
+                        format!(
+                            "Duplicate field resolver implementations are ambiguous; found in {} and {}",
+                            first_path.display(),
+                            path.display()
+                        ),
+                    ),
+                });
+            }
+            fields.insert(coordinate, path.clone());
+            anchor.get_or_insert(implementation);
+            reconcile_field_resolver(implementation, resolver, &mut edits, false).map_err(
+                |source| BuildError::ResolverSource {
+                    path: path.clone(),
+                    source,
+                },
+            )?;
+        }
+        let inline_anchor = reconcile_inline_modules(
+            &ast.items,
+            desired,
+            fields,
+            &path,
+            &source,
+            source_offset,
+            &mut edits,
+        )
+        .map_err(|source| BuildError::ResolverSource {
+            path: path.clone(),
+            source,
+        })?;
+        anchor = anchor.or(inline_anchor);
+        let updated = match anchor {
+            Some(anchor) => {
+                apply_edits(&source, source_offset, anchor, edits).map_err(|source| {
+                    BuildError::ResolverSource {
+                        path: path.clone(),
+                        source,
+                    }
+                })?
+            }
+            None => source.clone(),
+        };
+        syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
+            path: path.clone(),
+            source,
+        })?;
+        reconcile_external_children(&path, &ast, desired, fields, paths, writes)?;
+        paths.insert(path.clone());
+        if updated != source {
+            writes.push(PlannedWrite {
+                path,
+                original: Some(source),
+                updated,
+            });
+        }
     }
-    println!("cargo::rerun-if-changed={}", path.display());
     Ok(())
+}
+
+fn source_exists(path: &Path) -> Result<bool, BuildError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(BuildError::Io {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+fn is_cfg_test_module(module: &syn::ItemMod) -> bool {
+    module.attrs.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute
+                .parse_args::<syn::Ident>()
+                .is_ok_and(|condition| condition == "test")
+    })
 }
 
 fn read_existing(path: &Path) -> Result<Option<String>, BuildError> {
@@ -157,11 +620,13 @@ fn read_existing(path: &Path) -> Result<Option<String>, BuildError> {
 }
 
 fn update_existing(
+    path: &Path,
     source: &str,
     object: &syn::Ident,
     resolver: &syn::Ident,
     objects: &[syn::Ident],
     field_resolvers: &[FieldResolver],
+    external_fields: &BTreeMap<(String, String), PathBuf>,
 ) -> syn::Result<String> {
     let ast = syn::parse_file(source)?;
     // parse_file removes these prefixes before assigning token byte ranges.
@@ -184,7 +649,49 @@ fn update_existing(
             field_resolver.receiver = root_receiver.clone();
         }
     }
-    let desired_fields = reconcile_field_resolvers(&ast, &field_resolvers, &mut edits)?;
+    let desired_fields = field_resolvers
+        .iter()
+        .map(|resolver| (resolver.coordinate(), resolver))
+        .collect::<BTreeMap<_, _>>();
+    let mut relocated_fields = external_fields.clone();
+    let _ = reconcile_inline_modules(
+        &ast.items,
+        &desired_fields,
+        &mut relocated_fields,
+        path,
+        source,
+        source_offset,
+        &mut edits,
+    )?;
+    let local_field_resolvers = field_resolvers
+        .iter()
+        .filter(|resolver| !relocated_fields.contains_key(&resolver.coordinate()))
+        .cloned()
+        .collect::<Vec<_>>();
+    for implementation in ast.items.iter().filter_map(|item| match item {
+        Item::Impl(item) => Some(item),
+        _ => None,
+    }) {
+        if let Some(first_path) = field_resolver_coordinate(implementation)
+            .and_then(|coordinate| relocated_fields.get(&coordinate))
+        {
+            return Err(syn::Error::new_spanned(
+                implementation,
+                format!(
+                    "Duplicate field resolver implementations are ambiguous; found in {} and {}",
+                    first_path.display(),
+                    path.display()
+                ),
+            ));
+        }
+    }
+    let desired_fields = reconcile_field_resolvers(
+        &ast,
+        &local_field_resolvers,
+        source,
+        source_offset,
+        &mut edits,
+    )?;
 
     let defined_types = ast
         .items
@@ -213,6 +720,69 @@ fn update_existing(
     }
 
     apply_edits(source, source_offset, implementation, edits)
+}
+
+fn reconcile_inline_modules<'a>(
+    items: &'a [Item],
+    desired_fields: &BTreeMap<(String, String), &FieldResolver>,
+    relocated_fields: &mut BTreeMap<(String, String), PathBuf>,
+    source_path: &Path,
+    source: &str,
+    source_offset: usize,
+    edits: &mut Vec<Edit>,
+) -> syn::Result<Option<&'a syn::ItemImpl>> {
+    let mut anchor = None;
+    for inline_items in items.iter().filter_map(|item| match item {
+        Item::Mod(module) if !is_cfg_test_module(module) => {
+            module.content.as_ref().map(|(_, items)| items)
+        }
+        _ => None,
+    }) {
+        for implementation in inline_items.iter().filter_map(|item| match item {
+            Item::Impl(item) => Some(item),
+            _ => None,
+        }) {
+            let Some(coordinate) = field_resolver_coordinate(implementation) else {
+                continue;
+            };
+            let Some(resolver) = desired_fields.get(&coordinate) else {
+                anchor.get_or_insert(implementation);
+                reconcile_stale_field_resolver(
+                    implementation,
+                    &coordinate,
+                    source,
+                    source_offset,
+                    edits,
+                )?;
+                continue;
+            };
+            if let Some(first_path) = relocated_fields.get(&coordinate) {
+                return Err(syn::Error::new_spanned(
+                    implementation,
+                    format!(
+                        "Duplicate field resolver implementations are ambiguous; found in {} and {}",
+                        first_path.display(),
+                        source_path.display()
+                    ),
+                ));
+            }
+            relocated_fields.insert(coordinate, source_path.to_owned());
+            anchor.get_or_insert(implementation);
+            reconcile_field_resolver(implementation, resolver, edits, false)?;
+        }
+        if let Some(nested_anchor) = reconcile_inline_modules(
+            inline_items,
+            desired_fields,
+            relocated_fields,
+            source_path,
+            source,
+            source_offset,
+            edits,
+        )? {
+            anchor.get_or_insert(nested_anchor);
+        }
+    }
+    Ok(anchor)
 }
 
 fn query_resolver_implementation<'a>(
@@ -277,6 +847,8 @@ fn resolver_context(implementation: &syn::ItemImpl) -> syn::Result<&Type> {
 fn reconcile_field_resolvers<'a>(
     ast: &syn::File,
     field_resolvers: &'a [FieldResolver],
+    source: &str,
+    source_offset: usize,
     edits: &mut Vec<Edit>,
 ) -> syn::Result<BTreeMap<(String, String), &'a FieldResolver>> {
     let mut desired_fields = field_resolvers
@@ -298,32 +870,76 @@ fn reconcile_field_resolvers<'a>(
             ));
         }
         if let Some(resolver) = desired_fields.remove(&coordinate) {
-            reconcile_field_resolver(item, resolver, edits)?;
+            reconcile_field_resolver(item, resolver, edits, true)?;
         } else {
-            edits.push(Edit {
-                range: item.span().byte_range(),
-                replacement: String::new(),
-            });
+            reconcile_stale_field_resolver(item, &coordinate, source, source_offset, edits)?;
         }
     }
     Ok(desired_fields)
+}
+
+fn reconcile_stale_field_resolver(
+    implementation: &syn::ItemImpl,
+    coordinate: &(String, String),
+    source: &str,
+    source_offset: usize,
+    edits: &mut Vec<Edit>,
+) -> syn::Result<()> {
+    let (_, resolve) = field_resolver_items(implementation)?;
+    validate_resolve(resolve)?;
+    let semantic_stub = matches!(
+        resolve.block.stmts.as_slice(),
+        [syn::Stmt::Expr(syn::Expr::Macro(expression), None)]
+            if expression.attrs.is_empty()
+                && expression.mac.path.leading_colon.is_some()
+                && expression.mac.path.segments.iter().map(|segment| segment.ident.unraw().to_string()).eq(["core", "unimplemented"].map(str::to_owned))
+                && expression.mac.tokens.is_empty()
+    );
+    let range = implementation.span().byte_range();
+    let source_range = range.start + source_offset..range.end + source_offset;
+    let has_comments = source.get(source_range).is_none_or(|implementation| {
+        implementation.contains("//") || implementation.contains("/*")
+    });
+    let generated_stub = semantic_stub
+        && implementation.attrs.is_empty()
+        && resolve.attrs.is_empty()
+        && !has_comments;
+    if !generated_stub {
+        return Err(syn::Error::new_spanned(
+            resolve,
+            format!(
+                "Cannot remove application-written resolver {}.{} automatically",
+                coordinate.0, coordinate.1
+            ),
+        ));
+    }
+    edits.push(Edit {
+        range: implementation.span().byte_range(),
+        replacement: String::new(),
+    });
+    Ok(())
 }
 
 fn reconcile_field_resolver(
     implementation: &syn::ItemImpl,
     resolver: &FieldResolver,
     edits: &mut Vec<Edit>,
+    update_receiver: bool,
 ) -> syn::Result<()> {
-    let current_receiver = &implementation.self_ty;
-    let desired_receiver = receiver_with_existing_arguments(&resolver.receiver, current_receiver)?;
-    if quote!(#current_receiver).to_string() != quote!(#desired_receiver).to_string() {
-        edits.push(Edit {
-            range: implementation.self_ty.span().byte_range(),
-            replacement: quote!(#desired_receiver).to_string(),
-        });
+    if update_receiver {
+        let current_receiver = &implementation.self_ty;
+        let desired_receiver =
+            receiver_with_existing_arguments(&resolver.receiver, current_receiver)?;
+        if quote!(#current_receiver).to_string() != quote!(#desired_receiver).to_string() {
+            edits.push(Edit {
+                range: implementation.self_ty.span().byte_range(),
+                replacement: quote!(#desired_receiver).to_string(),
+            });
+        }
     }
     let (output, resolve) = field_resolver_items(implementation)?;
     validate_resolve(resolve)?;
+    reject_removed_argument_uses(resolve, resolver)?;
     if !equivalent_output_type(&output.ty, &resolver.output) {
         let replacement = &resolver.output;
         edits.push(Edit {
@@ -332,6 +948,61 @@ fn reconcile_field_resolver(
         });
     }
     Ok(())
+}
+
+fn reject_removed_argument_uses(
+    resolve: &syn::ImplItemFn,
+    resolver: &FieldResolver,
+) -> syn::Result<()> {
+    let binding = resolve
+        .sig
+        .inputs
+        .iter()
+        .nth(2)
+        .and_then(|argument| match argument {
+            syn::FnArg::Typed(argument) => match argument.pat.as_ref() {
+                syn::Pat::Ident(binding) => Some(&binding.ident),
+                _ => None,
+            },
+            _ => None,
+        });
+    let Some(binding) = binding else {
+        return Ok(());
+    };
+    let mut visitor = RemovedArgumentUse {
+        binding,
+        arguments: &resolver.arguments,
+        removed: None,
+    };
+    visitor.visit_block(&resolve.block);
+    let Some((argument, span)) = visitor.removed else {
+        return Ok(());
+    };
+    let (object, field) = resolver.coordinate();
+    Err(syn::Error::new(
+        span,
+        format!("Cannot preserve resolver {object}.{field}; argument {argument} is not in the SDL"),
+    ))
+}
+
+struct RemovedArgumentUse<'a> {
+    binding: &'a syn::Ident,
+    arguments: &'a BTreeSet<String>,
+    removed: Option<(String, proc_macro2::Span)>,
+}
+
+impl<'ast> Visit<'ast> for RemovedArgumentUse<'_> {
+    fn visit_expr_field(&mut self, expression: &'ast syn::ExprField) {
+        if self.removed.is_none()
+            && matches!(expression.base.as_ref(), syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident(self.binding))
+            && let syn::Member::Named(member) = &expression.member
+            && !self.arguments.contains(&member.unraw().to_string())
+        {
+            self.removed = Some((member.unraw().to_string(), member.span()));
+            return;
+        }
+        syn::visit::visit_expr_field(self, expression);
+    }
 }
 
 fn receiver_with_existing_arguments(desired: &Type, current: &Type) -> syn::Result<Type> {
@@ -553,6 +1224,7 @@ fn apply_edits(
 struct FieldResolver {
     object: syn::Ident,
     field: syn::Ident,
+    arguments: BTreeSet<String>,
     receiver: Type,
     output: Type,
 }
@@ -570,6 +1242,7 @@ fn field_resolver(
     schema: &Schema,
     object_name: &str,
     field_name: &str,
+    arguments: BTreeSet<String>,
     ty: &GraphqlType,
     query_name: &str,
 ) -> Result<FieldResolver, BuildError> {
@@ -580,6 +1253,7 @@ fn field_resolver(
         receiver: syn::parse_quote!(self::#object),
         object,
         field: rust_ident(field_name),
+        arguments,
         output: syn::parse2(output).expect("generated resolver output types must parse"),
     })
 }
@@ -808,19 +1482,31 @@ mod tests {
 
     fn field_output(source: &str, object: &str, field: &str) -> String {
         let ast = syn::parse_file(source).unwrap();
-        let implementation = ast
-            .items
-            .iter()
-            .find_map(|item| match item {
-                Item::Impl(item)
-                    if field_resolver_coordinate(item)
-                        == Some((object.to_owned(), field.to_owned())) =>
-                {
-                    Some(item)
-                }
-                _ => None,
-            })
-            .unwrap();
+        field_output_in(&ast.items, object, field)
+    }
+
+    fn field_implementation_in<'a>(
+        items: &'a [Item],
+        object: &str,
+        field: &str,
+    ) -> Option<&'a syn::ItemImpl> {
+        items.iter().find_map(|item| match item {
+            Item::Impl(item)
+                if field_resolver_coordinate(item)
+                    == Some((object.to_owned(), field.to_owned())) =>
+            {
+                Some(item)
+            }
+            Item::Mod(module) => module
+                .content
+                .as_ref()
+                .and_then(|(_, items)| field_implementation_in(items, object, field)),
+            _ => None,
+        })
+    }
+
+    fn field_output_in(items: &[Item], object: &str, field: &str) -> String {
+        let implementation = field_implementation_in(items, object, field).unwrap();
         let output = implementation
             .items
             .iter()
@@ -860,6 +1546,192 @@ mod tests {
         ast.to_token_stream().to_string()
     }
 
+    fn write_external_resolver(file: &ResolverFile, relative_path: &str) -> std::path::PathBuf {
+        let child = file.directory.join(relative_path);
+        fs::create_dir_all(child.parent().unwrap()).unwrap();
+        fs::write(
+            &file.path,
+            r#"
+pub struct Query;
+
+mod fields;
+
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &child,
+            r#"
+impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
+    for super::Query
+{
+    type Output = ::std::string::String;
+
+    async fn resolve(
+        &self,
+        _context: &C,
+        _args: crate::generated::types::Query::hello::Args,
+    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        /* retain this body */
+        ::core::unimplemented!()
+    }
+}
+"#,
+        )
+        .unwrap();
+        child
+    }
+
+    fn write_nested_external_resolver(
+        file: &ResolverFile,
+        module_path: &str,
+    ) -> std::path::PathBuf {
+        let child = write_external_resolver(file, "resolvers/group/fields.rs");
+        fs::write(&file.path, file.read().replace("mod fields;", "mod group;")).unwrap();
+        fs::write(file.directory.join(module_path), "mod fields;\n").unwrap();
+        fs::write(
+            &child,
+            fs::read_to_string(&child)
+                .unwrap()
+                .replace("for super::Query", "for super::super::Query"),
+        )
+        .unwrap();
+        child
+    }
+
+    fn write_external_resolver_below_inline_module(file: &ResolverFile) -> std::path::PathBuf {
+        let child = write_external_resolver(file, "resolvers/group/fields.rs");
+        fs::write(
+            &file.path,
+            file.read()
+                .replace("mod fields;", "mod group {\n    mod fields;\n}"),
+        )
+        .unwrap();
+        fs::write(
+            &child,
+            fs::read_to_string(&child)
+                .unwrap()
+                .replace("for super::Query", "for super::super::Query"),
+        )
+        .unwrap();
+        child
+    }
+
+    fn write_inline_resolver_below_external_module(file: &ResolverFile) -> std::path::PathBuf {
+        let child = write_external_resolver(file, "resolvers/group.rs");
+        fs::write(&file.path, file.read().replace("mod fields;", "mod group;")).unwrap();
+        let source = fs::read_to_string(&child)
+            .unwrap()
+            .replace("for super::Query", "for super::super::Query");
+        fs::write(&child, format!("mod fields {{\n{source}\n}}\n")).unwrap();
+        child
+    }
+
+    fn assert_unsupported_module_syntax_is_rejected(declaration: &str, expected: &str) {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        let entry_source = file.read().replace("mod fields;", declaration);
+        fs::write(&file.path, &entry_source).unwrap();
+        let child_source = fs::read_to_string(&child).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: Int! }")
+            .expect_err("unsupported module syntax unexpectedly succeeded");
+
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(child).unwrap(), child_source);
+    }
+
+    fn assert_external_resolver_is_updated(file: &ResolverFile, child: &Path, receiver: &str) {
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        let child_source = fs::read_to_string(child).unwrap();
+        assert_eq!(
+            field_output(&child_source, "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(child_source.contains("/* retain this body */"));
+        assert!(child_source.contains(receiver));
+        assert!(!file.read().contains("fields::r#Query::r#hello"));
+
+        let entry_source = file.read();
+        file.synchronize("type Query { hello: Int! }").unwrap();
+        assert_eq!(fs::read_to_string(child).unwrap(), child_source);
+        assert_eq!(file.read(), entry_source);
+    }
+
+    #[test]
+    fn rejects_removing_application_written_resolver_before_writing() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        let child_source = fs::read_to_string(&child).unwrap().replace(
+            "/* retain this body */\n        ::core::unimplemented!()",
+            "Ok(String::from(\"hello\"))",
+        );
+        fs::write(&child, &child_source).unwrap();
+        let entry_source = file.read();
+
+        let error = file
+            .synchronize("type Query { added: String! }")
+            .expect_err("application-written resolver was removed");
+
+        assert!(
+            matches!(&error, BuildError::ResolverSource { path, .. } if path == &child),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Query.hello"), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(child).unwrap(), child_source);
+    }
+
+    #[test]
+    fn rejects_removing_a_comment_modified_stub_before_writing() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! old: String! }")
+            .unwrap();
+        let mut source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        let implementation = field_implementation_in(&ast.items, "Query", "old").unwrap();
+        let range = implementation.span().byte_range();
+        let offset = source[range.clone()]
+            .find("::core::unimplemented!()")
+            .unwrap();
+        source.insert_str(
+            range.start + offset,
+            "/* keep this explanation */\n        ",
+        );
+        fs::write(&file.path, &source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: String! }")
+            .expect_err("comment-modified stub was removed");
+
+        assert!(error.to_string().contains("Query.old"), "{error}");
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
+    fn rejects_removing_an_argument_used_by_a_retained_body() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello(name: String!): String! }")
+            .unwrap();
+        let source = mutate_resolve(&file.read(), |resolve| {
+            resolve.block = syn::parse_quote!({ Ok(_args.name) });
+        });
+        fs::write(&file.path, &source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: String! }")
+            .expect_err("used resolver argument was removed");
+
+        let message = error.to_string();
+        assert!(message.contains("Query.hello"), "{error}");
+        assert!(message.contains("name"), "{error}");
+        assert_eq!(file.read(), source);
+    }
+
     #[test]
     fn creates_resolvers_and_preserves_unchanged_source() {
         let file = ResolverFile::new();
@@ -872,6 +1744,729 @@ mod tests {
         assert!(source.contains("unimplemented"));
 
         file.synchronize("type Query { hello: String! }").unwrap();
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
+    fn updates_resolver_moved_to_reachable_external_module_in_place() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        assert_external_resolver_is_updated(&file, &child, "for super::Query");
+    }
+
+    #[test]
+    fn updates_resolver_moved_to_reachable_mod_rs_module_in_place() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields/mod.rs");
+        assert_external_resolver_is_updated(&file, &child, "for super::Query");
+    }
+
+    #[test]
+    fn updates_resolver_moved_to_reachable_nested_external_module_in_place() {
+        let file = ResolverFile::new();
+        let child = write_nested_external_resolver(&file, "resolvers/group.rs");
+        assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
+    }
+
+    #[test]
+    fn updates_resolver_moved_below_reachable_nested_mod_rs_module_in_place() {
+        let file = ResolverFile::new();
+        let child = write_nested_external_resolver(&file, "resolvers/group/mod.rs");
+        assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
+    }
+
+    #[test]
+    fn updates_resolver_moved_below_reachable_inline_module_in_place() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver_below_inline_module(&file);
+        assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
+    }
+
+    #[test]
+    fn updates_resolver_moved_into_inline_module_in_reachable_external_file() {
+        let file = ResolverFile::new();
+        let child = write_inline_resolver_below_external_module(&file);
+        assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
+    }
+
+    #[test]
+    fn rejects_path_overridden_module_before_writing() {
+        let file = ResolverFile::new();
+        let conventional = write_external_resolver(&file, "resolvers/fields.rs");
+        let entry_source = file
+            .read()
+            .replace("mod fields;", "#[path = \"custom_fields.rs\"]\nmod fields;");
+        fs::write(&file.path, &entry_source).unwrap();
+        let conventional_source = fs::read_to_string(&conventional).unwrap();
+        let custom = file.directory.join("custom_fields.rs");
+        fs::write(&custom, &conventional_source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: Int! }")
+            .expect_err("#[path] module unexpectedly succeeded");
+
+        assert!(error.to_string().contains("#[path]"), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(
+            fs::read_to_string(conventional).unwrap(),
+            conventional_source
+        );
+        assert_eq!(fs::read_to_string(custom).unwrap(), conventional_source);
+    }
+
+    #[test]
+    fn rejects_cfg_gated_module_before_writing() {
+        assert_unsupported_module_syntax_is_rejected("#[cfg(any())]\nmod fields;", "#[cfg]");
+    }
+
+    #[test]
+    fn ignores_cfg_test_inline_modules_during_discovery() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = format!(
+            "{}\n#[cfg(test)]\nmod tests {{\n    resolver_modules!();\n}}\n",
+            file.read()
+        );
+        fs::write(&file.path, &source).unwrap();
+
+        file.synchronize("type Query { hello: String! }").unwrap();
+
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
+    fn rejects_cfg_attr_overridden_module_before_writing() {
+        assert_unsupported_module_syntax_is_rejected(
+            "#[cfg_attr(all(), path = \"custom_fields.rs\")]\nmod fields;",
+            "#[cfg_attr]",
+        );
+    }
+
+    #[test]
+    fn rejects_included_resolvers_before_writing() {
+        assert_unsupported_module_syntax_is_rejected(
+            "include!(\"resolvers/fields.rs\");",
+            "include!",
+        );
+    }
+
+    #[test]
+    fn rejects_macro_created_modules_before_writing() {
+        assert_unsupported_module_syntax_is_rejected("resolver_modules!();", "resolver_modules!");
+    }
+
+    #[test]
+    fn reports_both_conventional_paths_for_a_missing_module() {
+        let file = ResolverFile::new();
+        fs::write(
+            &file.path,
+            r#"
+pub struct Query;
+
+mod fields;
+
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
+"#,
+        )
+        .unwrap();
+        let entry_source = file.read();
+
+        let error = file
+            .synchronize("type Query { hello: String! }")
+            .expect_err("missing resolver module unexpectedly succeeded");
+        let message = error.to_string();
+
+        assert!(
+            matches!(&error, BuildError::ResolverSource { path, .. } if path == &file.path),
+            "{error}"
+        );
+        assert!(
+            message.contains(
+                &file
+                    .directory
+                    .join("resolvers/fields.rs")
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+        assert!(
+            message.contains(
+                &file
+                    .directory
+                    .join("resolvers/fields/mod.rs")
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+        assert_eq!(file.read(), entry_source);
+    }
+
+    #[test]
+    fn reports_all_duplicate_resolver_locations_before_writing() {
+        let file = ResolverFile::new();
+        let first = write_external_resolver(&file, "resolvers/fields.rs");
+        let entry_source = file
+            .read()
+            .replace("mod fields;", "mod fields;\nmod other;");
+        fs::write(&file.path, &entry_source).unwrap();
+        let first_source = fs::read_to_string(&first).unwrap();
+        let second = file.directory.join("resolvers/other.rs");
+        fs::write(&second, &first_source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: Int! }")
+            .expect_err("duplicate resolver implementations unexpectedly succeeded");
+        let message = error.to_string();
+
+        assert!(message.contains(&first.display().to_string()), "{error}");
+        assert!(message.contains(&second.display().to_string()), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(first).unwrap(), first_source);
+        assert_eq!(fs::read_to_string(second).unwrap(), first_source);
+    }
+
+    #[test]
+    fn rediscovers_a_scaffolded_resolver_after_it_is_moved() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        let implementation = field_implementation_in(&ast.items, "Query", "hello").unwrap();
+        let range = implementation.span().byte_range();
+        let child_source = source[range.clone()].replace("for self::Query", "for super::Query");
+        let mut entry_source = source;
+        entry_source.replace_range(range, "mod fields;");
+        fs::write(&file.path, &entry_source).unwrap();
+        let child = file.directory.join("resolvers/fields.rs");
+        fs::create_dir_all(child.parent().unwrap()).unwrap();
+        fs::write(&child, child_source).unwrap();
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        assert_eq!(
+            field_output(&fs::read_to_string(&child).unwrap(), "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(
+            field_implementation_in(
+                &syn::parse_file(&file.read()).unwrap().items,
+                "Query",
+                "hello"
+            )
+            .is_none()
+        );
+        let updated_entry = file.read();
+        let updated_child = fs::read_to_string(&child).unwrap();
+        file.synchronize("type Query { hello: Int! }").unwrap();
+        assert_eq!(file.read(), updated_entry);
+        assert_eq!(fs::read_to_string(child).unwrap(), updated_child);
+    }
+
+    #[test]
+    fn ignores_unreachable_rust_files() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let unreachable = file.directory.join("unreachable.rs");
+        fs::write(&unreachable, "not valid Rust source").unwrap();
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(unreachable).unwrap(),
+            "not valid Rust source"
+        );
+        assert_eq!(
+            field_output(&file.read(), "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+    }
+
+    #[test]
+    fn does_not_claim_alias_or_glob_resolver_traits() {
+        let cases = [
+            (
+                "use ::necrassrs::Resolver as FieldResolver;",
+                "FieldResolver",
+            ),
+            ("use ::necrassrs::*;", "Resolver"),
+        ];
+        for (import, trait_name) in cases {
+            let file = ResolverFile::new();
+            file.synchronize("type Query { hello: String! }").unwrap();
+            let source = file.read();
+            let aliased = source.replacen(
+                "::necrassrs::Resolver<crate::generated::fields",
+                &format!("{trait_name}<crate::generated::fields"),
+                1,
+            );
+            assert_ne!(aliased, source);
+            fs::write(&file.path, format!("{import}\n{aliased}")).unwrap();
+
+            file.synchronize("type Query { hello: String! }").unwrap();
+
+            let updated = file.read();
+            let exact_matches = syn::parse_file(&updated)
+                .unwrap()
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Impl(implementation) => field_resolver_coordinate(implementation),
+                    _ => None,
+                })
+                .filter(|coordinate| coordinate == &("Query".to_owned(), "hello".to_owned()))
+                .count();
+            assert_eq!(exact_matches, 1);
+            assert_eq!(updated.matches("type Output").count(), 2);
+            file.synchronize("type Query { hello: String! }").unwrap();
+            assert_eq!(file.read(), updated);
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_conventional_module_paths_before_writing() {
+        let file = ResolverFile::new();
+        let module_file = write_external_resolver(&file, "resolvers/fields.rs");
+        let module_source = fs::read_to_string(&module_file).unwrap();
+        let mod_file = file.directory.join("resolvers/fields/mod.rs");
+        fs::create_dir_all(mod_file.parent().unwrap()).unwrap();
+        fs::write(&mod_file, &module_source).unwrap();
+        let entry_source = file.read();
+
+        let error = file
+            .synchronize("type Query { hello: Int! }")
+            .expect_err("ambiguous module paths unexpectedly succeeded");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(&module_file.display().to_string()),
+            "{error}"
+        );
+        assert!(message.contains(&mod_file.display().to_string()), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(module_file).unwrap(), module_source);
+        assert_eq!(fs::read_to_string(mod_file).unwrap(), module_source);
+    }
+
+    #[test]
+    fn updates_multiple_resolver_files_from_one_plan() {
+        let file = ResolverFile::new();
+        let first = write_external_resolver(&file, "resolvers/first.rs");
+        let entry_source = file
+            .read()
+            .replace("mod fields;", "mod first;\nmod second;");
+        fs::write(&file.path, &entry_source).unwrap();
+        let first_source = fs::read_to_string(&first).unwrap();
+        let second = file.directory.join("resolvers/second.rs");
+        let second_source = first_source.replace("hello", "goodbye");
+        fs::write(&second, &second_source).unwrap();
+
+        file.synchronize("type Query { hello: Int! goodbye: Int! }")
+            .unwrap();
+
+        let first_updated = fs::read_to_string(&first).unwrap();
+        let second_updated = fs::read_to_string(&second).unwrap();
+        assert_eq!(
+            field_output(&first_updated, "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+        assert_eq!(
+            field_output(&second_updated, "Query", "goodbye"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(first_updated.contains("/* retain this body */"));
+        assert!(second_updated.contains("/* retain this body */"));
+        assert_eq!(file.read(), entry_source);
+        file.synchronize("type Query { hello: Int! goodbye: Int! }")
+            .unwrap();
+        assert_eq!(fs::read_to_string(first).unwrap(), first_updated);
+        assert_eq!(fs::read_to_string(second).unwrap(), second_updated);
+    }
+
+    #[test]
+    fn rolls_back_applied_files_when_commit_fails() {
+        let file = ResolverFile::new();
+        let first = file.directory.join("first.rs");
+        let created = file.directory.join("created.rs");
+        let third = file.directory.join("third.rs");
+        fs::write(&first, "first original").unwrap();
+        fs::write(&third, "third original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: first.clone(),
+                original: Some("first original".to_owned()),
+                updated: "first updated".to_owned(),
+            },
+            PlannedWrite {
+                path: created.clone(),
+                original: None,
+                updated: "created".to_owned(),
+            },
+            PlannedWrite {
+                path: third.clone(),
+                original: Some("third original".to_owned()),
+                updated: "third updated".to_owned(),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                if attempts == 3 {
+                    Err(std::io::Error::other("injected commit failure"))
+                } else {
+                    fs::write(path, source)
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("injected commit failure unexpectedly succeeded");
+
+        assert!(error.to_string().contains("injected commit failure"));
+        assert_eq!(fs::read_to_string(first).unwrap(), "first original");
+        assert!(!created.exists());
+        assert_eq!(fs::read_to_string(third).unwrap(), "third original");
+    }
+
+    #[test]
+    fn detects_source_changes_before_each_replacement() {
+        let file = ResolverFile::new();
+        let first = file.directory.join("first.rs");
+        let second = file.directory.join("second.rs");
+        fs::write(&first, "first original").unwrap();
+        fs::write(&second, "second original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: first.clone(),
+                original: Some("first original".to_owned()),
+                updated: "first updated".to_owned(),
+            },
+            PlannedWrite {
+                path: second.clone(),
+                original: Some("second original".to_owned()),
+                updated: "second updated".to_owned(),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                fs::write(path, source)?;
+                if attempts == 1 {
+                    fs::write(&second, "second concurrent edit")?;
+                }
+                Ok(())
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("concurrent source change was overwritten");
+
+        assert!(
+            error.to_string().contains("changed during synchronization"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(first).unwrap(), "first original");
+        assert_eq!(
+            fs::read_to_string(second).unwrap(),
+            "second concurrent edit"
+        );
+    }
+
+    #[test]
+    fn does_not_rollback_over_a_concurrent_source_change() {
+        let file = ResolverFile::new();
+        let first = file.directory.join("first.rs");
+        let second = file.directory.join("second.rs");
+        fs::write(&first, "first original").unwrap();
+        fs::write(&second, "second original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: first.clone(),
+                original: Some("first original".to_owned()),
+                updated: "first updated".to_owned(),
+            },
+            PlannedWrite {
+                path: second.clone(),
+                original: Some("second original".to_owned()),
+                updated: "second updated".to_owned(),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                if attempts == 2 {
+                    fs::write(&first, "first concurrent edit")?;
+                    Err(std::io::Error::other("injected commit failure"))
+                } else {
+                    fs::write(path, source)
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("injected commit failure unexpectedly succeeded");
+
+        let message = error.to_string();
+        assert!(message.contains("injected commit failure"), "{error}");
+        assert!(message.contains("changed during rollback"), "{error}");
+        assert_eq!(fs::read_to_string(first).unwrap(), "first concurrent edit");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second original");
+    }
+
+    #[test]
+    fn does_not_replace_destination_when_staging_fails() {
+        let file = ResolverFile::new();
+        let target = file.directory.join("target.rs");
+        fs::write(&target, "original").unwrap();
+        let mut staged_path = None;
+        let mut replacement_attempted = false;
+
+        let error = replace_file_with(
+            &target,
+            "updated",
+            |staged: &Path, file: &mut fs::File, source: &str| {
+                staged_path = Some(staged.to_owned());
+                std::io::Write::write_all(file, &source.as_bytes()[..3])?;
+                Err(std::io::Error::other("injected staging failure"))
+            },
+            |_: &Path, _: &Path| {
+                replacement_attempted = true;
+                Ok(())
+            },
+        )
+        .expect_err("injected staging failure unexpectedly succeeded");
+
+        assert!(error.to_string().contains("injected staging failure"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        assert!(!replacement_attempted);
+        let staged_path = staged_path.expect("no staging path was provided");
+        assert_eq!(staged_path.parent(), target.parent());
+        assert_ne!(staged_path, target);
+        assert!(!staged_path.exists());
+    }
+
+    #[test]
+    fn reports_commit_and_rollback_failures() {
+        let file = ResolverFile::new();
+        let first = file.directory.join("first.rs");
+        let second = file.directory.join("second.rs");
+        let third = file.directory.join("third.rs");
+        fs::write(&first, "first original").unwrap();
+        fs::write(&second, "second original").unwrap();
+        fs::write(&third, "third original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: first.clone(),
+                original: Some("first original".to_owned()),
+                updated: "first updated".to_owned(),
+            },
+            PlannedWrite {
+                path: second.clone(),
+                original: Some("second original".to_owned()),
+                updated: "second updated".to_owned(),
+            },
+            PlannedWrite {
+                path: third.clone(),
+                original: Some("third original".to_owned()),
+                updated: "third updated".to_owned(),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                match attempts {
+                    3 => Err(std::io::Error::other("injected commit failure")),
+                    4 => Err(std::io::Error::other("injected rollback failure")),
+                    _ => fs::write(path, source),
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("injected failures unexpectedly succeeded");
+        let message = error.to_string();
+
+        assert!(message.contains("injected commit failure"), "{error}");
+        assert!(message.contains("injected rollback failure"), "{error}");
+        assert_eq!(fs::read_to_string(first).unwrap(), "first original");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second updated");
+        assert_eq!(fs::read_to_string(third).unwrap(), "third original");
+    }
+
+    #[test]
+    fn rejects_cycle_forming_module_paths_before_writing() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = format!("#[path = \"resolvers.rs\"]\nmod cycle;\n{}", file.read());
+        fs::write(&file.path, &source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: String! }")
+            .expect_err("module cycle unexpectedly succeeded");
+
+        assert!(error.to_string().contains("#[path]"), "{error}");
+        assert_eq!(file.read(), source);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_external_modules_before_writing() {
+        use std::os::unix::fs::symlink;
+
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        let child_source = fs::read_to_string(&child).unwrap();
+        fs::remove_file(&child).unwrap();
+        let target = file.directory.join("target.rs");
+        fs::write(&target, &child_source).unwrap();
+        symlink(&target, &child).unwrap();
+        let entry_source = file.read();
+
+        assert!(matches!(
+            file.synchronize("type Query { hello: Int! }"),
+            Err(BuildError::Io { path, .. }) if path == child
+        ));
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(target).unwrap(), child_source);
+    }
+
+    #[test]
+    fn updates_resolver_moved_to_reachable_inline_module_in_place() {
+        let file = ResolverFile::new();
+        fs::write(
+            &file.path,
+            r#"
+pub struct Query;
+
+mod fields {
+    impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
+        for super::Query
+    {
+        type Output = ::std::string::String;
+
+        async fn resolve(
+            &self,
+            _context: &C,
+            _args: crate::generated::types::Query::hello::Args,
+        ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+            /* retain this body */
+            ::core::unimplemented!()
+        }
+    }
+}
+
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
+"#,
+        )
+        .unwrap();
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        let source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        let inline_items = ast
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Mod(module) if module.ident == "fields" => {
+                    module.content.as_ref().map(|(_, items)| items)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            field_output_in(inline_items, "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(source.contains("/* retain this body */"));
+        assert!(source.contains("for super::Query"));
+        assert!(!ast.items.iter().any(|item| {
+            matches!(item, Item::Impl(implementation)
+                if field_resolver_coordinate(implementation)
+                    == Some(("Query".to_owned(), "hello".to_owned())))
+        }));
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
+    fn updates_resolver_moved_to_reachable_nested_inline_module_in_place() {
+        let file = ResolverFile::new();
+        fs::write(
+            &file.path,
+            r#"
+pub struct Query;
+
+mod group {
+    mod fields {
+        impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
+            for super::super::Query
+        {
+            type Output = ::std::string::String;
+
+            async fn resolve(
+                &self,
+                _context: &C,
+                _args: crate::generated::types::Query::hello::Args,
+            ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+                /* retain this body */
+                ::core::unimplemented!()
+            }
+        }
+    }
+}
+
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
+"#,
+        )
+        .unwrap();
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        let source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        let group_items = ast
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Mod(module) if module.ident == "group" => {
+                    module.content.as_ref().map(|(_, items)| items)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let inline_items = group_items
+            .iter()
+            .find_map(|item| match item {
+                Item::Mod(module) if module.ident == "fields" => {
+                    module.content.as_ref().map(|(_, items)| items)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            field_output_in(inline_items, "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(source.contains("/* retain this body */"));
+        assert!(source.contains("for super::super::Query"));
+        assert!(!ast.items.iter().any(|item| {
+            matches!(item, Item::Impl(implementation)
+                if field_resolver_coordinate(implementation)
+                    == Some(("Query".to_owned(), "hello".to_owned())))
+        }));
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
         assert_eq!(file.read(), source);
     }
 
@@ -972,9 +2567,10 @@ mod tests {
         let file = ResolverFile::new();
         file.synchronize("type Query { hello: String! old: String! }")
             .unwrap();
-        let source = file.read().replace(
+        let source = file.read().replacen(
             "::core::unimplemented!()",
             "{ /* retain this comment */ Ok(String::from(\"hello\")) }",
+            1,
         );
         fs::write(&file.path, &source).unwrap();
 
@@ -1179,6 +2775,13 @@ mod tests {
             ),
             (
                 format!("{source}\n{}", &source[source.rfind("impl<").unwrap()..]),
+                "Duplicate field resolver",
+            ),
+            (
+                format!(
+                    "{source}\nmod fields {{\n{}\n}}",
+                    &source[source.rfind("impl<").unwrap()..]
+                ),
                 "Duplicate field resolver",
             ),
             (

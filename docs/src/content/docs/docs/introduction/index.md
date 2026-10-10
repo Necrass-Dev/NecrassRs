@@ -34,9 +34,9 @@ developers to write the business logic in ordinary Rust resolver bodies.
   during ordinary Cargo builds. After project initialization, schema changes do
   not require a separate CLI generation command.
 - **Resolver source synchronization.** Builds create new resolver stubs and preserve
-  the bodies of retained fields. Deleted or renamed fields remove their old
-  resolver declarations, including their bodies; unrelated application code is
-  preserved.
+  the bodies of retained fields. Deleted or renamed fields remove untouched
+  generated stubs; an edited body, attribute, or comment stops synchronization
+  until you remove or migrate it. Unrelated application code is preserved.
 - **Typed async resolvers.** Generated argument types and resolver traits connect
   GraphQL inputs and results to Rust types. The compiler checks implementations
   against those contracts, and async methods can borrow request Context.

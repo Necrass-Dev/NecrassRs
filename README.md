@@ -48,10 +48,10 @@ type Query {
 }
 ```
 
-Cargo runs `build.rs`, which calls `necrassrs_build::build("schema")`. The build library validates the SDL, generates argument types and resolver contracts, and synchronizes editable resolver declarations in `src/resolvers.rs`.
+Cargo runs `build.rs`, which calls `necrassrs_build::build("schema")`. The build library validates the SDL, generates argument types and resolver contracts, and synchronizes editable resolver declarations reachable from `src/resolvers.rs`.
 
 > [!IMPORTANT]
-> Cargo builds write disposable generated code to `OUT_DIR` and update `src/resolvers.rs`. Retained fields keep their resolver bodies. Deleting or renaming a field removes its old resolver declaration, including any user-written body.
+> Cargo builds write disposable generated code to `OUT_DIR` and update resolver source files. Retained fields keep their resolver bodies. Deleting or renaming a field removes an untouched generated stub, but a resolver with an edited body, attribute, or comment stops synchronization until you remove or migrate it.
 
 The starter already includes this working resolver:
 
@@ -75,7 +75,7 @@ impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::hello, C> for
 
 Your application owns routing and request Context construction. At runtime, NecrassRs validates the request, dispatches selected fields to your resolvers, and builds the GraphQL response. Return `ResolverError` for ordinary application errors.
 
-Follow the [Tutorial](docs/src/content/docs/docs/guide/tutorial.md) to define a schema, implement resolvers, and query a running web server. Continue with the [Personnel Management System](docs/src/content/docs/docs/guide/personnel-management.md) for Object, Interface, and Union results. See [Types](docs/src/content/docs/docs/manual/types.md) for Rust type mappings, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
+Follow the [Tutorial](docs/src/content/docs/docs/guide/tutorial.md) to define a schema, implement resolvers, and query a running web server. Continue with the [Personnel Management System](docs/src/content/docs/docs/guide/personnel-management.md) for Object, Interface, and Union results. See [Organizing Resolver Files](docs/src/content/docs/docs/manual/resolver-files.md) to split implementations across Rust modules, and [Types](docs/src/content/docs/docs/manual/types.md) for Rust type mappings, input defaults and presence, OneOf, and recursive inputs. These examples describe the source checkout; older resolved Git revisions do not contain this support.
 
 ## Everyday development
 
@@ -84,18 +84,18 @@ Follow the [Tutorial](docs/src/content/docs/docs/guide/tutorial.md) to define a 
 3. Implement new resolver bodies in `src/resolvers.rs`.
 4. Run `cargo run` and query the server.
 
-Generated contracts in `OUT_DIR` are disposable. In `src/resolvers.rs`, SDL owns resolver declarations, while you own retained resolver bodies and unrelated application code.
+Generated contracts in `OUT_DIR` are disposable. In the resolver source tree, SDL owns resolver declarations, while you own retained resolver bodies and unrelated application code.
 
 | File | Purpose |
 | --- | --- |
 | `schema/**/*.graphql` | Your public GraphQL contract |
 | `build.rs` | Calls the build library during Cargo builds |
 | `src/main.rs` | Routing, request Context construction, and server setup |
-| `src/resolvers.rs` | Build-managed resolver declarations with your resolver bodies and application state |
+| `src/resolvers.rs`, `src/resolvers/` | Build-managed resolver declarations with your resolver bodies and application state |
 | `src/generated.rs` | Includes generated code from `OUT_DIR` |
 | `OUT_DIR/necrassrs.rs` | Disposable contracts, argument types, embedded SDL, and dispatch; do not edit |
 
-**Builds update `src/resolvers.rs`.** Retained fields keep their resolver bodies, new fields receive `unimplemented!()` stubs, and deleted fields lose their resolver declarations, including their bodies. Renaming a field deletes the old declaration and adds a fresh stub. Unrelated application code is preserved; retained bodies may need edits when arguments or result types change.
+**Builds update resolver source files.** Retained fields keep their resolver bodies, and new fields receive `unimplemented!()` stubs in `src/resolvers.rs`. A deleted or renamed field loses its old declaration only when it remains an untouched generated stub. An edited body, comment, or attribute stops synchronization so you can remove or migrate it explicitly. Unrelated application code is preserved; retained bodies may need edits when arguments or result types change. See [Organizing Resolver Files](docs/src/content/docs/docs/manual/resolver-files.md) for supported module layouts and recovery behavior.
 
 The starter configures `panic = "abort"` for development and release builds. Calling an unimplemented resolver terminates the process; unselected fields are not called. This setting affects all panics. Ordinary resolver errors return GraphQL responses.
 
