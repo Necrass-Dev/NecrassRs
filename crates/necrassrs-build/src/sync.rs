@@ -120,6 +120,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             watched_paths.extend(external.paths);
             writes.extend(external.writes);
             update_existing(
+                path,
                 source,
                 &object,
                 &resolver,
@@ -170,7 +171,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
 }
 
 struct ExternalReconciliation {
-    fields: BTreeSet<(String, String)>,
+    fields: BTreeMap<(String, String), PathBuf>,
     paths: BTreeSet<PathBuf>,
     writes: Vec<PlannedWrite>,
 }
@@ -194,7 +195,7 @@ fn reconcile_external_modules(
         .iter()
         .map(|resolver| (resolver.coordinate(), resolver))
         .collect::<BTreeMap<_, _>>();
-    let mut fields = BTreeSet::new();
+    let mut fields = BTreeMap::new();
     let mut paths = BTreeSet::new();
     let mut writes = Vec::new();
 
@@ -218,7 +219,7 @@ fn reconcile_external_children(
     parent_path: &Path,
     parent: &syn::File,
     desired: &BTreeMap<(String, String), &FieldResolver>,
-    fields: &mut BTreeSet<(String, String)>,
+    fields: &mut BTreeMap<(String, String), PathBuf>,
     paths: &mut BTreeSet<PathBuf>,
     writes: &mut Vec<PlannedWrite>,
 ) -> Result<(), BuildError> {
@@ -243,24 +244,47 @@ fn reconcile_external_children_in(
     items: &[Item],
     module_directory: &Path,
     desired: &BTreeMap<(String, String), &FieldResolver>,
-    fields: &mut BTreeSet<(String, String)>,
+    fields: &mut BTreeMap<(String, String), PathBuf>,
     paths: &mut BTreeSet<PathBuf>,
     writes: &mut Vec<PlannedWrite>,
 ) -> Result<(), BuildError> {
+    if let Some(item) = items.iter().find_map(|item| match item {
+        Item::Macro(item) if item.ident.is_none() => Some(item),
+        _ => None,
+    }) {
+        let path = &item.mac.path;
+        return Err(BuildError::ResolverSource {
+            path: source_path.to_owned(),
+            source: syn::Error::new_spanned(
+                item,
+                format!(
+                    "Resolver module discovery does not support {}!",
+                    quote!(#path)
+                ),
+            ),
+        });
+    }
     for module in items.iter().filter_map(|item| match item {
         Item::Mod(module) => Some(module),
         _ => None,
     }) {
-        if module
-            .attrs
-            .iter()
-            .any(|attribute| attribute.path().is_ident("path"))
-        {
+        let unsupported_attribute = module.attrs.iter().find_map(|attribute| {
+            if attribute.path().is_ident("path") {
+                Some("path")
+            } else if attribute.path().is_ident("cfg") {
+                Some("cfg")
+            } else if attribute.path().is_ident("cfg_attr") {
+                Some("cfg_attr")
+            } else {
+                None
+            }
+        });
+        if let Some(attribute) = unsupported_attribute {
             return Err(BuildError::ResolverSource {
                 path: source_path.to_owned(),
                 source: syn::Error::new_spanned(
                     module,
-                    "Resolver modules with #[path] are not supported",
+                    format!("Resolver modules with #[{attribute}] are not supported"),
                 ),
             });
         }
@@ -295,7 +319,19 @@ fn reconcile_external_children_in(
                     ),
                 });
             }
-            (false, false) => file_path,
+            (false, false) => {
+                return Err(BuildError::ResolverSource {
+                    path: source_path.to_owned(),
+                    source: syn::Error::new_spanned(
+                        module,
+                        format!(
+                            "Resolver module source does not exist; expected {} or {}",
+                            file_path.display(),
+                            mod_path.display()
+                        ),
+                    ),
+                });
+            }
         };
         let source = read_existing(&path)?.ok_or_else(|| BuildError::Io {
             path: path.clone(),
@@ -322,15 +358,20 @@ fn reconcile_external_children_in(
             let Some(resolver) = desired.get(&coordinate) else {
                 continue;
             };
-            if !fields.insert(coordinate) {
+            if let Some(first_path) = fields.get(&coordinate) {
                 return Err(BuildError::ResolverSource {
                     path: path.clone(),
                     source: syn::Error::new_spanned(
                         implementation,
-                        "Duplicate field resolver implementations are ambiguous",
+                        format!(
+                            "Duplicate field resolver implementations are ambiguous; found in {} and {}",
+                            first_path.display(),
+                            path.display()
+                        ),
                     ),
                 });
             }
+            fields.insert(coordinate, path.clone());
             anchor.get_or_insert(implementation);
             reconcile_field_resolver(implementation, resolver, &mut edits, false).map_err(
                 |source| BuildError::ResolverSource {
@@ -339,11 +380,13 @@ fn reconcile_external_children_in(
                 },
             )?;
         }
-        let inline_anchor = reconcile_inline_modules(&ast.items, desired, fields, &mut edits)
-            .map_err(|source| BuildError::ResolverSource {
-                path: path.clone(),
-                source,
-            })?;
+        let inline_anchor = reconcile_inline_modules(
+            &ast.items, desired, fields, &path, &mut edits,
+        )
+        .map_err(|source| BuildError::ResolverSource {
+            path: path.clone(),
+            source,
+        })?;
         anchor = anchor.or(inline_anchor);
         let updated = match anchor {
             Some(anchor) => {
@@ -411,12 +454,13 @@ fn read_existing(path: &Path) -> Result<Option<String>, BuildError> {
 }
 
 fn update_existing(
+    path: &Path,
     source: &str,
     object: &syn::Ident,
     resolver: &syn::Ident,
     objects: &[syn::Ident],
     field_resolvers: &[FieldResolver],
-    external_fields: &BTreeSet<(String, String)>,
+    external_fields: &BTreeMap<(String, String), PathBuf>,
 ) -> syn::Result<String> {
     let ast = syn::parse_file(source)?;
     // parse_file removes these prefixes before assigning token byte ranges.
@@ -448,23 +492,28 @@ fn update_existing(
         &ast.items,
         &desired_fields,
         &mut relocated_fields,
+        path,
         &mut edits,
     )?;
     let local_field_resolvers = field_resolvers
         .iter()
-        .filter(|resolver| !relocated_fields.contains(&resolver.coordinate()))
+        .filter(|resolver| !relocated_fields.contains_key(&resolver.coordinate()))
         .cloned()
         .collect::<Vec<_>>();
     for implementation in ast.items.iter().filter_map(|item| match item {
         Item::Impl(item) => Some(item),
         _ => None,
     }) {
-        if field_resolver_coordinate(implementation)
-            .is_some_and(|coordinate| relocated_fields.contains(&coordinate))
+        if let Some(first_path) = field_resolver_coordinate(implementation)
+            .and_then(|coordinate| relocated_fields.get(&coordinate))
         {
             return Err(syn::Error::new_spanned(
                 implementation,
-                "Duplicate field resolver implementations are ambiguous",
+                format!(
+                    "Duplicate field resolver implementations are ambiguous; found in {} and {}",
+                    first_path.display(),
+                    path.display()
+                ),
             ));
         }
     }
@@ -502,7 +551,8 @@ fn update_existing(
 fn reconcile_inline_modules<'a>(
     items: &'a [Item],
     desired_fields: &BTreeMap<(String, String), &FieldResolver>,
-    relocated_fields: &mut BTreeSet<(String, String)>,
+    relocated_fields: &mut BTreeMap<(String, String), PathBuf>,
+    source_path: &Path,
     edits: &mut Vec<Edit>,
 ) -> syn::Result<Option<&'a syn::ItemImpl>> {
     let mut anchor = None;
@@ -520,18 +570,27 @@ fn reconcile_inline_modules<'a>(
             let Some(resolver) = desired_fields.get(&coordinate) else {
                 continue;
             };
-            if !relocated_fields.insert(coordinate) {
+            if let Some(first_path) = relocated_fields.get(&coordinate) {
                 return Err(syn::Error::new_spanned(
                     implementation,
-                    "Duplicate field resolver implementations are ambiguous",
+                    format!(
+                        "Duplicate field resolver implementations are ambiguous; found in {} and {}",
+                        first_path.display(),
+                        source_path.display()
+                    ),
                 ));
             }
+            relocated_fields.insert(coordinate, source_path.to_owned());
             anchor.get_or_insert(implementation);
             reconcile_field_resolver(implementation, resolver, edits, false)?;
         }
-        if let Some(nested_anchor) =
-            reconcile_inline_modules(inline_items, desired_fields, relocated_fields, edits)?
-        {
+        if let Some(nested_anchor) = reconcile_inline_modules(
+            inline_items,
+            desired_fields,
+            relocated_fields,
+            source_path,
+            edits,
+        )? {
             anchor.get_or_insert(nested_anchor);
         }
     }
