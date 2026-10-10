@@ -1,6 +1,11 @@
 use apollo_compiler::{Schema, ast::Type as GraphqlType, schema::ExtendedType, validation::Valid};
 use quote::{ToTokens, format_ident, quote};
-use std::{collections::BTreeMap, fs, ops::Range, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    ops::Range,
+    path::{Path, PathBuf},
+};
 use syn::{GenericArgument, Item, PathArguments, Type, ext::IdentExt, spanned::Spanned};
 
 use crate::{BuildError, codegen};
@@ -71,6 +76,8 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         );
     }
 
+    let mut writes = Vec::new();
+    let mut watched_paths = BTreeSet::from([path.to_owned()]);
     let updated = match existing
         .as_deref()
         .filter(|source| !source.trim().is_empty())
@@ -108,26 +115,169 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                     "\n"
                 }
         }
-        Some(source) => update_existing(source, &object, &resolver, &objects, &field_resolvers)
-            .map_err(source_error)?,
+        Some(source) => {
+            let external = reconcile_direct_external_modules(path, source, &field_resolvers)?;
+            watched_paths.extend(external.paths);
+            writes.extend(external.writes);
+            update_existing(
+                source,
+                &object,
+                &resolver,
+                &objects,
+                &field_resolvers,
+                &external.fields,
+            )
+            .map_err(source_error)?
+        }
     };
     syn::parse_file(&updated).map_err(source_error)?;
 
     if existing.as_deref() != Some(updated.as_str()) {
-        if read_existing(path)? != existing {
-            return Err(source_error(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Resolver source changed during synchronization",
-            )));
-        }
-        // ponytail: direct writes are not atomic; use atomic replacement if required later.
-        fs::write(path, updated).map_err(|source| BuildError::Io {
+        writes.push(PlannedWrite {
             path: path.to_owned(),
+            original: existing,
+            updated,
+        });
+    }
+    if writes.len() > 1 {
+        return Err(source_error(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "Resolver synchronization cannot modify multiple source files in one run yet",
+        )));
+    }
+    for write in &writes {
+        if read_existing(&write.path)? != write.original {
+            return Err(BuildError::ResolverSource {
+                path: write.path.clone(),
+                source: syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "Resolver source changed during synchronization",
+                ),
+            });
+        }
+    }
+    for write in writes {
+        // ponytail: direct writes are not atomic; issue #48 adds multi-file commit guarantees.
+        fs::write(&write.path, write.updated).map_err(|source| BuildError::Io {
+            path: write.path,
             source,
         })?;
     }
-    println!("cargo::rerun-if-changed={}", path.display());
+    for path in watched_paths {
+        println!("cargo::rerun-if-changed={}", path.display());
+    }
     Ok(())
+}
+
+struct ExternalReconciliation {
+    fields: BTreeSet<(String, String)>,
+    paths: BTreeSet<PathBuf>,
+    writes: Vec<PlannedWrite>,
+}
+
+struct PlannedWrite {
+    path: PathBuf,
+    original: Option<String>,
+    updated: String,
+}
+
+fn reconcile_direct_external_modules(
+    entry_path: &Path,
+    entry_source: &str,
+    field_resolvers: &[FieldResolver],
+) -> Result<ExternalReconciliation, BuildError> {
+    let entry = syn::parse_file(entry_source).map_err(|source| BuildError::ResolverSource {
+        path: entry_path.to_owned(),
+        source,
+    })?;
+    let desired = field_resolvers
+        .iter()
+        .map(|resolver| (resolver.coordinate(), resolver))
+        .collect::<BTreeMap<_, _>>();
+    let mut fields = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    let mut writes = Vec::new();
+
+    for module in entry.items.iter().filter_map(|item| match item {
+        Item::Mod(module) if module.content.is_none() => Some(module),
+        _ => None,
+    }) {
+        // shortcut: follow direct `name.rs` modules first; nested and `mod.rs` support follow their RED tests.
+        let path = entry_path
+            .with_extension("")
+            .join(format!("{}.rs", module.ident.unraw()));
+        let source = read_existing(&path)?.ok_or_else(|| BuildError::Io {
+            path: path.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Resolver module source does not exist",
+            ),
+        })?;
+        let ast = syn::parse_file(&source).map_err(|source| BuildError::ResolverSource {
+            path: path.clone(),
+            source,
+        })?;
+        let source_offset = if source.starts_with('\u{feff}') { 3 } else { 0 }
+            + ast.shebang.as_ref().map_or(0, String::len);
+        let mut edits = Vec::new();
+        let mut anchor = None;
+        for implementation in ast.items.iter().filter_map(|item| match item {
+            Item::Impl(item) => Some(item),
+            _ => None,
+        }) {
+            let Some(coordinate) = field_resolver_coordinate(implementation) else {
+                continue;
+            };
+            let Some(resolver) = desired.get(&coordinate) else {
+                continue;
+            };
+            if !fields.insert(coordinate) {
+                return Err(BuildError::ResolverSource {
+                    path: path.clone(),
+                    source: syn::Error::new_spanned(
+                        implementation,
+                        "Duplicate field resolver implementations are ambiguous",
+                    ),
+                });
+            }
+            anchor.get_or_insert(implementation);
+            reconcile_field_resolver(implementation, resolver, &mut edits, false).map_err(
+                |source| BuildError::ResolverSource {
+                    path: path.clone(),
+                    source,
+                },
+            )?;
+        }
+        let updated = match anchor {
+            Some(anchor) => {
+                apply_edits(&source, source_offset, anchor, edits).map_err(|source| {
+                    BuildError::ResolverSource {
+                        path: path.clone(),
+                        source,
+                    }
+                })?
+            }
+            None => source.clone(),
+        };
+        syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
+            path: path.clone(),
+            source,
+        })?;
+        paths.insert(path.clone());
+        if updated != source {
+            writes.push(PlannedWrite {
+                path,
+                original: Some(source),
+                updated,
+            });
+        }
+    }
+
+    Ok(ExternalReconciliation {
+        fields,
+        paths,
+        writes,
+    })
 }
 
 fn read_existing(path: &Path) -> Result<Option<String>, BuildError> {
@@ -162,6 +312,7 @@ fn update_existing(
     resolver: &syn::Ident,
     objects: &[syn::Ident],
     field_resolvers: &[FieldResolver],
+    external_fields: &BTreeSet<(String, String)>,
 ) -> syn::Result<String> {
     let ast = syn::parse_file(source)?;
     // parse_file removes these prefixes before assigning token byte ranges.
@@ -184,7 +335,25 @@ fn update_existing(
             field_resolver.receiver = root_receiver.clone();
         }
     }
-    let desired_fields = reconcile_field_resolvers(&ast, &field_resolvers, &mut edits)?;
+    let local_field_resolvers = field_resolvers
+        .iter()
+        .filter(|resolver| !external_fields.contains(&resolver.coordinate()))
+        .cloned()
+        .collect::<Vec<_>>();
+    for implementation in ast.items.iter().filter_map(|item| match item {
+        Item::Impl(item) => Some(item),
+        _ => None,
+    }) {
+        if field_resolver_coordinate(implementation)
+            .is_some_and(|coordinate| external_fields.contains(&coordinate))
+        {
+            return Err(syn::Error::new_spanned(
+                implementation,
+                "Duplicate field resolver implementations are ambiguous",
+            ));
+        }
+    }
+    let desired_fields = reconcile_field_resolvers(&ast, &local_field_resolvers, &mut edits)?;
 
     let defined_types = ast
         .items
@@ -298,7 +467,7 @@ fn reconcile_field_resolvers<'a>(
             ));
         }
         if let Some(resolver) = desired_fields.remove(&coordinate) {
-            reconcile_field_resolver(item, resolver, edits)?;
+            reconcile_field_resolver(item, resolver, edits, true)?;
         } else {
             edits.push(Edit {
                 range: item.span().byte_range(),
@@ -313,14 +482,18 @@ fn reconcile_field_resolver(
     implementation: &syn::ItemImpl,
     resolver: &FieldResolver,
     edits: &mut Vec<Edit>,
+    update_receiver: bool,
 ) -> syn::Result<()> {
-    let current_receiver = &implementation.self_ty;
-    let desired_receiver = receiver_with_existing_arguments(&resolver.receiver, current_receiver)?;
-    if quote!(#current_receiver).to_string() != quote!(#desired_receiver).to_string() {
-        edits.push(Edit {
-            range: implementation.self_ty.span().byte_range(),
-            replacement: quote!(#desired_receiver).to_string(),
-        });
+    if update_receiver {
+        let current_receiver = &implementation.self_ty;
+        let desired_receiver =
+            receiver_with_existing_arguments(&resolver.receiver, current_receiver)?;
+        if quote!(#current_receiver).to_string() != quote!(#desired_receiver).to_string() {
+            edits.push(Edit {
+                range: implementation.self_ty.span().byte_range(),
+                replacement: quote!(#desired_receiver).to_string(),
+            });
+        }
     }
     let (output, resolve) = field_resolver_items(implementation)?;
     validate_resolve(resolve)?;
@@ -921,7 +1094,13 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
             ":: core :: primitive :: i32"
         );
         assert!(child_source.contains("/* retain this body */"));
+        assert!(child_source.contains("for super::Query"));
         assert!(!file.read().contains("fields::r#Query::r#hello"));
+
+        let entry_source = file.read();
+        file.synchronize("type Query { hello: Int! }").unwrap();
+        assert_eq!(fs::read_to_string(child).unwrap(), child_source);
+        assert_eq!(file.read(), entry_source);
     }
 
     #[test]
