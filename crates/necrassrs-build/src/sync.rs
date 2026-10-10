@@ -1829,6 +1829,38 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
     }
 
     #[test]
+    fn does_not_replace_destination_when_staging_fails() {
+        let file = ResolverFile::new();
+        let target = file.directory.join("target.rs");
+        fs::write(&target, "original").unwrap();
+        let mut staged_path = None;
+        let mut replacement_attempted = false;
+
+        let error = replace_file_with(
+            &target,
+            "updated",
+            |staged: &Path, source: &str| {
+                staged_path = Some(staged.to_owned());
+                fs::write(staged, &source[..3])?;
+                Err(std::io::Error::other("injected staging failure"))
+            },
+            |_: &Path, _: &Path| {
+                replacement_attempted = true;
+                Ok(())
+            },
+        )
+        .expect_err("injected staging failure unexpectedly succeeded");
+
+        assert!(error.to_string().contains("injected staging failure"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        assert!(!replacement_attempted);
+        let staged_path = staged_path.expect("no staging path was provided");
+        assert_eq!(staged_path.parent(), target.parent());
+        assert_ne!(staged_path, target);
+        assert!(!staged_path.exists());
+    }
+
+    #[test]
     fn reports_commit_and_rollback_failures() {
         let file = ResolverFile::new();
         let first = file.directory.join("first.rs");
