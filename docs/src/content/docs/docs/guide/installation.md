@@ -93,7 +93,8 @@ GraphiQL loads browser assets from `esm.sh` and needs network access. See
 
 Retained fields keep their existing resolver bodies. New fields receive
 `unimplemented!()` stubs, which you must implement before calling them. Deleting
-or renaming a field removes its old resolver declaration, including its body.
+or renaming a field removes an untouched generated stub. If you edited its body,
+attributes, or comments, synchronization stops until you remove or migrate it.
 
 After initialization, ordinary builds and runs use Cargo; the CLI is not needed
 for schema changes. The starter configures `panic = "abort"` in development and
@@ -106,6 +107,8 @@ Return `ResolverError` for ordinary application errors.
 - [Personnel Management System](/docs/personnel-management/): add Object, Interface,
   and Union results to a working server.
 - [Types](/docs/types/): Rust type mappings, input presence, defaults, OneOf, and recursion.
+- [Organizing Resolver Files](/docs/resolver-files/): split implementations across
+  Rust modules and understand synchronization safety.
 - [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
 
 These pages follow the source checkout from which this site is built; they do not

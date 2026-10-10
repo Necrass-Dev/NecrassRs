@@ -212,11 +212,14 @@ type mappings, `GraphQLInput`, defaults, OneOf inputs, and recursive inputs.
 Stop the server with Ctrl+C, edit `schema/schema.graphql`, and run `cargo build`
 again. Rebuilding adds new resolver stubs and retains existing resolver bodies.
 Argument changes update generated `Args`; bodies that depend on removed or changed
-fields need manual edits. For a retained field, Cargo updates `type Output` when
+fields need manual edits. Direct access to a removed argument stops synchronization
+before resolver files are changed. For a retained field, Cargo updates `type Output` when
 its result category, list wrapper, or nullability changes while preserving the
 `resolve` body and parameter bindings. The body must still return the new Rust
 type. New enum results use `crate::generated::types::<Enum>`. Deleting or
-renaming a field removes its old resolver declaration and body.
+renaming a field removes an untouched generated stub; a user-edited resolver must
+be removed or migrated explicitly. See [Organizing Resolver Files](/docs/resolver-files/)
+to split implementations across modules and review synchronization safety.
 
 Implement new resolver stubs, then restart the server with `cargo run`. Refresh
 GraphiQL to explore the updated schema and execute your new queries. Continue with
