@@ -326,6 +326,12 @@ fn reconcile_external_children_in(
                 },
             )?;
         }
+        let inline_anchor = reconcile_inline_modules(&ast.items, desired, fields, &mut edits)
+            .map_err(|source| BuildError::ResolverSource {
+                path: path.clone(),
+                source,
+            })?;
+        anchor = anchor.or(inline_anchor);
         let updated = match anchor {
             Some(anchor) => {
                 apply_edits(&source, source_offset, anchor, edits).map_err(|source| {
@@ -425,8 +431,7 @@ fn update_existing(
         .map(|resolver| (resolver.coordinate(), resolver))
         .collect::<BTreeMap<_, _>>();
     let mut relocated_fields = external_fields.clone();
-    // shortcut: inline resolver implementations in external files follow their RED test.
-    reconcile_inline_modules(
+    let _ = reconcile_inline_modules(
         &ast.items,
         &desired_fields,
         &mut relocated_fields,
@@ -481,12 +486,13 @@ fn update_existing(
     apply_edits(source, source_offset, implementation, edits)
 }
 
-fn reconcile_inline_modules(
-    items: &[Item],
+fn reconcile_inline_modules<'a>(
+    items: &'a [Item],
     desired_fields: &BTreeMap<(String, String), &FieldResolver>,
     relocated_fields: &mut BTreeSet<(String, String)>,
     edits: &mut Vec<Edit>,
-) -> syn::Result<()> {
+) -> syn::Result<Option<&'a syn::ItemImpl>> {
+    let mut anchor = None;
     for inline_items in items.iter().filter_map(|item| match item {
         Item::Mod(module) => module.content.as_ref().map(|(_, items)| items),
         _ => None,
@@ -507,11 +513,16 @@ fn reconcile_inline_modules(
                     "Duplicate field resolver implementations are ambiguous",
                 ));
             }
+            anchor.get_or_insert(implementation);
             reconcile_field_resolver(implementation, resolver, edits, false)?;
         }
-        reconcile_inline_modules(inline_items, desired_fields, relocated_fields, edits)?;
+        if let Some(nested_anchor) =
+            reconcile_inline_modules(inline_items, desired_fields, relocated_fields, edits)?
+        {
+            anchor.get_or_insert(nested_anchor);
+        }
     }
-    Ok(())
+    Ok(anchor)
 }
 
 fn query_resolver_implementation<'a>(
