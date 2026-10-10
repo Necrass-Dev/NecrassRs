@@ -202,10 +202,29 @@ fn reconcile_direct_external_modules(
         Item::Mod(module) if module.content.is_none() => Some(module),
         _ => None,
     }) {
-        // shortcut: follow direct `name.rs` modules first; nested and `mod.rs` support follow their RED tests.
-        let path = entry_path
-            .with_extension("")
-            .join(format!("{}.rs", module.ident.unraw()));
+        // shortcut: follow direct external modules first; nested and inline modules follow their RED tests.
+        let module_directory = entry_path.with_extension("");
+        let module_name = module.ident.unraw().to_string();
+        let file_path = module_directory.join(format!("{module_name}.rs"));
+        let mod_path = module_directory.join(&module_name).join("mod.rs");
+        let path = match (source_exists(&file_path)?, source_exists(&mod_path)?) {
+            (true, false) => file_path,
+            (false, true) => mod_path,
+            (true, true) => {
+                return Err(BuildError::ResolverSource {
+                    path: entry_path.to_owned(),
+                    source: syn::Error::new_spanned(
+                        module,
+                        format!(
+                            "Resolver module is ambiguous; both {} and {} exist",
+                            file_path.display(),
+                            mod_path.display()
+                        ),
+                    ),
+                });
+            }
+            (false, false) => file_path,
+        };
         let source = read_existing(&path)?.ok_or_else(|| BuildError::Io {
             path: path.clone(),
             source: std::io::Error::new(
@@ -278,6 +297,17 @@ fn reconcile_direct_external_modules(
         paths,
         writes,
     })
+}
+
+fn source_exists(path: &Path) -> Result<bool, BuildError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(BuildError::Io {
+            path: path.to_owned(),
+            source,
+        }),
+    }
 }
 
 fn read_existing(path: &Path) -> Result<Option<String>, BuildError> {
