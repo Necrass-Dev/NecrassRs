@@ -393,30 +393,13 @@ fn update_existing(
         .map(|resolver| (resolver.coordinate(), resolver))
         .collect::<BTreeMap<_, _>>();
     let mut relocated_fields = external_fields.clone();
-    // shortcut: follow direct inline modules; nested modules follow their RED tests.
-    for inline_items in ast.items.iter().filter_map(|item| match item {
-        Item::Mod(module) => module.content.as_ref().map(|(_, items)| items),
-        _ => None,
-    }) {
-        for implementation in inline_items.iter().filter_map(|item| match item {
-            Item::Impl(item) => Some(item),
-            _ => None,
-        }) {
-            let Some(coordinate) = field_resolver_coordinate(implementation) else {
-                continue;
-            };
-            let Some(resolver) = desired_fields.get(&coordinate) else {
-                continue;
-            };
-            if !relocated_fields.insert(coordinate) {
-                return Err(syn::Error::new_spanned(
-                    implementation,
-                    "Duplicate field resolver implementations are ambiguous",
-                ));
-            }
-            reconcile_field_resolver(implementation, resolver, &mut edits, false)?;
-        }
-    }
+    // shortcut: follow inline modules only in the entry source; mixed module graphs follow their RED tests.
+    reconcile_inline_modules(
+        &ast.items,
+        &desired_fields,
+        &mut relocated_fields,
+        &mut edits,
+    )?;
     let local_field_resolvers = field_resolvers
         .iter()
         .filter(|resolver| !relocated_fields.contains(&resolver.coordinate()))
@@ -464,6 +447,39 @@ fn update_existing(
     }
 
     apply_edits(source, source_offset, implementation, edits)
+}
+
+fn reconcile_inline_modules(
+    items: &[Item],
+    desired_fields: &BTreeMap<(String, String), &FieldResolver>,
+    relocated_fields: &mut BTreeSet<(String, String)>,
+    edits: &mut Vec<Edit>,
+) -> syn::Result<()> {
+    for inline_items in items.iter().filter_map(|item| match item {
+        Item::Mod(module) => module.content.as_ref().map(|(_, items)| items),
+        _ => None,
+    }) {
+        for implementation in inline_items.iter().filter_map(|item| match item {
+            Item::Impl(item) => Some(item),
+            _ => None,
+        }) {
+            let Some(coordinate) = field_resolver_coordinate(implementation) else {
+                continue;
+            };
+            let Some(resolver) = desired_fields.get(&coordinate) else {
+                continue;
+            };
+            if !relocated_fields.insert(coordinate) {
+                return Err(syn::Error::new_spanned(
+                    implementation,
+                    "Duplicate field resolver implementations are ambiguous",
+                ));
+            }
+            reconcile_field_resolver(implementation, resolver, edits, false)?;
+        }
+        reconcile_inline_modules(inline_items, desired_fields, relocated_fields, edits)?;
+    }
+    Ok(())
 }
 
 fn query_resolver_implementation<'a>(
