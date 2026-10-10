@@ -251,6 +251,19 @@ fn reconcile_external_children_in(
         Item::Mod(module) => Some(module),
         _ => None,
     }) {
+        if module
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("path"))
+        {
+            return Err(BuildError::ResolverSource {
+                path: source_path.to_owned(),
+                source: syn::Error::new_spanned(
+                    module,
+                    "Resolver modules with #[path] are not supported",
+                ),
+            });
+        }
         let module_name = module.ident.unraw().to_string();
         if let Some((_, inline_items)) = &module.content {
             reconcile_external_children_in(
@@ -1341,6 +1354,31 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         let file = ResolverFile::new();
         let child = write_inline_resolver_below_external_module(&file);
         assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
+    }
+
+    #[test]
+    fn rejects_path_overridden_module_before_writing() {
+        let file = ResolverFile::new();
+        let conventional = write_external_resolver(&file, "resolvers/fields.rs");
+        let entry_source = file
+            .read()
+            .replace("mod fields;", "#[path = \"custom_fields.rs\"]\nmod fields;");
+        fs::write(&file.path, &entry_source).unwrap();
+        let conventional_source = fs::read_to_string(&conventional).unwrap();
+        let custom = file.directory.join("custom_fields.rs");
+        fs::write(&custom, &conventional_source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: Int! }")
+            .expect_err("#[path] module unexpectedly succeeded");
+
+        assert!(error.to_string().contains("#[path]"), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(
+            fs::read_to_string(conventional).unwrap(),
+            conventional_source
+        );
+        assert_eq!(fs::read_to_string(custom).unwrap(), conventional_source);
     }
 
     #[test]
