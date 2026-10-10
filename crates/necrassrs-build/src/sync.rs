@@ -1281,6 +1281,22 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         child
     }
 
+    fn assert_unsupported_module_syntax_is_rejected(declaration: &str, expected: &str) {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        let entry_source = file.read().replace("mod fields;", declaration);
+        fs::write(&file.path, &entry_source).unwrap();
+        let child_source = fs::read_to_string(&child).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: Int! }")
+            .expect_err("unsupported module syntax unexpectedly succeeded");
+
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(child).unwrap(), child_source);
+    }
+
     fn assert_external_resolver_is_updated(file: &ResolverFile, child: &Path, receiver: &str) {
         file.synchronize("type Query { hello: Int! }").unwrap();
 
@@ -1379,6 +1395,104 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
             conventional_source
         );
         assert_eq!(fs::read_to_string(custom).unwrap(), conventional_source);
+    }
+
+    #[test]
+    fn rejects_cfg_gated_module_before_writing() {
+        assert_unsupported_module_syntax_is_rejected("#[cfg(any())]\nmod fields;", "#[cfg]");
+    }
+
+    #[test]
+    fn rejects_cfg_attr_overridden_module_before_writing() {
+        assert_unsupported_module_syntax_is_rejected(
+            "#[cfg_attr(all(), path = \"custom_fields.rs\")]\nmod fields;",
+            "#[cfg_attr]",
+        );
+    }
+
+    #[test]
+    fn rejects_included_resolvers_before_writing() {
+        assert_unsupported_module_syntax_is_rejected(
+            "include!(\"resolvers/fields.rs\");",
+            "include!",
+        );
+    }
+
+    #[test]
+    fn rejects_macro_created_modules_before_writing() {
+        assert_unsupported_module_syntax_is_rejected("resolver_modules!();", "resolver_modules!");
+    }
+
+    #[test]
+    fn reports_both_conventional_paths_for_a_missing_module() {
+        let file = ResolverFile::new();
+        fs::write(
+            &file.path,
+            r#"
+pub struct Query;
+
+mod fields;
+
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
+"#,
+        )
+        .unwrap();
+        let entry_source = file.read();
+
+        let error = file
+            .synchronize("type Query { hello: String! }")
+            .expect_err("missing resolver module unexpectedly succeeded");
+        let message = error.to_string();
+
+        assert!(
+            matches!(&error, BuildError::ResolverSource { path, .. } if path == &file.path),
+            "{error}"
+        );
+        assert!(
+            message.contains(
+                &file
+                    .directory
+                    .join("resolvers/fields.rs")
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+        assert!(
+            message.contains(
+                &file
+                    .directory
+                    .join("resolvers/fields/mod.rs")
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+        assert_eq!(file.read(), entry_source);
+    }
+
+    #[test]
+    fn reports_all_duplicate_resolver_locations_before_writing() {
+        let file = ResolverFile::new();
+        let first = write_external_resolver(&file, "resolvers/fields.rs");
+        let entry_source = file
+            .read()
+            .replace("mod fields;", "mod fields;\nmod other;");
+        fs::write(&file.path, &entry_source).unwrap();
+        let first_source = fs::read_to_string(&first).unwrap();
+        let second = file.directory.join("resolvers/other.rs");
+        fs::write(&second, &first_source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: Int! }")
+            .expect_err("duplicate resolver implementations unexpectedly succeeded");
+        let message = error.to_string();
+
+        assert!(message.contains(&first.display().to_string()), "{error}");
+        assert!(message.contains(&second.display().to_string()), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(first).unwrap(), first_source);
+        assert_eq!(fs::read_to_string(second).unwrap(), first_source);
     }
 
     #[test]
