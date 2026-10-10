@@ -171,12 +171,68 @@ struct PlannedWrite {
 }
 
 fn commit_writes(writes: Vec<PlannedWrite>) -> Result<(), BuildError> {
-    // shortcut: crash recovery follows the atomic replacement RED test.
-    commit_writes_with(
-        writes,
-        |path, source| fs::write(path, source),
-        |path| fs::remove_file(path),
+    commit_writes_with(writes, replace_file, |path| fs::remove_file(path))
+}
+
+fn replace_file(path: &Path, source: &str) -> std::io::Result<()> {
+    replace_file_with(
+        path,
+        source,
+        |_, staged, source| {
+            match fs::metadata(path) {
+                Ok(metadata) => staged.set_permissions(metadata.permissions())?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            std::io::Write::write_all(staged, source.as_bytes())
+        },
+        |staged, target| fs::rename(staged, target),
     )
+}
+
+fn replace_file_with(
+    path: &Path,
+    source: &str,
+    write_staged: impl FnOnce(&Path, &mut fs::File, &str) -> std::io::Result<()>,
+    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    static NEXT_STAGING_FILE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut attempt = 0;
+    let (staged_path, mut staged) = loop {
+        let sequence = NEXT_STAGING_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let staged_path = parent.join(format!(".necrassrs-{}-{sequence}.tmp", std::process::id()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_path)
+        {
+            Ok(staged) => break (staged_path, staged),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 127 => {
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+
+    let result = write_staged(&staged_path, &mut staged, source);
+    drop(staged);
+    let result = result.and_then(|()| replace(&staged_path, path));
+    if let Err(error) = result {
+        return match fs::remove_file(&staged_path) {
+            Ok(()) => Err(error),
+            Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => Err(error),
+            Err(cleanup) => Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}; could not remove staging file {}: {cleanup}",
+                    staged_path.display()
+                ),
+            )),
+        };
+    }
+    Ok(())
 }
 
 fn commit_writes_with(
@@ -1839,9 +1895,9 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         let error = replace_file_with(
             &target,
             "updated",
-            |staged: &Path, source: &str| {
+            |staged: &Path, file: &mut fs::File, source: &str| {
                 staged_path = Some(staged.to_owned());
-                fs::write(staged, &source[..3])?;
+                std::io::Write::write_all(file, &source.as_bytes()[..3])?;
                 Err(std::io::Error::other("injected staging failure"))
             },
             |_: &Path, _: &Path| {
