@@ -1033,27 +1033,9 @@ mod tests {
         ast.to_token_stream().to_string()
     }
 
-    #[test]
-    fn creates_resolvers_and_preserves_unchanged_source() {
-        let file = ResolverFile::new();
-        file.synchronize("type Query { hello: String! }").unwrap();
-        let source = file.read();
-        let ast = syn::parse_file(&source).unwrap();
-        assert!(matches!(&ast.items[0], Item::Struct(item) if item.ident == "Query"));
-        assert!(source.contains("fields::r#Query::r#hello"));
-        assert!(source.contains("async fn resolve"));
-        assert!(source.contains("unimplemented"));
-
-        file.synchronize("type Query { hello: String! }").unwrap();
-        assert_eq!(file.read(), source);
-    }
-
-    #[test]
-    fn updates_resolver_moved_to_reachable_external_module_in_place() {
-        let file = ResolverFile::new();
-        let module_directory = file.directory.join("resolvers");
-        let child = module_directory.join("fields.rs");
-        fs::create_dir(&module_directory).unwrap();
+    fn write_external_resolver(file: &ResolverFile, relative_path: &str) -> std::path::PathBuf {
+        let child = file.directory.join(relative_path);
+        fs::create_dir_all(child.parent().unwrap()).unwrap();
         fs::write(
             &file.path,
             r#"
@@ -1085,10 +1067,13 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
 "#,
         )
         .unwrap();
+        child
+    }
 
+    fn assert_external_resolver_is_updated(file: &ResolverFile, child: &Path) {
         file.synchronize("type Query { hello: Int! }").unwrap();
 
-        let child_source = fs::read_to_string(&child).unwrap();
+        let child_source = fs::read_to_string(child).unwrap();
         assert_eq!(
             field_output(&child_source, "Query", "hello"),
             ":: core :: primitive :: i32"
@@ -1101,6 +1086,35 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         file.synchronize("type Query { hello: Int! }").unwrap();
         assert_eq!(fs::read_to_string(child).unwrap(), child_source);
         assert_eq!(file.read(), entry_source);
+    }
+
+    #[test]
+    fn creates_resolvers_and_preserves_unchanged_source() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        assert!(matches!(&ast.items[0], Item::Struct(item) if item.ident == "Query"));
+        assert!(source.contains("fields::r#Query::r#hello"));
+        assert!(source.contains("async fn resolve"));
+        assert!(source.contains("unimplemented"));
+
+        file.synchronize("type Query { hello: String! }").unwrap();
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
+    fn updates_resolver_moved_to_reachable_external_module_in_place() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        assert_external_resolver_is_updated(&file, &child);
+    }
+
+    #[test]
+    fn updates_resolver_moved_to_reachable_mod_rs_module_in_place() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields/mod.rs");
+        assert_external_resolver_is_updated(&file, &child);
     }
 
     #[test]
