@@ -1546,6 +1546,52 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
     }
 
     #[test]
+    fn rejects_removing_a_comment_modified_stub_before_writing() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! old: String! }")
+            .unwrap();
+        let mut source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        let implementation = field_implementation_in(&ast.items, "Query", "old").unwrap();
+        let range = implementation.span().byte_range();
+        let offset = source[range.clone()]
+            .find("::core::unimplemented!()")
+            .unwrap();
+        source.insert_str(
+            range.start + offset,
+            "/* keep this explanation */\n        ",
+        );
+        fs::write(&file.path, &source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: String! }")
+            .expect_err("comment-modified stub was removed");
+
+        assert!(error.to_string().contains("Query.old"), "{error}");
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
+    fn rejects_removing_an_argument_used_by_a_retained_body() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello(name: String!): String! }")
+            .unwrap();
+        let source = mutate_resolve(&file.read(), |resolve| {
+            resolve.block = syn::parse_quote!({ Ok(_args.name) });
+        });
+        fs::write(&file.path, &source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: String! }")
+            .expect_err("used resolver argument was removed");
+
+        let message = error.to_string();
+        assert!(message.contains("Query.hello"), "{error}");
+        assert!(message.contains("name"), "{error}");
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
     fn creates_resolvers_and_preserves_unchanged_source() {
         let file = ResolverFile::new();
         file.synchronize("type Query { hello: String! }").unwrap();
@@ -1942,6 +1988,95 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         assert_eq!(fs::read_to_string(first).unwrap(), "first original");
         assert!(!created.exists());
         assert_eq!(fs::read_to_string(third).unwrap(), "third original");
+    }
+
+    #[test]
+    fn detects_source_changes_before_each_replacement() {
+        let file = ResolverFile::new();
+        let first = file.directory.join("first.rs");
+        let second = file.directory.join("second.rs");
+        fs::write(&first, "first original").unwrap();
+        fs::write(&second, "second original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: first.clone(),
+                original: Some("first original".to_owned()),
+                updated: "first updated".to_owned(),
+            },
+            PlannedWrite {
+                path: second.clone(),
+                original: Some("second original".to_owned()),
+                updated: "second updated".to_owned(),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                fs::write(path, source)?;
+                if attempts == 1 {
+                    fs::write(&second, "second concurrent edit")?;
+                }
+                Ok(())
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("concurrent source change was overwritten");
+
+        assert!(
+            error.to_string().contains("changed during synchronization"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(first).unwrap(), "first original");
+        assert_eq!(
+            fs::read_to_string(second).unwrap(),
+            "second concurrent edit"
+        );
+    }
+
+    #[test]
+    fn does_not_rollback_over_a_concurrent_source_change() {
+        let file = ResolverFile::new();
+        let first = file.directory.join("first.rs");
+        let second = file.directory.join("second.rs");
+        fs::write(&first, "first original").unwrap();
+        fs::write(&second, "second original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: first.clone(),
+                original: Some("first original".to_owned()),
+                updated: "first updated".to_owned(),
+            },
+            PlannedWrite {
+                path: second.clone(),
+                original: Some("second original".to_owned()),
+                updated: "second updated".to_owned(),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                if attempts == 2 {
+                    fs::write(&first, "first concurrent edit")?;
+                    Err(std::io::Error::other("injected commit failure"))
+                } else {
+                    fs::write(path, source)
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("injected commit failure unexpectedly succeeded");
+
+        let message = error.to_string();
+        assert!(message.contains("injected commit failure"), "{error}");
+        assert!(message.contains("changed during rollback"), "{error}");
+        assert_eq!(fs::read_to_string(first).unwrap(), "first concurrent edit");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second original");
     }
 
     #[test]
