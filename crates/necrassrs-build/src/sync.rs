@@ -151,13 +151,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             });
         }
     }
-    for write in writes {
-        // shortcut: multi-file rollback follows the commit-failure RED test.
-        fs::write(&write.path, write.updated).map_err(|source| BuildError::Io {
-            path: write.path,
-            source,
-        })?;
-    }
+    commit_writes(writes)?;
     for path in watched_paths {
         println!("cargo::rerun-if-changed={}", path.display());
     }
@@ -174,6 +168,59 @@ struct PlannedWrite {
     path: PathBuf,
     original: Option<String>,
     updated: String,
+}
+
+fn commit_writes(writes: Vec<PlannedWrite>) -> Result<(), BuildError> {
+    // shortcut: crash recovery follows the atomic replacement RED test.
+    commit_writes_with(
+        writes,
+        |path, source| fs::write(path, source),
+        |path| fs::remove_file(path),
+    )
+}
+
+fn commit_writes_with(
+    writes: Vec<PlannedWrite>,
+    mut write_file: impl FnMut(&Path, &str) -> std::io::Result<()>,
+    mut remove_file: impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), BuildError> {
+    for (index, write) in writes.iter().enumerate() {
+        let Err(source) = write_file(&write.path, &write.updated) else {
+            continue;
+        };
+        let failed_path = write.path.clone();
+        let commit_error = source.to_string();
+        let mut rollback_failure = None;
+        for applied in writes[..=index].iter().rev() {
+            let result = match &applied.original {
+                Some(original) => write_file(&applied.path, original),
+                None => match remove_file(&applied.path) {
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    result => result,
+                },
+            };
+            if let Err(source) = result
+                && rollback_failure.is_none()
+            {
+                rollback_failure = Some((applied.path.clone(), source));
+            }
+        }
+        if let Some((rollback_path, rollback_error)) = rollback_failure {
+            return Err(BuildError::Io {
+                path: rollback_path.clone(),
+                source: std::io::Error::other(format!(
+                    "Commit failed for {}: {commit_error}; rollback failed for {}: {rollback_error}",
+                    failed_path.display(),
+                    rollback_path.display()
+                )),
+            });
+        }
+        return Err(BuildError::Io {
+            path: failed_path,
+            source,
+        });
+    }
+    Ok(())
 }
 
 fn reconcile_external_modules(
@@ -1732,6 +1779,94 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             .unwrap();
         assert_eq!(fs::read_to_string(first).unwrap(), first_updated);
         assert_eq!(fs::read_to_string(second).unwrap(), second_updated);
+    }
+
+    #[test]
+    fn rolls_back_applied_files_when_commit_fails() {
+        let file = ResolverFile::new();
+        let first = file.directory.join("first.rs");
+        let created = file.directory.join("created.rs");
+        let third = file.directory.join("third.rs");
+        fs::write(&first, "first original").unwrap();
+        fs::write(&third, "third original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: first.clone(),
+                original: Some("first original".to_owned()),
+                updated: "first updated".to_owned(),
+            },
+            PlannedWrite {
+                path: created.clone(),
+                original: None,
+                updated: "created".to_owned(),
+            },
+            PlannedWrite {
+                path: third.clone(),
+                original: Some("third original".to_owned()),
+                updated: "third updated".to_owned(),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                if attempts == 3 {
+                    Err(std::io::Error::other("injected commit failure"))
+                } else {
+                    fs::write(path, source)
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("injected commit failure unexpectedly succeeded");
+
+        assert!(error.to_string().contains("injected commit failure"));
+        assert_eq!(fs::read_to_string(first).unwrap(), "first original");
+        assert!(!created.exists());
+        assert_eq!(fs::read_to_string(third).unwrap(), "third original");
+    }
+
+    #[test]
+    fn reports_commit_and_rollback_failures() {
+        let file = ResolverFile::new();
+        let first = file.directory.join("first.rs");
+        let second = file.directory.join("second.rs");
+        fs::write(&first, "first original").unwrap();
+        fs::write(&second, "second original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: first.clone(),
+                original: Some("first original".to_owned()),
+                updated: "first updated".to_owned(),
+            },
+            PlannedWrite {
+                path: second.clone(),
+                original: Some("second original".to_owned()),
+                updated: "second updated".to_owned(),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                match attempts {
+                    2 => Err(std::io::Error::other("injected commit failure")),
+                    3 => Err(std::io::Error::other("injected rollback failure")),
+                    _ => fs::write(path, source),
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("injected failures unexpectedly succeeded");
+        let message = error.to_string();
+
+        assert!(message.contains("injected commit failure"), "{error}");
+        assert!(message.contains("injected rollback failure"), "{error}");
+        assert_eq!(fs::read_to_string(first).unwrap(), "first original");
     }
 
     #[test]
