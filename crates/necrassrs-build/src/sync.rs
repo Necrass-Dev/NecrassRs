@@ -268,6 +268,9 @@ fn reconcile_external_children_in(
         Item::Mod(module) => Some(module),
         _ => None,
     }) {
+        if is_cfg_test_module(module) {
+            continue;
+        }
         let unsupported_attribute = module.attrs.iter().find_map(|attribute| {
             if attribute.path().is_ident("path") {
                 Some("path")
@@ -427,6 +430,15 @@ fn source_exists(path: &Path) -> Result<bool, BuildError> {
     }
 }
 
+fn is_cfg_test_module(module: &syn::ItemMod) -> bool {
+    module.attrs.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute
+                .parse_args::<syn::Ident>()
+                .is_ok_and(|condition| condition == "test")
+    })
+}
+
 fn read_existing(path: &Path) -> Result<Option<String>, BuildError> {
     let read = || -> std::io::Result<Option<String>> {
         if let Some(parent) = path.parent()
@@ -557,7 +569,9 @@ fn reconcile_inline_modules<'a>(
 ) -> syn::Result<Option<&'a syn::ItemImpl>> {
     let mut anchor = None;
     for inline_items in items.iter().filter_map(|item| match item {
-        Item::Mod(module) => module.content.as_ref().map(|(_, items)| items),
+        Item::Mod(module) if !is_cfg_test_module(module) => {
+            module.content.as_ref().map(|(_, items)| items)
+        }
         _ => None,
     }) {
         for implementation in inline_items.iter().filter_map(|item| match item {
@@ -1462,6 +1476,21 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
     }
 
     #[test]
+    fn ignores_cfg_test_inline_modules_during_discovery() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = format!(
+            "{}\n#[cfg(test)]\nmod tests {{\n    resolver_modules!();\n}}\n",
+            file.read()
+        );
+        fs::write(&file.path, &source).unwrap();
+
+        file.synchronize("type Query { hello: String! }").unwrap();
+
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
     fn rejects_cfg_attr_overridden_module_before_writing() {
         assert_unsupported_module_syntax_is_rejected(
             "#[cfg_attr(all(), path = \"custom_fields.rs\")]\nmod fields;",
@@ -1552,6 +1581,193 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         assert_eq!(file.read(), entry_source);
         assert_eq!(fs::read_to_string(first).unwrap(), first_source);
         assert_eq!(fs::read_to_string(second).unwrap(), first_source);
+    }
+
+    #[test]
+    fn rediscovers_a_scaffolded_resolver_after_it_is_moved() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        let implementation = field_implementation_in(&ast.items, "Query", "hello").unwrap();
+        let range = implementation.span().byte_range();
+        let child_source = source[range.clone()].replace("for self::Query", "for super::Query");
+        let mut entry_source = source;
+        entry_source.replace_range(range, "mod fields;");
+        fs::write(&file.path, &entry_source).unwrap();
+        let child = file.directory.join("resolvers/fields.rs");
+        fs::create_dir_all(child.parent().unwrap()).unwrap();
+        fs::write(&child, child_source).unwrap();
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        assert_eq!(
+            field_output(&fs::read_to_string(&child).unwrap(), "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(
+            field_implementation_in(
+                &syn::parse_file(&file.read()).unwrap().items,
+                "Query",
+                "hello"
+            )
+            .is_none()
+        );
+        let updated_entry = file.read();
+        let updated_child = fs::read_to_string(&child).unwrap();
+        file.synchronize("type Query { hello: Int! }").unwrap();
+        assert_eq!(file.read(), updated_entry);
+        assert_eq!(fs::read_to_string(child).unwrap(), updated_child);
+    }
+
+    #[test]
+    fn ignores_unreachable_rust_files() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let unreachable = file.directory.join("unreachable.rs");
+        fs::write(&unreachable, "not valid Rust source").unwrap();
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(unreachable).unwrap(),
+            "not valid Rust source"
+        );
+        assert_eq!(
+            field_output(&file.read(), "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+    }
+
+    #[test]
+    fn does_not_claim_alias_or_glob_resolver_traits() {
+        let cases = [
+            (
+                "use ::necrassrs::Resolver as FieldResolver;",
+                "FieldResolver",
+            ),
+            ("use ::necrassrs::*;", "Resolver"),
+        ];
+        for (import, trait_name) in cases {
+            let file = ResolverFile::new();
+            file.synchronize("type Query { hello: String! }").unwrap();
+            let source = file.read();
+            let aliased = source.replacen(
+                "::necrassrs::Resolver<crate::generated::fields",
+                &format!("{trait_name}<crate::generated::fields"),
+                1,
+            );
+            assert_ne!(aliased, source);
+            fs::write(&file.path, format!("{import}\n{aliased}")).unwrap();
+
+            file.synchronize("type Query { hello: String! }").unwrap();
+
+            let updated = file.read();
+            let exact_matches = syn::parse_file(&updated)
+                .unwrap()
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Impl(implementation) => field_resolver_coordinate(implementation),
+                    _ => None,
+                })
+                .filter(|coordinate| coordinate == &("Query".to_owned(), "hello".to_owned()))
+                .count();
+            assert_eq!(exact_matches, 1);
+            assert_eq!(updated.matches("type Output").count(), 2);
+            file.synchronize("type Query { hello: String! }").unwrap();
+            assert_eq!(file.read(), updated);
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_conventional_module_paths_before_writing() {
+        let file = ResolverFile::new();
+        let module_file = write_external_resolver(&file, "resolvers/fields.rs");
+        let module_source = fs::read_to_string(&module_file).unwrap();
+        let mod_file = file.directory.join("resolvers/fields/mod.rs");
+        fs::create_dir_all(mod_file.parent().unwrap()).unwrap();
+        fs::write(&mod_file, &module_source).unwrap();
+        let entry_source = file.read();
+
+        let error = file
+            .synchronize("type Query { hello: Int! }")
+            .expect_err("ambiguous module paths unexpectedly succeeded");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(&module_file.display().to_string()),
+            "{error}"
+        );
+        assert!(message.contains(&mod_file.display().to_string()), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(module_file).unwrap(), module_source);
+        assert_eq!(fs::read_to_string(mod_file).unwrap(), module_source);
+    }
+
+    #[test]
+    fn rejects_multi_file_updates_before_writing() {
+        let file = ResolverFile::new();
+        let first = write_external_resolver(&file, "resolvers/first.rs");
+        let entry_source = file
+            .read()
+            .replace("mod fields;", "mod first;\nmod second;");
+        fs::write(&file.path, &entry_source).unwrap();
+        let first_source = fs::read_to_string(&first).unwrap();
+        let second = file.directory.join("resolvers/second.rs");
+        let second_source = first_source.replace("hello", "goodbye");
+        fs::write(&second, &second_source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: Int! goodbye: Int! }")
+            .expect_err("multi-file update unexpectedly succeeded");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot modify multiple source files"),
+            "{error}"
+        );
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(first).unwrap(), first_source);
+        assert_eq!(fs::read_to_string(second).unwrap(), second_source);
+    }
+
+    #[test]
+    fn rejects_cycle_forming_module_paths_before_writing() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { hello: String! }").unwrap();
+        let source = format!("#[path = \"resolvers.rs\"]\nmod cycle;\n{}", file.read());
+        fs::write(&file.path, &source).unwrap();
+
+        let error = file
+            .synchronize("type Query { hello: String! }")
+            .expect_err("module cycle unexpectedly succeeded");
+
+        assert!(error.to_string().contains("#[path]"), "{error}");
+        assert_eq!(file.read(), source);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_external_modules_before_writing() {
+        use std::os::unix::fs::symlink;
+
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        let child_source = fs::read_to_string(&child).unwrap();
+        fs::remove_file(&child).unwrap();
+        let target = file.directory.join("target.rs");
+        fs::write(&target, &child_source).unwrap();
+        symlink(&target, &child).unwrap();
+        let entry_source = file.read();
+
+        assert!(matches!(
+            file.synchronize("type Query { hello: Int! }"),
+            Err(BuildError::Io { path, .. }) if path == child
+        ));
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(target).unwrap(), child_source);
     }
 
     #[test]
