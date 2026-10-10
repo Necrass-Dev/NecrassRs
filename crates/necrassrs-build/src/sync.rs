@@ -1152,10 +1152,13 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         child
     }
 
-    fn write_nested_external_resolver(file: &ResolverFile) -> std::path::PathBuf {
+    fn write_nested_external_resolver(
+        file: &ResolverFile,
+        module_path: &str,
+    ) -> std::path::PathBuf {
         let child = write_external_resolver(file, "resolvers/group/fields.rs");
         fs::write(&file.path, file.read().replace("mod fields;", "mod group;")).unwrap();
-        fs::write(file.directory.join("resolvers/group.rs"), "mod fields;\n").unwrap();
+        fs::write(file.directory.join(module_path), "mod fields;\n").unwrap();
         fs::write(
             &child,
             fs::read_to_string(&child)
@@ -1216,7 +1219,14 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
     #[test]
     fn updates_resolver_moved_to_reachable_nested_external_module_in_place() {
         let file = ResolverFile::new();
-        let child = write_nested_external_resolver(&file);
+        let child = write_nested_external_resolver(&file, "resolvers/group.rs");
+        assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
+    }
+
+    #[test]
+    fn updates_resolver_moved_below_reachable_nested_mod_rs_module_in_place() {
+        let file = ResolverFile::new();
+        let child = write_nested_external_resolver(&file, "resolvers/group/mod.rs");
         assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
     }
 
