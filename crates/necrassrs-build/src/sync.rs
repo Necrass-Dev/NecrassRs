@@ -1294,6 +1294,77 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
     }
 
     #[test]
+    fn updates_resolver_moved_to_reachable_nested_inline_module_in_place() {
+        let file = ResolverFile::new();
+        fs::write(
+            &file.path,
+            r#"
+pub struct Query;
+
+mod group {
+    mod fields {
+        impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
+            for super::super::Query
+        {
+            type Output = ::std::string::String;
+
+            async fn resolve(
+                &self,
+                _context: &C,
+                _args: crate::generated::types::Query::hello::Args,
+            ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+                /* retain this body */
+                ::core::unimplemented!()
+            }
+        }
+    }
+}
+
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
+"#,
+        )
+        .unwrap();
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        let source = file.read();
+        let ast = syn::parse_file(&source).unwrap();
+        let group_items = ast
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Mod(module) if module.ident == "group" => {
+                    module.content.as_ref().map(|(_, items)| items)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let inline_items = group_items
+            .iter()
+            .find_map(|item| match item {
+                Item::Mod(module) if module.ident == "fields" => {
+                    module.content.as_ref().map(|(_, items)| items)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            field_output_in(inline_items, "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(source.contains("/* retain this body */"));
+        assert!(source.contains("for super::super::Query"));
+        assert!(!ast.items.iter().any(|item| {
+            matches!(item, Item::Impl(implementation)
+                if field_resolver_coordinate(implementation)
+                    == Some(("Query".to_owned(), "hello".to_owned())))
+        }));
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+        assert_eq!(file.read(), source);
+    }
+
+    #[test]
     fn whitespace_only_source_bootstraps_resolvers() {
         let file = ResolverFile::new();
         fs::write(&file.path, "  \n\t\n").unwrap();
