@@ -1114,19 +1114,28 @@ mod tests {
         field_output_in(&ast.items, object, field)
     }
 
+    fn field_implementation_in<'a>(
+        items: &'a [Item],
+        object: &str,
+        field: &str,
+    ) -> Option<&'a syn::ItemImpl> {
+        items.iter().find_map(|item| match item {
+            Item::Impl(item)
+                if field_resolver_coordinate(item)
+                    == Some((object.to_owned(), field.to_owned())) =>
+            {
+                Some(item)
+            }
+            Item::Mod(module) => module
+                .content
+                .as_ref()
+                .and_then(|(_, items)| field_implementation_in(items, object, field)),
+            _ => None,
+        })
+    }
+
     fn field_output_in(items: &[Item], object: &str, field: &str) -> String {
-        let implementation = items
-            .iter()
-            .find_map(|item| match item {
-                Item::Impl(item)
-                    if field_resolver_coordinate(item)
-                        == Some((object.to_owned(), field.to_owned())) =>
-                {
-                    Some(item)
-                }
-                _ => None,
-            })
-            .unwrap();
+        let implementation = field_implementation_in(items, object, field).unwrap();
         let output = implementation
             .items
             .iter()
@@ -1238,6 +1247,16 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         child
     }
 
+    fn write_inline_resolver_below_external_module(file: &ResolverFile) -> std::path::PathBuf {
+        let child = write_external_resolver(file, "resolvers/group.rs");
+        fs::write(&file.path, file.read().replace("mod fields;", "mod group;")).unwrap();
+        let source = fs::read_to_string(&child)
+            .unwrap()
+            .replace("for super::Query", "for super::super::Query");
+        fs::write(&child, format!("mod fields {{\n{source}\n}}\n")).unwrap();
+        child
+    }
+
     fn assert_external_resolver_is_updated(file: &ResolverFile, child: &Path, receiver: &str) {
         file.synchronize("type Query { hello: Int! }").unwrap();
 
@@ -1303,6 +1322,13 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
     fn updates_resolver_moved_below_reachable_inline_module_in_place() {
         let file = ResolverFile::new();
         let child = write_external_resolver_below_inline_module(&file);
+        assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
+    }
+
+    #[test]
+    fn updates_resolver_moved_into_inline_module_in_reachable_external_file() {
+        let file = ResolverFile::new();
+        let child = write_inline_resolver_below_external_module(&file);
         assert_external_resolver_is_updated(&file, &child, "for super::super::Query");
     }
 
