@@ -140,12 +140,6 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             updated,
         });
     }
-    if writes.len() > 1 {
-        return Err(source_error(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "Resolver synchronization cannot modify multiple source files in one run yet",
-        )));
-    }
     for write in &writes {
         if read_existing(&write.path)? != write.original {
             return Err(BuildError::ResolverSource {
@@ -158,7 +152,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         }
     }
     for write in writes {
-        // ponytail: direct writes are not atomic; issue #48 adds multi-file commit guarantees.
+        // shortcut: multi-file rollback follows the commit-failure RED test.
         fs::write(&write.path, write.updated).map_err(|source| BuildError::Io {
             path: write.path,
             source,
