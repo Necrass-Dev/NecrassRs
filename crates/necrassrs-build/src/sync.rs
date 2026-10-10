@@ -202,7 +202,7 @@ fn reconcile_direct_external_modules(
         Item::Mod(module) if module.content.is_none() => Some(module),
         _ => None,
     }) {
-        // shortcut: follow direct external modules first; nested and inline modules follow their RED tests.
+        // shortcut: follow direct external modules; nested modules follow their RED tests.
         let module_directory = entry_path.with_extension("");
         let module_name = module.ident.unraw().to_string();
         let file_path = module_directory.join(format!("{module_name}.rs"));
@@ -365,9 +365,38 @@ fn update_existing(
             field_resolver.receiver = root_receiver.clone();
         }
     }
+    let desired_fields = field_resolvers
+        .iter()
+        .map(|resolver| (resolver.coordinate(), resolver))
+        .collect::<BTreeMap<_, _>>();
+    let mut relocated_fields = external_fields.clone();
+    // shortcut: follow direct inline modules; nested modules follow their RED tests.
+    for inline_items in ast.items.iter().filter_map(|item| match item {
+        Item::Mod(module) => module.content.as_ref().map(|(_, items)| items),
+        _ => None,
+    }) {
+        for implementation in inline_items.iter().filter_map(|item| match item {
+            Item::Impl(item) => Some(item),
+            _ => None,
+        }) {
+            let Some(coordinate) = field_resolver_coordinate(implementation) else {
+                continue;
+            };
+            let Some(resolver) = desired_fields.get(&coordinate) else {
+                continue;
+            };
+            if !relocated_fields.insert(coordinate) {
+                return Err(syn::Error::new_spanned(
+                    implementation,
+                    "Duplicate field resolver implementations are ambiguous",
+                ));
+            }
+            reconcile_field_resolver(implementation, resolver, &mut edits, false)?;
+        }
+    }
     let local_field_resolvers = field_resolvers
         .iter()
-        .filter(|resolver| !external_fields.contains(&resolver.coordinate()))
+        .filter(|resolver| !relocated_fields.contains(&resolver.coordinate()))
         .cloned()
         .collect::<Vec<_>>();
     for implementation in ast.items.iter().filter_map(|item| match item {
@@ -375,7 +404,7 @@ fn update_existing(
         _ => None,
     }) {
         if field_resolver_coordinate(implementation)
-            .is_some_and(|coordinate| external_fields.contains(&coordinate))
+            .is_some_and(|coordinate| relocated_fields.contains(&coordinate))
         {
             return Err(syn::Error::new_spanned(
                 implementation,
@@ -1514,6 +1543,13 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             ),
             (
                 format!("{source}\n{}", &source[source.rfind("impl<").unwrap()..]),
+                "Duplicate field resolver",
+            ),
+            (
+                format!(
+                    "{source}\nmod fields {{\n{}\n}}",
+                    &source[source.rfind("impl<").unwrap()..]
+                ),
                 "Duplicate field resolver",
             ),
             (
