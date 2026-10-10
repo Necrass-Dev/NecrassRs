@@ -116,7 +116,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 }
         }
         Some(source) => {
-            let external = reconcile_direct_external_modules(path, source, &field_resolvers)?;
+            let external = reconcile_external_modules(path, source, &field_resolvers)?;
             watched_paths.extend(external.paths);
             writes.extend(external.writes);
             update_existing(
@@ -181,7 +181,7 @@ struct PlannedWrite {
     updated: String,
 }
 
-fn reconcile_direct_external_modules(
+fn reconcile_external_modules(
     entry_path: &Path,
     entry_source: &str,
     field_resolvers: &[FieldResolver],
@@ -198,12 +198,36 @@ fn reconcile_direct_external_modules(
     let mut paths = BTreeSet::new();
     let mut writes = Vec::new();
 
-    for module in entry.items.iter().filter_map(|item| match item {
+    reconcile_external_children(
+        entry_path,
+        &entry,
+        &desired,
+        &mut fields,
+        &mut paths,
+        &mut writes,
+    )?;
+
+    Ok(ExternalReconciliation {
+        fields,
+        paths,
+        writes,
+    })
+}
+
+fn reconcile_external_children(
+    parent_path: &Path,
+    parent: &syn::File,
+    desired: &BTreeMap<(String, String), &FieldResolver>,
+    fields: &mut BTreeSet<(String, String)>,
+    paths: &mut BTreeSet<PathBuf>,
+    writes: &mut Vec<PlannedWrite>,
+) -> Result<(), BuildError> {
+    for module in parent.items.iter().filter_map(|item| match item {
         Item::Mod(module) if module.content.is_none() => Some(module),
         _ => None,
     }) {
-        // shortcut: follow direct external modules; nested modules follow their RED tests.
-        let module_directory = entry_path.with_extension("");
+        // shortcut: nested mod.rs parents follow their RED test.
+        let module_directory = parent_path.with_extension("");
         let module_name = module.ident.unraw().to_string();
         let file_path = module_directory.join(format!("{module_name}.rs"));
         let mod_path = module_directory.join(&module_name).join("mod.rs");
@@ -212,7 +236,7 @@ fn reconcile_direct_external_modules(
             (false, true) => mod_path,
             (true, true) => {
                 return Err(BuildError::ResolverSource {
-                    path: entry_path.to_owned(),
+                    path: parent_path.to_owned(),
                     source: syn::Error::new_spanned(
                         module,
                         format!(
@@ -282,6 +306,7 @@ fn reconcile_direct_external_modules(
             path: path.clone(),
             source,
         })?;
+        reconcile_external_children(&path, &ast, desired, fields, paths, writes)?;
         paths.insert(path.clone());
         if updated != source {
             writes.push(PlannedWrite {
@@ -291,12 +316,7 @@ fn reconcile_direct_external_modules(
             });
         }
     }
-
-    Ok(ExternalReconciliation {
-        fields,
-        paths,
-        writes,
-    })
+    Ok(())
 }
 
 fn source_exists(path: &Path) -> Result<bool, BuildError> {
