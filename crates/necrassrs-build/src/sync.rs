@@ -6,7 +6,9 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
 };
-use syn::{GenericArgument, Item, PathArguments, Type, ext::IdentExt, spanned::Spanned};
+use syn::{
+    GenericArgument, Item, PathArguments, Type, ext::IdentExt, spanned::Spanned, visit::Visit,
+};
 
 use crate::{BuildError, codegen};
 
@@ -47,6 +49,11 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 schema,
                 query.name.as_str(),
                 name.as_str(),
+                field
+                    .arguments
+                    .iter()
+                    .map(|argument| codegen::rust_name(argument.name.as_str()))
+                    .collect(),
                 &field.ty,
                 query.name.as_str(),
             )
@@ -68,6 +75,11 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                         schema,
                         object_name,
                         name.as_str(),
+                        field
+                            .arguments
+                            .iter()
+                            .map(|argument| codegen::rust_name(argument.name.as_str()))
+                            .collect(),
                         &field.ty,
                         query.name.as_str(),
                     )
@@ -241,42 +253,69 @@ fn commit_writes_with(
     mut remove_file: impl FnMut(&Path) -> std::io::Result<()>,
 ) -> Result<(), BuildError> {
     for (index, write) in writes.iter().enumerate() {
-        let Err(source) = write_file(&write.path, &write.updated) else {
+        let failure = match read_existing(&write.path) {
+            Ok(current) if current != write.original => Some(std::io::Error::other(
+                "Resolver source changed during synchronization",
+            )),
+            Ok(_) => write_file(&write.path, &write.updated).err(),
+            Err(error) => Some(std::io::Error::other(error.to_string())),
+        };
+        let Some(source) = failure else {
             continue;
         };
-        let failed_path = write.path.clone();
-        let commit_error = source.to_string();
-        let mut rollback_failure = None;
-        for applied in writes[..=index].iter().rev() {
-            let result = match &applied.original {
-                Some(original) => write_file(&applied.path, original),
-                None => match remove_file(&applied.path) {
+        return rollback_writes(
+            &writes[..index],
+            &write.path,
+            source,
+            &mut write_file,
+            &mut remove_file,
+        );
+    }
+    Ok(())
+}
+
+fn rollback_writes(
+    writes: &[PlannedWrite],
+    failed_path: &Path,
+    commit_error: std::io::Error,
+    write_file: &mut impl FnMut(&Path, &str) -> std::io::Result<()>,
+    remove_file: &mut impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), BuildError> {
+    let mut rollback_failure = None;
+    for write in writes.iter().rev() {
+        let result = match read_existing(&write.path) {
+            Ok(Some(current)) if current == write.updated => match &write.original {
+                Some(original) => write_file(&write.path, original),
+                None => match remove_file(&write.path) {
                     Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
                     result => result,
                 },
-            };
-            if let Err(source) = result
-                && rollback_failure.is_none()
-            {
-                rollback_failure = Some((applied.path.clone(), source));
-            }
+            },
+            Ok(_) => Err(std::io::Error::other(
+                "Resolver source changed during rollback",
+            )),
+            Err(error) => Err(std::io::Error::other(error.to_string())),
+        };
+        if let Err(source) = result
+            && rollback_failure.is_none()
+        {
+            rollback_failure = Some((write.path.clone(), source));
         }
-        if let Some((rollback_path, rollback_error)) = rollback_failure {
-            return Err(BuildError::Io {
-                path: rollback_path.clone(),
-                source: std::io::Error::other(format!(
-                    "Commit failed for {}: {commit_error}; rollback failed for {}: {rollback_error}",
-                    failed_path.display(),
-                    rollback_path.display()
-                )),
-            });
-        }
+    }
+    if let Some((rollback_path, rollback_error)) = rollback_failure {
         return Err(BuildError::Io {
-            path: failed_path,
-            source,
+            path: rollback_path.clone(),
+            source: std::io::Error::other(format!(
+                "Commit failed for {}: {commit_error}; rollback failed for {}: {rollback_error}",
+                failed_path.display(),
+                rollback_path.display()
+            )),
         });
     }
-    Ok(())
+    Err(BuildError::Io {
+        path: failed_path.to_owned(),
+        source: commit_error,
+    })
 }
 
 fn reconcile_external_modules(
@@ -457,12 +496,17 @@ fn reconcile_external_children_in(
             };
             let Some(resolver) = desired.get(&coordinate) else {
                 anchor.get_or_insert(implementation);
-                reconcile_stale_field_resolver(implementation, &coordinate, &mut edits).map_err(
-                    |source| BuildError::ResolverSource {
-                        path: path.clone(),
-                        source,
-                    },
-                )?;
+                reconcile_stale_field_resolver(
+                    implementation,
+                    &coordinate,
+                    &source,
+                    source_offset,
+                    &mut edits,
+                )
+                .map_err(|source| BuildError::ResolverSource {
+                    path: path.clone(),
+                    source,
+                })?;
                 continue;
             };
             if let Some(first_path) = fields.get(&coordinate) {
@@ -488,7 +532,13 @@ fn reconcile_external_children_in(
             )?;
         }
         let inline_anchor = reconcile_inline_modules(
-            &ast.items, desired, fields, &path, &mut edits,
+            &ast.items,
+            desired,
+            fields,
+            &path,
+            &source,
+            source_offset,
+            &mut edits,
         )
         .map_err(|source| BuildError::ResolverSource {
             path: path.clone(),
@@ -609,6 +659,8 @@ fn update_existing(
         &desired_fields,
         &mut relocated_fields,
         path,
+        source,
+        source_offset,
         &mut edits,
     )?;
     let local_field_resolvers = field_resolvers
@@ -633,7 +685,13 @@ fn update_existing(
             ));
         }
     }
-    let desired_fields = reconcile_field_resolvers(&ast, &local_field_resolvers, &mut edits)?;
+    let desired_fields = reconcile_field_resolvers(
+        &ast,
+        &local_field_resolvers,
+        source,
+        source_offset,
+        &mut edits,
+    )?;
 
     let defined_types = ast
         .items
@@ -669,6 +727,8 @@ fn reconcile_inline_modules<'a>(
     desired_fields: &BTreeMap<(String, String), &FieldResolver>,
     relocated_fields: &mut BTreeMap<(String, String), PathBuf>,
     source_path: &Path,
+    source: &str,
+    source_offset: usize,
     edits: &mut Vec<Edit>,
 ) -> syn::Result<Option<&'a syn::ItemImpl>> {
     let mut anchor = None;
@@ -687,7 +747,13 @@ fn reconcile_inline_modules<'a>(
             };
             let Some(resolver) = desired_fields.get(&coordinate) else {
                 anchor.get_or_insert(implementation);
-                reconcile_stale_field_resolver(implementation, &coordinate, edits)?;
+                reconcile_stale_field_resolver(
+                    implementation,
+                    &coordinate,
+                    source,
+                    source_offset,
+                    edits,
+                )?;
                 continue;
             };
             if let Some(first_path) = relocated_fields.get(&coordinate) {
@@ -709,6 +775,8 @@ fn reconcile_inline_modules<'a>(
             desired_fields,
             relocated_fields,
             source_path,
+            source,
+            source_offset,
             edits,
         )? {
             anchor.get_or_insert(nested_anchor);
@@ -779,6 +847,8 @@ fn resolver_context(implementation: &syn::ItemImpl) -> syn::Result<&Type> {
 fn reconcile_field_resolvers<'a>(
     ast: &syn::File,
     field_resolvers: &'a [FieldResolver],
+    source: &str,
+    source_offset: usize,
     edits: &mut Vec<Edit>,
 ) -> syn::Result<BTreeMap<(String, String), &'a FieldResolver>> {
     let mut desired_fields = field_resolvers
@@ -802,7 +872,7 @@ fn reconcile_field_resolvers<'a>(
         if let Some(resolver) = desired_fields.remove(&coordinate) {
             reconcile_field_resolver(item, resolver, edits, true)?;
         } else {
-            reconcile_stale_field_resolver(item, &coordinate, edits)?;
+            reconcile_stale_field_resolver(item, &coordinate, source, source_offset, edits)?;
         }
     }
     Ok(desired_fields)
@@ -811,17 +881,29 @@ fn reconcile_field_resolvers<'a>(
 fn reconcile_stale_field_resolver(
     implementation: &syn::ItemImpl,
     coordinate: &(String, String),
+    source: &str,
+    source_offset: usize,
     edits: &mut Vec<Edit>,
 ) -> syn::Result<()> {
     let (_, resolve) = field_resolver_items(implementation)?;
     validate_resolve(resolve)?;
-    let generated_stub = matches!(
+    let semantic_stub = matches!(
         resolve.block.stmts.as_slice(),
         [syn::Stmt::Expr(syn::Expr::Macro(expression), None)]
-            if expression.mac.path.leading_colon.is_some()
+            if expression.attrs.is_empty()
+                && expression.mac.path.leading_colon.is_some()
                 && expression.mac.path.segments.iter().map(|segment| segment.ident.unraw().to_string()).eq(["core", "unimplemented"].map(str::to_owned))
                 && expression.mac.tokens.is_empty()
     );
+    let range = implementation.span().byte_range();
+    let source_range = range.start + source_offset..range.end + source_offset;
+    let has_comments = source.get(source_range).is_none_or(|implementation| {
+        implementation.contains("//") || implementation.contains("/*")
+    });
+    let generated_stub = semantic_stub
+        && implementation.attrs.is_empty()
+        && resolve.attrs.is_empty()
+        && !has_comments;
     if !generated_stub {
         return Err(syn::Error::new_spanned(
             resolve,
@@ -857,6 +939,7 @@ fn reconcile_field_resolver(
     }
     let (output, resolve) = field_resolver_items(implementation)?;
     validate_resolve(resolve)?;
+    reject_removed_argument_uses(resolve, resolver)?;
     if !equivalent_output_type(&output.ty, &resolver.output) {
         let replacement = &resolver.output;
         edits.push(Edit {
@@ -865,6 +948,61 @@ fn reconcile_field_resolver(
         });
     }
     Ok(())
+}
+
+fn reject_removed_argument_uses(
+    resolve: &syn::ImplItemFn,
+    resolver: &FieldResolver,
+) -> syn::Result<()> {
+    let binding = resolve
+        .sig
+        .inputs
+        .iter()
+        .nth(2)
+        .and_then(|argument| match argument {
+            syn::FnArg::Typed(argument) => match argument.pat.as_ref() {
+                syn::Pat::Ident(binding) => Some(&binding.ident),
+                _ => None,
+            },
+            _ => None,
+        });
+    let Some(binding) = binding else {
+        return Ok(());
+    };
+    let mut visitor = RemovedArgumentUse {
+        binding,
+        arguments: &resolver.arguments,
+        removed: None,
+    };
+    visitor.visit_block(&resolve.block);
+    let Some((argument, span)) = visitor.removed else {
+        return Ok(());
+    };
+    let (object, field) = resolver.coordinate();
+    Err(syn::Error::new(
+        span,
+        format!("Cannot preserve resolver {object}.{field}; argument {argument} is not in the SDL"),
+    ))
+}
+
+struct RemovedArgumentUse<'a> {
+    binding: &'a syn::Ident,
+    arguments: &'a BTreeSet<String>,
+    removed: Option<(String, proc_macro2::Span)>,
+}
+
+impl<'ast> Visit<'ast> for RemovedArgumentUse<'_> {
+    fn visit_expr_field(&mut self, expression: &'ast syn::ExprField) {
+        if self.removed.is_none()
+            && matches!(expression.base.as_ref(), syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident(self.binding))
+            && let syn::Member::Named(member) = &expression.member
+            && !self.arguments.contains(&member.unraw().to_string())
+        {
+            self.removed = Some((member.unraw().to_string(), member.span()));
+            return;
+        }
+        syn::visit::visit_expr_field(self, expression);
+    }
 }
 
 fn receiver_with_existing_arguments(desired: &Type, current: &Type) -> syn::Result<Type> {
@@ -1086,6 +1224,7 @@ fn apply_edits(
 struct FieldResolver {
     object: syn::Ident,
     field: syn::Ident,
+    arguments: BTreeSet<String>,
     receiver: Type,
     output: Type,
 }
@@ -1103,6 +1242,7 @@ fn field_resolver(
     schema: &Schema,
     object_name: &str,
     field_name: &str,
+    arguments: BTreeSet<String>,
     ty: &GraphqlType,
     query_name: &str,
 ) -> Result<FieldResolver, BuildError> {
@@ -1113,6 +1253,7 @@ fn field_resolver(
         receiver: syn::parse_quote!(self::#object),
         object,
         field: rust_ident(field_name),
+        arguments,
         output: syn::parse2(output).expect("generated resolver output types must parse"),
     })
 }
@@ -2116,8 +2257,10 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         let file = ResolverFile::new();
         let first = file.directory.join("first.rs");
         let second = file.directory.join("second.rs");
+        let third = file.directory.join("third.rs");
         fs::write(&first, "first original").unwrap();
         fs::write(&second, "second original").unwrap();
+        fs::write(&third, "third original").unwrap();
         let writes = vec![
             PlannedWrite {
                 path: first.clone(),
@@ -2129,6 +2272,11 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 original: Some("second original".to_owned()),
                 updated: "second updated".to_owned(),
             },
+            PlannedWrite {
+                path: third.clone(),
+                original: Some("third original".to_owned()),
+                updated: "third updated".to_owned(),
+            },
         ];
         let mut attempts = 0;
 
@@ -2137,8 +2285,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             |path, source| {
                 attempts += 1;
                 match attempts {
-                    2 => Err(std::io::Error::other("injected commit failure")),
-                    3 => Err(std::io::Error::other("injected rollback failure")),
+                    3 => Err(std::io::Error::other("injected commit failure")),
+                    4 => Err(std::io::Error::other("injected rollback failure")),
                     _ => fs::write(path, source),
                 }
             },
@@ -2150,6 +2298,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         assert!(message.contains("injected commit failure"), "{error}");
         assert!(message.contains("injected rollback failure"), "{error}");
         assert_eq!(fs::read_to_string(first).unwrap(), "first original");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second updated");
+        assert_eq!(fs::read_to_string(third).unwrap(), "third original");
     }
 
     #[test]
