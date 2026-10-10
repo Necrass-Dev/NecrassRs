@@ -1706,7 +1706,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
     }
 
     #[test]
-    fn rejects_multi_file_updates_before_writing() {
+    fn updates_multiple_resolver_files_from_one_plan() {
         let file = ResolverFile::new();
         let first = write_external_resolver(&file, "resolvers/first.rs");
         let entry_source = file
@@ -1718,19 +1718,26 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         let second_source = first_source.replace("hello", "goodbye");
         fs::write(&second, &second_source).unwrap();
 
-        let error = file
-            .synchronize("type Query { hello: Int! goodbye: Int! }")
-            .expect_err("multi-file update unexpectedly succeeded");
+        file.synchronize("type Query { hello: Int! goodbye: Int! }")
+            .unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("cannot modify multiple source files"),
-            "{error}"
+        let first_updated = fs::read_to_string(&first).unwrap();
+        let second_updated = fs::read_to_string(&second).unwrap();
+        assert_eq!(
+            field_output(&first_updated, "Query", "hello"),
+            ":: core :: primitive :: i32"
         );
+        assert_eq!(
+            field_output(&second_updated, "Query", "goodbye"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(first_updated.contains("/* retain this body */"));
+        assert!(second_updated.contains("/* retain this body */"));
         assert_eq!(file.read(), entry_source);
-        assert_eq!(fs::read_to_string(first).unwrap(), first_source);
-        assert_eq!(fs::read_to_string(second).unwrap(), second_source);
+        file.synchronize("type Query { hello: Int! goodbye: Int! }")
+            .unwrap();
+        assert_eq!(fs::read_to_string(first).unwrap(), first_updated);
+        assert_eq!(fs::read_to_string(second).unwrap(), second_updated);
     }
 
     #[test]
