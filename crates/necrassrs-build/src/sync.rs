@@ -876,6 +876,55 @@ mod tests {
     }
 
     #[test]
+    fn updates_resolver_moved_to_reachable_external_module_in_place() {
+        let file = ResolverFile::new();
+        let module_directory = file.directory.join("resolvers");
+        let child = module_directory.join("fields.rs");
+        fs::create_dir(&module_directory).unwrap();
+        fs::write(
+            &file.path,
+            r#"
+pub struct Query;
+
+mod fields;
+
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &child,
+            r#"
+impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
+    for super::Query
+{
+    type Output = ::std::string::String;
+
+    async fn resolve(
+        &self,
+        _context: &C,
+        _args: crate::generated::types::Query::hello::Args,
+    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        /* retain this body */
+        ::core::unimplemented!()
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        file.synchronize("type Query { hello: Int! }").unwrap();
+
+        let child_source = fs::read_to_string(&child).unwrap();
+        assert_eq!(
+            field_output(&child_source, "Query", "hello"),
+            ":: core :: primitive :: i32"
+        );
+        assert!(child_source.contains("/* retain this body */"));
+        assert!(!file.read().contains("fields::r#Query::r#hello"));
+    }
+
+    #[test]
     fn whitespace_only_source_bootstraps_resolvers() {
         let file = ResolverFile::new();
         fs::write(&file.path, "  \n\t\n").unwrap();
