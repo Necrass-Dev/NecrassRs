@@ -226,8 +226,11 @@ fn reconcile_external_children(
         Item::Mod(module) if module.content.is_none() => Some(module),
         _ => None,
     }) {
-        // shortcut: nested mod.rs parents follow their RED test.
-        let module_directory = parent_path.with_extension("");
+        let module_directory = if parent_path.ends_with("mod.rs") {
+            parent_path.parent().unwrap_or(Path::new("")).to_owned()
+        } else {
+            parent_path.with_extension("")
+        };
         let module_name = module.ident.unraw().to_string();
         let file_path = module_directory.join(format!("{module_name}.rs"));
         let mod_path = module_directory.join(&module_name).join("mod.rs");
