@@ -1486,6 +1486,30 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
     }
 
     #[test]
+    fn rejects_removing_application_written_resolver_before_writing() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        let child_source = fs::read_to_string(&child).unwrap().replace(
+            "/* retain this body */\n        ::core::unimplemented!()",
+            "Ok(String::from(\"hello\"))",
+        );
+        fs::write(&child, &child_source).unwrap();
+        let entry_source = file.read();
+
+        let error = file
+            .synchronize("type Query { added: String! }")
+            .expect_err("application-written resolver was removed");
+
+        assert!(
+            matches!(&error, BuildError::ResolverSource { path, .. } if path == &child),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Query.hello"), "{error}");
+        assert_eq!(file.read(), entry_source);
+        assert_eq!(fs::read_to_string(child).unwrap(), child_source);
+    }
+
+    #[test]
     fn creates_resolvers_and_preserves_unchanged_source() {
         let file = ResolverFile::new();
         file.synchronize("type Query { hello: String! }").unwrap();
