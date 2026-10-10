@@ -86,44 +86,41 @@ fn adding_sdl_field_in_nested_file_adds_stub_and_preserves_existing_body() {
 }
 
 #[test]
-fn deleting_sdl_field_removes_its_implemented_method_and_preserves_others() {
+fn deleting_sdl_field_rejects_an_implemented_method_without_writing() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     consumer.bootstrap();
     consumer.implement("hello", "retained hello");
     consumer.implement("ping", "deleted ping body");
-    let before = body(method(&consumer.ast(), "hello"));
+    let before = fs::read(consumer.resolvers()).unwrap();
     consumer.schema("type Query { hello(name: String!): String! }");
 
-    assert_success(&consumer.build());
-    let ast = consumer.ast();
-    assert_eq!(method_names(&ast), ["hello"]);
-    assert_eq!(body(method(&ast, "hello")), before);
+    let build = consumer.build();
+    assert!(!build.status.success());
     assert!(
-        !fs::read_to_string(consumer.resolvers())
-            .unwrap()
-            .contains("deleted ping body")
+        String::from_utf8_lossy(&build.stderr).contains("Query.ping"),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
     );
+    assert_eq!(fs::read(consumer.resolvers()).unwrap(), before);
 }
 
 #[test]
-fn renaming_sdl_field_deletes_old_body_and_creates_a_new_stub() {
+fn renaming_sdl_field_rejects_an_implemented_method_without_writing() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     consumer.bootstrap();
     consumer.implement("hello", "do not migrate this body");
     consumer.implement("ping", "retained ping");
-    let before = body(method(&consumer.ast(), "ping"));
+    let before = fs::read(consumer.resolvers()).unwrap();
     consumer.schema("type Query { greet(name: String!): String! ping: String! }");
 
-    assert_success(&consumer.build());
-    let ast = consumer.ast();
-    assert_eq!(method_names(&ast), ["greet", "ping"]);
-    assert_stub(method(&ast, "greet"));
-    assert_eq!(body(method(&ast, "ping")), before);
+    let build = consumer.build();
+    assert!(!build.status.success());
     assert!(
-        !fs::read_to_string(consumer.resolvers())
-            .unwrap()
-            .contains("do not migrate this body")
+        String::from_utf8_lossy(&build.stderr).contains("Query.hello"),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
     );
+    assert_eq!(fs::read(consumer.resolvers()).unwrap(), before);
 }
 
 #[test]

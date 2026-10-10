@@ -456,6 +456,13 @@ fn reconcile_external_children_in(
                 continue;
             };
             let Some(resolver) = desired.get(&coordinate) else {
+                anchor.get_or_insert(implementation);
+                reconcile_stale_field_resolver(implementation, &coordinate, &mut edits).map_err(
+                    |source| BuildError::ResolverSource {
+                        path: path.clone(),
+                        source,
+                    },
+                )?;
                 continue;
             };
             if let Some(first_path) = fields.get(&coordinate) {
@@ -679,6 +686,8 @@ fn reconcile_inline_modules<'a>(
                 continue;
             };
             let Some(resolver) = desired_fields.get(&coordinate) else {
+                anchor.get_or_insert(implementation);
+                reconcile_stale_field_resolver(implementation, &coordinate, edits)?;
                 continue;
             };
             if let Some(first_path) = relocated_fields.get(&coordinate) {
@@ -793,13 +802,40 @@ fn reconcile_field_resolvers<'a>(
         if let Some(resolver) = desired_fields.remove(&coordinate) {
             reconcile_field_resolver(item, resolver, edits, true)?;
         } else {
-            edits.push(Edit {
-                range: item.span().byte_range(),
-                replacement: String::new(),
-            });
+            reconcile_stale_field_resolver(item, &coordinate, edits)?;
         }
     }
     Ok(desired_fields)
+}
+
+fn reconcile_stale_field_resolver(
+    implementation: &syn::ItemImpl,
+    coordinate: &(String, String),
+    edits: &mut Vec<Edit>,
+) -> syn::Result<()> {
+    let (_, resolve) = field_resolver_items(implementation)?;
+    validate_resolve(resolve)?;
+    let generated_stub = matches!(
+        resolve.block.stmts.as_slice(),
+        [syn::Stmt::Expr(syn::Expr::Macro(expression), None)]
+            if expression.mac.path.leading_colon.is_some()
+                && expression.mac.path.segments.iter().map(|segment| segment.ident.unraw().to_string()).eq(["core", "unimplemented"].map(str::to_owned))
+                && expression.mac.tokens.is_empty()
+    );
+    if !generated_stub {
+        return Err(syn::Error::new_spanned(
+            resolve,
+            format!(
+                "Cannot remove application-written resolver {}.{} automatically",
+                coordinate.0, coordinate.1
+            ),
+        ));
+    }
+    edits.push(Edit {
+        range: implementation.span().byte_range(),
+        replacement: String::new(),
+    });
+    Ok(())
 }
 
 fn reconcile_field_resolver(
@@ -2246,9 +2282,10 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         let file = ResolverFile::new();
         file.synchronize("type Query { hello: String! old: String! }")
             .unwrap();
-        let source = file.read().replace(
+        let source = file.read().replacen(
             "::core::unimplemented!()",
             "{ /* retain this comment */ Ok(String::from(\"hello\")) }",
+            1,
         );
         fs::write(&file.path, &source).unwrap();
 
