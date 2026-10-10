@@ -222,16 +222,48 @@ fn reconcile_external_children(
     paths: &mut BTreeSet<PathBuf>,
     writes: &mut Vec<PlannedWrite>,
 ) -> Result<(), BuildError> {
-    for module in parent.items.iter().filter_map(|item| match item {
-        Item::Mod(module) if module.content.is_none() => Some(module),
+    let module_directory = if parent_path.ends_with("mod.rs") {
+        parent_path.parent().unwrap_or(Path::new("")).to_owned()
+    } else {
+        parent_path.with_extension("")
+    };
+    reconcile_external_children_in(
+        parent_path,
+        &parent.items,
+        &module_directory,
+        desired,
+        fields,
+        paths,
+        writes,
+    )
+}
+
+fn reconcile_external_children_in(
+    source_path: &Path,
+    items: &[Item],
+    module_directory: &Path,
+    desired: &BTreeMap<(String, String), &FieldResolver>,
+    fields: &mut BTreeSet<(String, String)>,
+    paths: &mut BTreeSet<PathBuf>,
+    writes: &mut Vec<PlannedWrite>,
+) -> Result<(), BuildError> {
+    for module in items.iter().filter_map(|item| match item {
+        Item::Mod(module) => Some(module),
         _ => None,
     }) {
-        let module_directory = if parent_path.ends_with("mod.rs") {
-            parent_path.parent().unwrap_or(Path::new("")).to_owned()
-        } else {
-            parent_path.with_extension("")
-        };
         let module_name = module.ident.unraw().to_string();
+        if let Some((_, inline_items)) = &module.content {
+            reconcile_external_children_in(
+                source_path,
+                inline_items,
+                &module_directory.join(module_name),
+                desired,
+                fields,
+                paths,
+                writes,
+            )?;
+            continue;
+        }
         let file_path = module_directory.join(format!("{module_name}.rs"));
         let mod_path = module_directory.join(&module_name).join("mod.rs");
         let path = match (source_exists(&file_path)?, source_exists(&mod_path)?) {
@@ -239,7 +271,7 @@ fn reconcile_external_children(
             (false, true) => mod_path,
             (true, true) => {
                 return Err(BuildError::ResolverSource {
-                    path: parent_path.to_owned(),
+                    path: source_path.to_owned(),
                     source: syn::Error::new_spanned(
                         module,
                         format!(
@@ -393,7 +425,7 @@ fn update_existing(
         .map(|resolver| (resolver.coordinate(), resolver))
         .collect::<BTreeMap<_, _>>();
     let mut relocated_fields = external_fields.clone();
-    // shortcut: follow inline modules only in the entry source; mixed module graphs follow their RED tests.
+    // shortcut: inline resolver implementations in external files follow their RED test.
     reconcile_inline_modules(
         &ast.items,
         &desired_fields,
