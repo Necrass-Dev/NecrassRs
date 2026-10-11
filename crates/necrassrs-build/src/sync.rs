@@ -90,7 +90,15 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         .filter(|source| !source.trim().is_empty())
     {
         None => {
-            let generics: syn::Generics = syn::parse_quote!(<C: Sync>);
+            let mut scope = RenderScope::default();
+            scope.names.extend(
+                objects
+                    .iter()
+                    .chain([&object])
+                    .map(|name| name.unraw().to_string()),
+            );
+            let sync = scope.standard("Sync");
+            let generics: syn::Generics = syn::parse_str(&format!("<C: {sync}>")).unwrap();
             let context: Type = syn::parse_quote!(C);
             let object_declarations = objects
                 .iter()
@@ -103,14 +111,14 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 .join("\n\n");
             let field_implementations = field_resolvers
                 .iter()
-                .map(|resolver| render_field_resolver(resolver, &generics, &context))
+                .map(|resolver| render_field_resolver(resolver, &generics, &context, &scope))
                 .collect::<Vec<_>>()
                 .join("\n\n");
             format!(
                 "#[allow(non_camel_case_types)]\npub struct {object};\n\n\
                  {object_declarations}\n\n\
              #[allow(non_snake_case)]\n\
-             impl<C: Sync> crate::generated::resolvers::{resolver}<C> for self::{object} {{}}\n",
+             impl<C: {sync}> crate::generated::resolvers::{resolver}<C> for self::{object} {{}}\n",
             ) + if field_implementations.is_empty() {
                 ""
             } else {
@@ -519,12 +527,17 @@ fn reconcile_external_children_in(
             }
             fields.insert(coordinate, path.clone());
             anchor.get_or_insert(implementation);
-            reconcile_field_resolver(implementation, resolver, &mut edits, false).map_err(
-                |source| BuildError::ResolverSource {
-                    path: path.clone(),
-                    source,
-                },
-            )?;
+            reconcile_field_resolver(
+                implementation,
+                resolver,
+                &RenderScope::from_items(&ast.items),
+                &mut edits,
+                false,
+            )
+            .map_err(|source| BuildError::ResolverSource {
+                path: path.clone(),
+                source,
+            })?;
         }
         let inline_anchor = reconcile_inline_modules(
             &ast.items,
@@ -630,6 +643,10 @@ fn update_existing(
     let implementation = query_resolver_implementation(&ast, object, resolver)?;
     let context = resolver_context(implementation)?;
     let generics = &implementation.generics;
+    let mut scope = RenderScope::from_items(&ast.items);
+    scope
+        .names
+        .extend(objects.iter().map(|name| name.unraw().to_string()));
     if !implementation.items.is_empty() {
         return Err(syn::Error::new_spanned(
             &implementation.items[0],
@@ -637,6 +654,9 @@ fn update_existing(
         ));
     }
     let mut edits = Vec::new();
+    scope
+        .with_generics(generics)
+        .repair_bounds(generics, &mut edits);
     let root_receiver = implementation.self_ty.as_ref();
     let mut field_resolvers = field_resolvers.to_vec();
     for field_resolver in &mut field_resolvers {
@@ -683,6 +703,7 @@ fn update_existing(
     let desired_fields = reconcile_field_resolvers(
         &ast,
         &local_field_resolvers,
+        &scope,
         source,
         source_offset,
         &mut edits,
@@ -703,7 +724,7 @@ fn update_existing(
         .chain(
             desired_fields
                 .into_values()
-                .map(|resolver| render_field_resolver(resolver, generics, context)),
+                .map(|resolver| render_field_resolver(resolver, generics, context, &scope)),
         )
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -763,7 +784,13 @@ fn reconcile_inline_modules<'a>(
             }
             relocated_fields.insert(coordinate, source_path.to_owned());
             anchor.get_or_insert(implementation);
-            reconcile_field_resolver(implementation, resolver, edits, false)?;
+            reconcile_field_resolver(
+                implementation,
+                resolver,
+                &RenderScope::from_items(inline_items),
+                edits,
+                false,
+            )?;
         }
         if let Some(nested_anchor) = reconcile_inline_modules(
             inline_items,
@@ -842,6 +869,7 @@ fn resolver_context(implementation: &syn::ItemImpl) -> syn::Result<&Type> {
 fn reconcile_field_resolvers<'a>(
     ast: &syn::File,
     field_resolvers: &'a [FieldResolver],
+    scope: &RenderScope,
     source: &str,
     source_offset: usize,
     edits: &mut Vec<Edit>,
@@ -865,7 +893,7 @@ fn reconcile_field_resolvers<'a>(
             ));
         }
         if let Some(resolver) = desired_fields.remove(&coordinate) {
-            reconcile_field_resolver(item, resolver, edits, true)?;
+            reconcile_field_resolver(item, resolver, scope, edits, true)?;
         } else {
             reconcile_stale_field_resolver(item, &coordinate, source, source_offset, edits)?;
         }
@@ -918,9 +946,15 @@ fn reconcile_stale_field_resolver(
 fn reconcile_field_resolver(
     implementation: &syn::ItemImpl,
     resolver: &FieldResolver,
+    scope: &RenderScope,
     edits: &mut Vec<Edit>,
     update_receiver: bool,
 ) -> syn::Result<()> {
+    let scope = scope.with_generics(&implementation.generics);
+    scope.repair_bounds(&implementation.generics, edits);
+    if let Some((_, path, _)) = &implementation.trait_ {
+        scope.repair_path(path, edits);
+    }
     if update_receiver {
         let current_receiver = &implementation.self_ty;
         let desired_receiver =
@@ -939,8 +973,13 @@ fn reconcile_field_resolver(
         let replacement = &resolver.output;
         edits.push(Edit {
             range: output.ty.span().byte_range(),
-            replacement: render_type(replacement),
+            replacement: scope.render_type(replacement),
         });
+    } else {
+        scope.repair_type(&output.ty, edits);
+    }
+    if let syn::ReturnType::Type(_, output) = &resolve.sig.output {
+        scope.repair_type(output, edits);
     }
     Ok(())
 }
@@ -1167,6 +1206,8 @@ fn builtin_path(path: &syn::Path) -> Option<&'static str> {
         ["f64"] | ["core", "primitive", "f64"] => Some("f64"),
         ["Option"] | ["core", "option", "Option"] => Some("Option"),
         ["Vec"] | ["std", "vec", "Vec"] => Some("Vec"),
+        ["Result"] | ["core", "result", "Result"] => Some("Result"),
+        ["Sync"] | ["core", "marker", "Sync"] => Some("Sync"),
         _ => None,
     }
 }
@@ -1341,85 +1382,271 @@ fn rust_ident(name: &str) -> syn::Ident {
         .unwrap_or_else(|| format_ident!("r#{}", mapped))
 }
 
-fn render_type(ty: &Type) -> String {
-    let Type::Path(ty) = ty else {
-        return quote!(#ty).to_string();
-    };
-    if ty.qself.is_some() {
-        return quote!(#ty).to_string();
-    }
-    let path = &ty.path;
-    let segments = path
-        .segments
-        .iter()
-        .map(|segment| {
-            let ident = &segment.ident;
-            let plain = ident.unraw().to_string();
-            let name = if plain != "gen" && syn::parse_str::<syn::Ident>(&plain).is_ok() {
-                plain
-            } else {
-                ident.to_string()
-            };
-            match &segment.arguments {
-                PathArguments::None => name,
-                PathArguments::AngleBracketed(arguments) => {
-                    let arguments = arguments
-                        .args
-                        .iter()
-                        .map(|argument| match argument {
-                            GenericArgument::Type(ty) => render_type(ty),
-                            _ => quote!(#argument).to_string(),
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("{name}<{arguments}>")
-                }
-                arguments => format!("{name}{}", quote!(#arguments)),
+#[derive(Clone, Default)]
+struct RenderScope {
+    names: BTreeSet<String>,
+    glob: bool,
+}
+
+impl RenderScope {
+    fn from_items(items: &[Item]) -> Self {
+        let mut scope = Self::default();
+        for item in items {
+            if let Some(name) = item_type_name(item) {
+                scope.names.insert(name);
             }
-        })
-        .collect::<Vec<_>>();
-    if let Some(name) = builtin_path(path) {
-        let last = segments.last().unwrap();
-        return format!("{name}{}", last.strip_prefix(name).unwrap());
+            match item {
+                Item::Use(item) => scope.imports(&item.tree),
+                Item::Mod(item) => {
+                    scope.names.insert(item.ident.unraw().to_string());
+                }
+                Item::Trait(item) => {
+                    scope.names.insert(item.ident.unraw().to_string());
+                }
+                Item::TraitAlias(item) => {
+                    scope.names.insert(item.ident.unraw().to_string());
+                }
+                Item::ExternCrate(item) => {
+                    scope.names.insert(
+                        item.rename
+                            .as_ref()
+                            .map_or(&item.ident, |(_, name)| name)
+                            .unraw()
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        scope
     }
-    let prefix = if path.leading_colon.is_some()
-        && segments.first().is_none_or(|name| name != "necrassrs")
-    {
-        "::"
-    } else {
-        ""
-    };
-    format!("{prefix}{}", segments.join("::"))
+
+    fn imports(&mut self, tree: &syn::UseTree) {
+        match tree {
+            syn::UseTree::Name(name) => {
+                self.names.insert(name.ident.unraw().to_string());
+            }
+            syn::UseTree::Rename(name) => {
+                self.names.insert(name.rename.unraw().to_string());
+            }
+            syn::UseTree::Path(path) => {
+                // `use module::{self, Item}` also binds `module`.
+                self.names.insert(path.ident.unraw().to_string());
+                self.imports(&path.tree);
+            }
+            syn::UseTree::Group(group) => group.items.iter().for_each(|tree| self.imports(tree)),
+            syn::UseTree::Glob(_) => self.glob = true,
+        }
+    }
+
+    fn with_generics(&self, generics: &syn::Generics) -> Self {
+        let mut scope = self.clone();
+        scope.names.extend(
+            generics
+                .type_params()
+                .map(|param| param.ident.unraw().to_string()),
+        );
+        scope
+    }
+
+    fn blocked(&self, name: &str) -> bool {
+        self.glob || self.names.contains(name)
+    }
+
+    fn standard(&self, name: &str) -> String {
+        if self.blocked(name) {
+            standard_path(name).to_owned()
+        } else {
+            name.to_owned()
+        }
+    }
+
+    fn repair_path(&self, path: &syn::Path, edits: &mut Vec<Edit>) {
+        if path.leading_colon.is_some() {
+            return;
+        }
+        let Some(first) = path.segments.first() else {
+            return;
+        };
+        let name = first.ident.unraw().to_string();
+        if !self.blocked(&name) {
+            return;
+        }
+        if path.segments.len() == 1 && builtin_path(path).is_some() {
+            edits.push(Edit {
+                range: first.ident.span().byte_range(),
+                replacement: standard_path(&name).to_owned(),
+            });
+        } else if name == "necrassrs" || builtin_path(path).is_some() {
+            let start = first.ident.span().byte_range().start;
+            edits.push(Edit {
+                range: start..start,
+                replacement: "::".to_owned(),
+            });
+        }
+    }
+
+    fn repair_type(&self, ty: &Type, edits: &mut Vec<Edit>) {
+        match ty {
+            Type::Path(ty) if ty.qself.is_none() => {
+                self.repair_path(&ty.path, edits);
+                for segment in &ty.path.segments {
+                    if let PathArguments::AngleBracketed(arguments) = &segment.arguments {
+                        for argument in &arguments.args {
+                            if let GenericArgument::Type(ty) = argument {
+                                self.repair_type(ty, edits);
+                            }
+                        }
+                    }
+                }
+            }
+            Type::Paren(ty) => self.repair_type(&ty.elem, edits),
+            Type::Group(ty) => self.repair_type(&ty.elem, edits),
+            _ => {}
+        }
+    }
+
+    fn repair_bounds(&self, generics: &syn::Generics, edits: &mut Vec<Edit>) {
+        for bound in generics
+            .type_params()
+            .flat_map(|param| &param.bounds)
+            .chain(
+                generics
+                    .where_clause
+                    .iter()
+                    .flat_map(|clause| &clause.predicates)
+                    .filter_map(|predicate| match predicate {
+                        syn::WherePredicate::Type(predicate) => Some(&predicate.bounds),
+                        _ => None,
+                    })
+                    .flatten(),
+            )
+        {
+            if let syn::TypeParamBound::Trait(bound) = bound
+                && builtin_path(&bound.path) == Some("Sync")
+            {
+                self.repair_path(&bound.path, edits);
+            }
+        }
+    }
+
+    fn render_type(&self, ty: &Type) -> String {
+        let Type::Path(ty) = ty else {
+            return quote!(#ty).to_string();
+        };
+        if ty.qself.is_some() {
+            return quote!(#ty).to_string();
+        }
+        let path = &ty.path;
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| {
+                let ident = &segment.ident;
+                let plain = ident.unraw().to_string();
+                let name = if plain != "gen" && syn::parse_str::<syn::Ident>(&plain).is_ok() {
+                    plain
+                } else {
+                    ident.to_string()
+                };
+                match &segment.arguments {
+                    PathArguments::None => name,
+                    PathArguments::AngleBracketed(arguments) => {
+                        let arguments = arguments
+                            .args
+                            .iter()
+                            .map(|argument| match argument {
+                                GenericArgument::Type(ty) => self.render_type(ty),
+                                _ => quote!(#argument).to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{name}<{arguments}>")
+                    }
+                    arguments => format!("{name}{}", quote!(#arguments)),
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Some(name) = builtin_path(path) {
+            let last = segments.last().unwrap();
+            return format!(
+                "{}{}",
+                self.standard(name),
+                last.strip_prefix(name).unwrap()
+            );
+        }
+        let prefix = if path.leading_colon.is_some()
+            && (segments.first().is_none_or(|name| name != "necrassrs")
+                || self.blocked("necrassrs"))
+        {
+            "::"
+        } else {
+            ""
+        };
+        format!("{prefix}{}", segments.join("::"))
+    }
+}
+
+fn standard_path(name: &str) -> &'static str {
+    match name {
+        "String" => "::std::string::String",
+        "Vec" => "::std::vec::Vec",
+        "Option" => "::core::option::Option",
+        "Result" => "::core::result::Result",
+        "Sync" => "::core::marker::Sync",
+        "bool" => "::core::primitive::bool",
+        "i32" => "::core::primitive::i32",
+        "f64" => "::core::primitive::f64",
+        _ => unreachable!("only recognized standard types have canonical paths"),
+    }
 }
 
 fn render_field_resolver(
     resolver: &FieldResolver,
     generics: &syn::Generics,
     context: &Type,
+    scope: &RenderScope,
 ) -> String {
+    let scope = scope.with_generics(generics);
+    let framework = if scope.blocked("necrassrs") {
+        "::necrassrs"
+    } else {
+        "necrassrs"
+    };
+    let result = scope.standard("Result");
     let object = &resolver.object;
     let field = &resolver.field;
     let receiver = &resolver.receiver;
     let output = &resolver.output;
     let mut impl_generics = proc_macro2::TokenStream::new();
     generics.to_tokens(&mut impl_generics);
+    let generic_source = impl_generics.to_string();
+    let parsed: syn::Generics =
+        syn::parse_str(&generic_source).expect("existing generics must parse");
+    let mut generic_edits = Vec::new();
+    scope.repair_bounds(&parsed, &mut generic_edits);
+    generic_edits.sort_by_key(|edit| std::cmp::Reverse(edit.range.start));
+    let mut impl_generics = generic_source;
+    for edit in generic_edits {
+        impl_generics.replace_range(edit.range, &edit.replacement);
+    }
     let where_clause = &generics.where_clause;
     format!(
-        "impl{} necrassrs::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
+        "impl{} {framework}::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
          \x20   type Output = {};\n\n\
          \x20   async fn resolve(\n\
          \x20       &self,\n\
          \x20       _context: &{},\n\
          \x20       _args: crate::generated::types::{object}::{field}::Args,\n\
-         \x20   ) -> Result<Self::Output, necrassrs::ResolverError> {{\n\
+         \x20   ) -> {result}<Self::Output, {framework}::ResolverError> {{\n\
          \x20       ::core::unimplemented!()\n\
          \x20   }}\n\
          }}",
         impl_generics,
         quote!(#context),
-        render_type(receiver),
+        quote!(#receiver),
         quote!(#where_clause),
-        render_type(output),
+        scope.render_type(output),
         quote!(#context),
     )
 }
