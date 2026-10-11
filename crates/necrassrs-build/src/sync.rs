@@ -29,12 +29,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 "A query root object is required",
             ))
         })?;
-    let object_name = codegen::rust_name(query.name.as_str());
-    // syn's identifier parser is edition-independent and accepts `gen`.
-    let object = syn::parse_str::<syn::Ident>(&object_name)
-        .ok()
-        .filter(|_| object_name != "gen")
-        .unwrap_or_else(|| format_ident!("r#{}", object_name));
+    let object = rust_ident(query.name.as_str());
     let resolver = format_ident!("{}Resolver", codegen::rust_name(query.name.as_str()));
     let object_names = codegen::reachable_object_names(schema, query.name.as_str());
     let objects = object_names
@@ -95,7 +90,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         .filter(|source| !source.trim().is_empty())
     {
         None => {
-            let generics: syn::Generics = syn::parse_quote!(<C: ::core::marker::Sync>);
+            let generics: syn::Generics = syn::parse_quote!(<C: Sync>);
             let context: Type = syn::parse_quote!(C);
             let object_declarations = objects
                 .iter()
@@ -115,7 +110,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 "#[allow(non_camel_case_types)]\npub struct {object};\n\n\
                  {object_declarations}\n\n\
              #[allow(non_snake_case)]\n\
-             impl<C: ::core::marker::Sync> crate::generated::resolvers::{resolver}<C> for self::{object} {{}}\n",
+             impl<C: Sync> crate::generated::resolvers::{resolver}<C> for self::{object} {{}}\n",
             ) + if field_implementations.is_empty() {
                 ""
             } else {
@@ -944,7 +939,7 @@ fn reconcile_field_resolver(
         let replacement = &resolver.output;
         edits.push(Edit {
             range: output.ty.span().byte_range(),
-            replacement: quote!(#replacement).to_string(),
+            replacement: render_type(replacement),
         });
     }
     Ok(())
@@ -1338,7 +1333,63 @@ fn named_composite_resolver_output_type(
 }
 
 fn rust_ident(name: &str) -> syn::Ident {
-    format_ident!("r#{}", codegen::rust_name(name))
+    let mapped = codegen::rust_name(name);
+    // syn accepts `gen` independently of the consumer's Rust edition.
+    syn::parse_str::<syn::Ident>(&mapped)
+        .ok()
+        .filter(|_| mapped != "gen")
+        .unwrap_or_else(|| format_ident!("r#{}", mapped))
+}
+
+fn render_type(ty: &Type) -> String {
+    let Type::Path(ty) = ty else {
+        return quote!(#ty).to_string();
+    };
+    if ty.qself.is_some() {
+        return quote!(#ty).to_string();
+    }
+    let path = &ty.path;
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| {
+            let ident = &segment.ident;
+            let plain = ident.unraw().to_string();
+            let name = if plain != "gen" && syn::parse_str::<syn::Ident>(&plain).is_ok() {
+                plain
+            } else {
+                ident.to_string()
+            };
+            match &segment.arguments {
+                PathArguments::None => name,
+                PathArguments::AngleBracketed(arguments) => {
+                    let arguments = arguments
+                        .args
+                        .iter()
+                        .map(|argument| match argument {
+                            GenericArgument::Type(ty) => render_type(ty),
+                            _ => quote!(#argument).to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{name}<{arguments}>")
+                }
+                arguments => format!("{name}{}", quote!(#arguments)),
+            }
+        })
+        .collect::<Vec<_>>();
+    if let Some(name) = builtin_path(path) {
+        let last = segments.last().unwrap();
+        return format!("{name}{}", last.strip_prefix(name).unwrap());
+    }
+    let prefix = if path.leading_colon.is_some()
+        && segments.first().is_none_or(|name| name != "necrassrs")
+    {
+        "::"
+    } else {
+        ""
+    };
+    format!("{prefix}{}", segments.join("::"))
 }
 
 fn render_field_resolver(
@@ -1354,21 +1405,21 @@ fn render_field_resolver(
     generics.to_tokens(&mut impl_generics);
     let where_clause = &generics.where_clause;
     format!(
-        "impl{} ::necrassrs::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
+        "impl{} necrassrs::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
          \x20   type Output = {};\n\n\
          \x20   async fn resolve(\n\
          \x20       &self,\n\
          \x20       _context: &{},\n\
          \x20       _args: crate::generated::types::{object}::{field}::Args,\n\
-         \x20   ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {{\n\
+         \x20   ) -> Result<Self::Output, necrassrs::ResolverError> {{\n\
          \x20       ::core::unimplemented!()\n\
          \x20   }}\n\
          }}",
         impl_generics,
         quote!(#context),
-        quote!(#receiver),
+        render_type(receiver),
         quote!(#where_clause),
-        quote!(#output),
+        render_type(output),
         quote!(#context),
     )
 }
@@ -1648,18 +1699,41 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         file.synchronize("type Query { hello: Int! }").unwrap();
 
         let child_source = fs::read_to_string(child).unwrap();
-        assert_eq!(
-            field_output(&child_source, "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output(&child_source, "Query", "hello"), "i32");
         assert!(child_source.contains("/* retain this body */"));
         assert!(child_source.contains(receiver));
-        assert!(!file.read().contains("fields::r#Query::r#hello"));
+        assert!(!file.read().contains("fields::Query::hello"));
 
         let entry_source = file.read();
         file.synchronize("type Query { hello: Int! }").unwrap();
         assert_eq!(fs::read_to_string(child).unwrap(), child_source);
         assert_eq!(file.read(), entry_source);
+    }
+
+    #[test]
+    fn readable_names_and_types_keep_keyword_escapes() {
+        let file = ResolverFile::new();
+        file.synchronize(
+            "enum Status { OPEN } type Operator { id: ID! type: String! gen: String! } \
+             type Query { operators: [Operator!]! statuses: [Status!] label: String! }",
+        )
+        .unwrap();
+        let source = file.read();
+        assert!(source.contains("pub struct Operator;"));
+        assert!(source.contains("fields::Operator::id"));
+        assert!(source.contains("fields::Operator::r#type"));
+        assert!(source.contains("fields::Operator::r#gen"));
+        assert!(source.contains("type Output = Vec<self::Operator>;"));
+        assert!(source.contains("type Output = Option<Vec<crate::generated::types::Status>>;"));
+        assert!(source.contains("type Output = necrassrs::Id;"));
+        assert!(source.contains("type Output = String;"));
+        assert!(source.contains("-> Result<Self::Output, necrassrs::ResolverError>"));
+        file.synchronize(
+            "enum Status { OPEN } type Operator { id: ID! type: String! gen: String! } \
+             type Query { operators: [Operator!]! statuses: [Status!] label: String! }",
+        )
+        .unwrap();
+        assert_eq!(source, file.read());
     }
 
     #[test]
@@ -1739,7 +1813,7 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         let source = file.read();
         let ast = syn::parse_file(&source).unwrap();
         assert!(matches!(&ast.items[0], Item::Struct(item) if item.ident == "Query"));
-        assert!(source.contains("fields::r#Query::r#hello"));
+        assert!(source.contains("fields::Query::hello"));
         assert!(source.contains("async fn resolve"));
         assert!(source.contains("unimplemented"));
 
@@ -1947,7 +2021,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
 
         assert_eq!(
             field_output(&fs::read_to_string(&child).unwrap(), "Query", "hello"),
-            ":: core :: primitive :: i32"
+            "i32"
         );
         assert!(
             field_implementation_in(
@@ -1977,10 +2051,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             fs::read_to_string(unreachable).unwrap(),
             "not valid Rust source"
         );
-        assert_eq!(
-            field_output(&file.read(), "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output(&file.read(), "Query", "hello"), "i32");
     }
 
     #[test]
@@ -1997,7 +2068,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             file.synchronize("type Query { hello: String! }").unwrap();
             let source = file.read();
             let aliased = source.replacen(
-                "::necrassrs::Resolver<crate::generated::fields",
+                "necrassrs::Resolver<crate::generated::fields",
                 &format!("{trait_name}<crate::generated::fields"),
                 1,
             );
@@ -2067,14 +2138,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
 
         let first_updated = fs::read_to_string(&first).unwrap();
         let second_updated = fs::read_to_string(&second).unwrap();
-        assert_eq!(
-            field_output(&first_updated, "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
-        assert_eq!(
-            field_output(&second_updated, "Query", "goodbye"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output(&first_updated, "Query", "hello"), "i32");
+        assert_eq!(field_output(&second_updated, "Query", "goodbye"), "i32");
         assert!(first_updated.contains("/* retain this body */"));
         assert!(second_updated.contains("/* retain this body */"));
         assert_eq!(file.read(), entry_source);
@@ -2383,10 +2448,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 _ => None,
             })
             .unwrap();
-        assert_eq!(
-            field_output_in(inline_items, "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output_in(inline_items, "Query", "hello"), "i32");
         assert!(source.contains("/* retain this body */"));
         assert!(source.contains("for super::Query"));
         assert!(!ast.items.iter().any(|item| {
@@ -2454,10 +2516,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 _ => None,
             })
             .unwrap();
-        assert_eq!(
-            field_output_in(inline_items, "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output_in(inline_items, "Query", "hello"), "i32");
         assert!(source.contains("/* retain this body */"));
         assert!(source.contains("for super::super::Query"));
         assert!(!ast.items.iter().any(|item| {
@@ -2479,7 +2538,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
 
         let source = file.read();
         assert!(source.contains("QueryResolver<C> for self::Query {}"));
-        assert!(source.contains("fields::r#Query::r#hello"));
+        assert!(source.contains("fields::Query::hello"));
     }
 
     #[test]
@@ -2494,7 +2553,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 1,
             )
             .replace(
-                "impl<C: ::core::marker::Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}",
+                "impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}",
                 "impl crate::generated::resolvers::QueryResolver<AppContext> for self::AppQuery {}",
             )
             .replacen(
@@ -2578,8 +2637,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             .unwrap();
         let updated = file.read();
         assert!(updated.contains("/* retain this comment */"));
-        assert!(updated.contains("fields::r#Query::r#added"));
-        assert!(!updated.contains("fields::r#Query::r#old"));
+        assert!(updated.contains("fields::Query::added"));
+        assert!(!updated.contains("fields::Query::old"));
         syn::parse_file(&updated).unwrap();
     }
 
@@ -2594,8 +2653,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 .unwrap();
             let updated = file.read();
             assert!(updated.starts_with(prefix));
-            assert!(updated.contains("fields::r#Query::r#hello"));
-            assert!(updated.contains("fields::r#Query::r#added"));
+            assert!(updated.contains("fields::Query::hello"));
+            assert!(updated.contains("fields::Query::added"));
         }
     }
 
@@ -2649,19 +2708,13 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         fs::write(&file.path, source).unwrap();
 
         for (sdl, expected) in [
-            (
-                "type Query { value: String }",
-                ":: core :: option :: Option < :: std :: string :: String >",
-            ),
-            (
-                "type Query { value: [String!]! }",
-                ":: std :: vec :: Vec < :: std :: string :: String >",
-            ),
+            ("type Query { value: String }", "Option < String >"),
+            ("type Query { value: [String!]! }", "Vec < String >"),
             (
                 "type Query { value: User! } type User { name: String! }",
-                "self :: r#User",
+                "self :: User",
             ),
-            ("type Query { value: Int! }", ":: core :: primitive :: i32"),
+            ("type Query { value: Int! }", "i32"),
         ] {
             file.synchronize(sdl).unwrap();
             let source = file.read();
@@ -2704,13 +2757,13 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         file.synchronize(object_schema).unwrap();
         assert_eq!(
             field_output(&file.read(), "Query", "value"),
-            "self :: r#Status"
+            "self :: Status"
         );
 
         file.synchronize(enum_schema).unwrap();
         assert_eq!(
             field_output(&file.read(), "Query", "value"),
-            "crate :: generated :: types :: r#Status"
+            "crate :: generated :: types :: Status"
         );
     }
 
