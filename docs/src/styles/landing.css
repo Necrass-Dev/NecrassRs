@@ -338,6 +338,8 @@ h2 {
 .added-resolver .line:nth-child(n + 17):nth-child(-n + 27) {
   display: inline-block;
   min-width: 100%;
+  min-height: 1lh;
+  vertical-align: top;
   background: #a48bff18;
   box-shadow:
     -20px 0 #a48bff18,

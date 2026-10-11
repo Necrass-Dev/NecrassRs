@@ -303,8 +303,8 @@ mod tests {
         let resolvers = std::fs::read_to_string(directory.0.join("src/resolvers.rs")).unwrap();
         assert!(generated.contains("hello"));
         assert!(generated.contains("extra"));
-        assert!(resolvers.contains("fields::r#Query::r#hello"));
-        assert!(resolvers.contains("fields::r#Query::r#extra"));
+        assert!(resolvers.contains("fields::Query::hello"));
+        assert!(resolvers.contains("fields::Query::extra"));
 
         directory.build().unwrap();
         assert_eq!(

@@ -11,6 +11,166 @@ use syn::{
 };
 
 #[test]
+fn collision_rendering_preserves_application_aliases_and_context_bounds() {
+    let declarations = "pub type Result<T> = ::core::result::Result<T, necrassrs::ResolverError>;\npub trait Sync: ::core::marker::Sync { fn label(&self) -> String; }\nimpl Sync for () { fn label(&self) -> String { String::new() } }";
+    for declarations in [
+        declarations.to_owned(),
+        format!("mod contracts {{ {declarations} }}\nuse contracts::*;"),
+    ] {
+        let consumer = Consumer::new("type Query { label: String! }");
+        consumer.bootstrap();
+        let source = fs::read_to_string(consumer.resolvers())
+            .unwrap()
+            .replace(
+                "Result<Self::Output, necrassrs::ResolverError>",
+                "Result<Self::Output>",
+            )
+            .replace("::core::unimplemented!()", "Ok(_context.label())");
+        let source = format!("{declarations}\n{source}");
+        fs::write(consumer.resolvers(), &source).unwrap();
+        assert_success(&consumer.build());
+        assert_eq!(source, fs::read_to_string(consumer.resolvers()).unwrap());
+        consumer.schema("type Query { label: String! extra: String! }");
+        assert_success(&consumer.build());
+        assert!(
+            fs::read_to_string(consumer.resolvers())
+                .unwrap()
+                .starts_with(&source)
+        );
+    }
+}
+
+#[test]
+fn landing_example_matches_real_synchronization() {
+    let schema = include_str!("../../necrassrs-cli/templates/shared/schema.graphql");
+    let initial = include_str!("../../necrassrs-cli/templates/shared/resolvers.rs");
+    let added = include_str!("../../../docs/src/data/version-resolver.rs");
+    let consumer = Consumer::new(schema);
+    fs::write(consumer.resolvers(), initial).unwrap();
+    consumer.bootstrap();
+    assert_eq!(fs::read_to_string(consumer.resolvers()).unwrap(), initial);
+
+    consumer.schema(&format!(
+        "{}\n    version: String!\n}}",
+        schema.trim().strip_suffix("\n}").unwrap()
+    ));
+    assert_success(&consumer.build());
+    let evolved = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert_eq!(
+        evolved.trim(),
+        format!("{}\n\n{}", initial.trim(), added.trim())
+    );
+
+    let script = consumer.directory.join("build.rs");
+    fs::write(
+        &script,
+        format!("{}\n", fs::read_to_string(&script).unwrap()),
+    )
+    .unwrap();
+    assert_success(&consumer.build());
+    assert_eq!(evolved, fs::read_to_string(consumer.resolvers()).unwrap());
+}
+
+#[test]
+fn collision_rendering_preserves_where_bounds_when_adding_resolvers() {
+    let consumer = Consumer::new("type Query { value: Int! sync: Sync! } type Sync { id: ID! }");
+    fs::write(consumer.resolvers(), "pub struct Query;\nimpl<C> crate::generated::resolvers::QueryResolver<C> for Query where C: Sync {}\n").unwrap();
+    consumer.bootstrap();
+    let before = fs::read(consumer.resolvers()).unwrap();
+    consumer.schema("type Query { value: Int! sync: Sync! extra: Int! } type Sync { id: ID! }");
+    assert_success(&consumer.build());
+    assert!(fs::read(consumer.resolvers()).unwrap().starts_with(&before));
+}
+
+#[test]
+fn collision_rendering_compiles_moved_resolvers_and_glob_imports() {
+    let consumer = Consumer::new("type Query { value: Int! }");
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers()).unwrap();
+    let ast = consumer.ast();
+    let range = field_resolver_ref(&ast, "Query", "value")
+        .span()
+        .byte_range();
+    let implementation = source[range.clone()].replace("for self::Query", "for super::Query");
+    let mut entry = source.clone();
+    entry.replace_range(
+        range,
+        "mod external;\nmod inline {\nuse super::*;\npub struct String;\n}\n",
+    );
+    fs::create_dir(consumer.directory.join("src/resolvers")).unwrap();
+    let child = consumer.directory.join("src/resolvers/external.rs");
+    fs::write(
+        &child,
+        format!("use super::*;\n#[allow(dead_code)] pub struct Option;\n{implementation}"),
+    )
+    .unwrap();
+    fs::write(consumer.resolvers(), entry).unwrap();
+    consumer.schema("type Query { value: [String!] extra: ID! }");
+    assert_success(&consumer.build());
+    let child_source = fs::read_to_string(&child).unwrap();
+    assert!(
+        child_source.contains("::core::option::Option<::std::vec::Vec<::std::string::String>>")
+    );
+    let entry_source = fs::read_to_string(consumer.resolvers()).unwrap();
+    consumer.schema("type Query { value: [String!] extra: ID! } ");
+    assert_success(&consumer.build());
+    assert_eq!(child_source, fs::read_to_string(&child).unwrap());
+    assert_eq!(
+        entry_source,
+        fs::read_to_string(consumer.resolvers()).unwrap()
+    );
+}
+
+#[test]
+fn collision_rendering_compiles_sdl_names_and_keyword_boundaries() {
+    let consumer = Consumer::new(
+        "enum type { gen type OPEN } \
+         type Query { values: [Int!] option: Option! vec: Vec! result: Result! sync: Sync! id: Id! resolver: Resolver! error: ResolverError! framework: necrassrs! std: std! core: core! int: i32! float: f64! boolean: bool! keyword(self: String!, _self: String!, _: String!, gen: String!): type! lower: user! upper: User! } \
+         type Option { id: ID! } type Vec { id: ID! } type Result { id: ID! } type Sync { id: ID! } \
+         type Id { id: ID! } type Resolver { id: ID! } type ResolverError { id: ID! } \
+         type necrassrs { id: ID! } type std { id: ID! } type core { id: ID! } \
+         type i32 { value: Int! } type f64 { value: Float! } type bool { value: Boolean! } \
+         type user { type: String! } type User { gen: String! }",
+    );
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(source.contains("fields::user::r#type"));
+    assert!(source.contains("fields::User::r#gen"));
+    assert!(source.contains("crate::generated::types::r#type"));
+    consumer.schema(&fs::read_to_string(consumer.directory.join("schema/schema.graphql")).unwrap());
+    assert_success(&consumer.build());
+    assert_eq!(source, fs::read_to_string(consumer.resolvers()).unwrap());
+}
+
+#[test]
+fn collision_rendering_compiles_after_new_sdl_names_shadow_retained_signatures() {
+    let consumer = Consumer::new("type Query { values: [Int!] }");
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers())
+        .unwrap()
+        .replace("::core::unimplemented!()", "{ /* retain body */ Ok(None) }");
+    fs::write(consumer.resolvers(), &source).unwrap();
+    consumer.schema("type Query { values: [Int!] option: Option! vec: Vec! result: Result! sync: Sync! framework: necrassrs! } type Option { id: ID! } type Vec { id: ID! } type Result { id: ID! } type Sync { id: ID! } type necrassrs { id: ID! }");
+    assert_success(&consumer.build());
+    assert!(
+        fs::read_to_string(consumer.resolvers())
+            .unwrap()
+            .contains("{ /* retain body */ Ok(None) }")
+    );
+}
+
+#[test]
+fn collision_rendering_compiles_user_imports_and_generic_names() {
+    let consumer = Consumer::new("type Query { label: String! values: [Int!] }");
+    fs::write(consumer.resolvers(), "use ::std::vec::Vec as String;\npub struct Query;\nimpl<Result: Sync> crate::generated::resolvers::QueryResolver<Result> for Query {}\n").unwrap();
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(source.contains("type Output = ::std::string::String;"));
+    assert!(source.contains("_context: &Result"));
+    assert!(source.contains("-> ::core::result::Result<Self::Output, necrassrs::ResolverError>"));
+}
+
+#[test]
 fn first_build_creates_query_and_explicit_unimplemented_methods_from_sdl() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     assert!(!consumer.resolvers().exists());
@@ -217,7 +377,7 @@ fn expanded_input_and_result_contracts_rebuild_without_replacing_user_body() {
         output_type(field_resolver_ref(&ast, "Query", "inspect"))
             .to_token_stream()
             .to_string()
-            .contains("Option < :: std :: vec :: Vec < :: necrassrs :: Id > >")
+            .contains("Option < Vec < necrassrs :: Id > >")
     );
     let executable = messages(&build)
         .find_map(|message| message["executable"].as_str().map(PathBuf::from))

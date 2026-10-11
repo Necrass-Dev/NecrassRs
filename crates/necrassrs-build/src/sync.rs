@@ -1,5 +1,5 @@
 use apollo_compiler::{Schema, ast::Type as GraphqlType, schema::ExtendedType, validation::Valid};
-use quote::{ToTokens, format_ident, quote};
+use quote::{format_ident, quote};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -8,6 +8,7 @@ use std::{
 };
 use syn::{
     GenericArgument, Item, PathArguments, Type, ext::IdentExt, spanned::Spanned, visit::Visit,
+    visit_mut::VisitMut,
 };
 
 use crate::{BuildError, codegen};
@@ -29,12 +30,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 "A query root object is required",
             ))
         })?;
-    let object_name = codegen::rust_name(query.name.as_str());
-    // syn's identifier parser is edition-independent and accepts `gen`.
-    let object = syn::parse_str::<syn::Ident>(&object_name)
-        .ok()
-        .filter(|_| object_name != "gen")
-        .unwrap_or_else(|| format_ident!("r#{}", object_name));
+    let object = rust_ident(query.name.as_str());
     let resolver = format_ident!("{}Resolver", codegen::rust_name(query.name.as_str()));
     let object_names = codegen::reachable_object_names(schema, query.name.as_str());
     let objects = object_names
@@ -95,7 +91,15 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         .filter(|source| !source.trim().is_empty())
     {
         None => {
-            let generics: syn::Generics = syn::parse_quote!(<C: ::core::marker::Sync>);
+            let mut scope = RenderScope::default();
+            scope.names.extend(
+                objects
+                    .iter()
+                    .chain([&object])
+                    .map(|name| name.unraw().to_string()),
+            );
+            let sync = scope.standard("Sync");
+            let generics: syn::Generics = syn::parse_str(&format!("<C: {sync}>")).unwrap();
             let context: Type = syn::parse_quote!(C);
             let object_declarations = objects
                 .iter()
@@ -108,14 +112,14 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 .join("\n\n");
             let field_implementations = field_resolvers
                 .iter()
-                .map(|resolver| render_field_resolver(resolver, &generics, &context))
+                .map(|resolver| render_field_resolver(resolver, &generics, &context, &scope))
                 .collect::<Vec<_>>()
                 .join("\n\n");
             format!(
                 "#[allow(non_camel_case_types)]\npub struct {object};\n\n\
                  {object_declarations}\n\n\
              #[allow(non_snake_case)]\n\
-             impl<C: ::core::marker::Sync> crate::generated::resolvers::{resolver}<C> for self::{object} {{}}\n",
+             impl<C: {sync}> crate::generated::resolvers::{resolver}<C> for self::{object} {{}}\n",
             ) + if field_implementations.is_empty() {
                 ""
             } else {
@@ -524,12 +528,17 @@ fn reconcile_external_children_in(
             }
             fields.insert(coordinate, path.clone());
             anchor.get_or_insert(implementation);
-            reconcile_field_resolver(implementation, resolver, &mut edits, false).map_err(
-                |source| BuildError::ResolverSource {
-                    path: path.clone(),
-                    source,
-                },
-            )?;
+            reconcile_field_resolver(
+                implementation,
+                resolver,
+                &RenderScope::from_items(&ast.items),
+                &mut edits,
+                false,
+            )
+            .map_err(|source| BuildError::ResolverSource {
+                path: path.clone(),
+                source,
+            })?;
         }
         let inline_anchor = reconcile_inline_modules(
             &ast.items,
@@ -635,6 +644,10 @@ fn update_existing(
     let implementation = query_resolver_implementation(&ast, object, resolver)?;
     let context = resolver_context(implementation)?;
     let generics = &implementation.generics;
+    let mut scope = RenderScope::from_items(&ast.items);
+    scope
+        .names
+        .extend(objects.iter().map(|name| name.unraw().to_string()));
     if !implementation.items.is_empty() {
         return Err(syn::Error::new_spanned(
             &implementation.items[0],
@@ -642,6 +655,9 @@ fn update_existing(
         ));
     }
     let mut edits = Vec::new();
+    scope
+        .with_generics(generics)
+        .repair_bounds(generics, &mut edits);
     let root_receiver = implementation.self_ty.as_ref();
     let mut field_resolvers = field_resolvers.to_vec();
     for field_resolver in &mut field_resolvers {
@@ -688,6 +704,7 @@ fn update_existing(
     let desired_fields = reconcile_field_resolvers(
         &ast,
         &local_field_resolvers,
+        &scope,
         source,
         source_offset,
         &mut edits,
@@ -708,7 +725,7 @@ fn update_existing(
         .chain(
             desired_fields
                 .into_values()
-                .map(|resolver| render_field_resolver(resolver, generics, context)),
+                .map(|resolver| render_field_resolver(resolver, generics, context, &scope)),
         )
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -768,7 +785,13 @@ fn reconcile_inline_modules<'a>(
             }
             relocated_fields.insert(coordinate, source_path.to_owned());
             anchor.get_or_insert(implementation);
-            reconcile_field_resolver(implementation, resolver, edits, false)?;
+            reconcile_field_resolver(
+                implementation,
+                resolver,
+                &RenderScope::from_items(inline_items),
+                edits,
+                false,
+            )?;
         }
         if let Some(nested_anchor) = reconcile_inline_modules(
             inline_items,
@@ -847,6 +870,7 @@ fn resolver_context(implementation: &syn::ItemImpl) -> syn::Result<&Type> {
 fn reconcile_field_resolvers<'a>(
     ast: &syn::File,
     field_resolvers: &'a [FieldResolver],
+    scope: &RenderScope,
     source: &str,
     source_offset: usize,
     edits: &mut Vec<Edit>,
@@ -870,7 +894,7 @@ fn reconcile_field_resolvers<'a>(
             ));
         }
         if let Some(resolver) = desired_fields.remove(&coordinate) {
-            reconcile_field_resolver(item, resolver, edits, true)?;
+            reconcile_field_resolver(item, resolver, scope, edits, true)?;
         } else {
             reconcile_stale_field_resolver(item, &coordinate, source, source_offset, edits)?;
         }
@@ -923,14 +947,20 @@ fn reconcile_stale_field_resolver(
 fn reconcile_field_resolver(
     implementation: &syn::ItemImpl,
     resolver: &FieldResolver,
+    scope: &RenderScope,
     edits: &mut Vec<Edit>,
     update_receiver: bool,
 ) -> syn::Result<()> {
+    let scope = scope.with_generics(&implementation.generics);
+    scope.repair_bounds(&implementation.generics, edits);
+    if let Some((_, path, _)) = &implementation.trait_ {
+        scope.repair_path(path, edits);
+    }
     if update_receiver {
         let current_receiver = &implementation.self_ty;
         let desired_receiver =
             receiver_with_existing_arguments(&resolver.receiver, current_receiver)?;
-        if quote!(#current_receiver).to_string() != quote!(#desired_receiver).to_string() {
+        if !equivalent_output_type(current_receiver, &desired_receiver) {
             edits.push(Edit {
                 range: implementation.self_ty.span().byte_range(),
                 replacement: quote!(#desired_receiver).to_string(),
@@ -944,8 +974,13 @@ fn reconcile_field_resolver(
         let replacement = &resolver.output;
         edits.push(Edit {
             range: output.ty.span().byte_range(),
-            replacement: quote!(#replacement).to_string(),
+            replacement: scope.render_type(replacement),
         });
+    } else {
+        scope.repair_type(&output.ty, edits);
+    }
+    if let syn::ReturnType::Type(_, output) = &resolve.sig.output {
+        scope.repair_type(output, edits);
     }
     Ok(())
 }
@@ -1172,6 +1207,8 @@ fn builtin_path(path: &syn::Path) -> Option<&'static str> {
         ["f64"] | ["core", "primitive", "f64"] => Some("f64"),
         ["Option"] | ["core", "option", "Option"] => Some("Option"),
         ["Vec"] | ["std", "vec", "Vec"] => Some("Vec"),
+        ["Result"] | ["core", "result", "Result"] => Some("Result"),
+        ["Sync"] | ["core", "marker", "Sync"] => Some("Sync"),
         _ => None,
     }
 }
@@ -1338,38 +1375,334 @@ fn named_composite_resolver_output_type(
 }
 
 fn rust_ident(name: &str) -> syn::Ident {
-    format_ident!("r#{}", codegen::rust_name(name))
+    let mapped = codegen::rust_name(name);
+    // syn accepts `gen` independently of the consumer's Rust edition.
+    syn::parse_str::<syn::Ident>(&mapped)
+        .ok()
+        .filter(|_| mapped != "gen")
+        .unwrap_or_else(|| format_ident!("r#{}", mapped))
+}
+
+#[derive(Clone, Default)]
+struct RenderScope {
+    names: BTreeSet<String>,
+    existing_bindings: BTreeSet<String>,
+    glob: bool,
+}
+
+impl RenderScope {
+    fn from_items(items: &[Item]) -> Self {
+        let mut scope = Self::default();
+        for item in items {
+            if let Some(name) = item_type_name(item) {
+                scope.names.insert(name);
+            }
+            match item {
+                Item::Use(item) => scope.imports(&item.tree, None),
+                Item::Mod(item) => {
+                    scope.names.insert(item.ident.unraw().to_string());
+                }
+                Item::Trait(item) => {
+                    scope.names.insert(item.ident.unraw().to_string());
+                }
+                Item::TraitAlias(item) => {
+                    scope.names.insert(item.ident.unraw().to_string());
+                }
+                Item::ExternCrate(item) => {
+                    scope.names.insert(
+                        item.rename
+                            .as_ref()
+                            .map_or(&item.ident, |(_, name)| name)
+                            .unraw()
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        scope.existing_bindings = scope.names.clone();
+        scope
+    }
+
+    fn imports(&mut self, tree: &syn::UseTree, parent: Option<&syn::Ident>) {
+        match tree {
+            syn::UseTree::Name(name) => {
+                let ident = if name.ident == "self" {
+                    parent.unwrap_or(&name.ident)
+                } else {
+                    &name.ident
+                };
+                self.names.insert(ident.unraw().to_string());
+            }
+            syn::UseTree::Rename(name) => {
+                self.names.insert(name.rename.unraw().to_string());
+            }
+            syn::UseTree::Path(path) => self.imports(&path.tree, Some(&path.ident)),
+            syn::UseTree::Group(group) => group
+                .items
+                .iter()
+                .for_each(|tree| self.imports(tree, parent)),
+            syn::UseTree::Glob(_) => self.glob = true,
+        }
+    }
+
+    fn with_generics(&self, generics: &syn::Generics) -> Self {
+        let mut scope = self.clone();
+        scope.names.extend(
+            generics
+                .type_params()
+                .map(|param| param.ident.unraw().to_string()),
+        );
+        scope.existing_bindings.extend(
+            generics
+                .type_params()
+                .map(|param| param.ident.unraw().to_string()),
+        );
+        scope
+    }
+
+    fn blocked(&self, name: &str) -> bool {
+        self.glob || self.names.contains(name)
+    }
+
+    fn standard(&self, name: &str) -> String {
+        if self.blocked(name) {
+            standard_path(name).to_owned()
+        } else {
+            name.to_owned()
+        }
+    }
+
+    fn repair_path(&self, path: &syn::Path, edits: &mut Vec<Edit>) {
+        if path.leading_colon.is_some() {
+            return;
+        }
+        let Some(first) = path.segments.first() else {
+            return;
+        };
+        let name = first.ident.unraw().to_string();
+        // Existing bindings may be application aliases; do not reinterpret them.
+        if !self.blocked(&name) || self.existing_bindings.contains(&name) || self.glob {
+            return;
+        }
+        if path.segments.len() == 1 && builtin_path(path).is_some() {
+            edits.push(Edit {
+                range: first.ident.span().byte_range(),
+                replacement: standard_path(&name).to_owned(),
+            });
+        } else if name == "necrassrs" || builtin_path(path).is_some() {
+            let start = first.ident.span().byte_range().start;
+            edits.push(Edit {
+                range: start..start,
+                replacement: "::".to_owned(),
+            });
+        }
+    }
+
+    fn repair_type(&self, ty: &Type, edits: &mut Vec<Edit>) {
+        match ty {
+            Type::Path(ty) if ty.qself.is_none() => {
+                self.repair_path(&ty.path, edits);
+                for segment in &ty.path.segments {
+                    if let PathArguments::AngleBracketed(arguments) = &segment.arguments {
+                        for argument in &arguments.args {
+                            if let GenericArgument::Type(ty) = argument {
+                                self.repair_type(ty, edits);
+                            }
+                        }
+                    }
+                }
+            }
+            Type::Paren(ty) => self.repair_type(&ty.elem, edits),
+            Type::Group(ty) => self.repair_type(&ty.elem, edits),
+            _ => {}
+        }
+    }
+
+    fn repair_bounds(&self, generics: &syn::Generics, edits: &mut Vec<Edit>) {
+        for bound in generics
+            .type_params()
+            .flat_map(|param| &param.bounds)
+            .chain(
+                generics
+                    .where_clause
+                    .iter()
+                    .flat_map(|clause| &clause.predicates)
+                    .filter_map(|predicate| match predicate {
+                        syn::WherePredicate::Type(predicate) => Some(&predicate.bounds),
+                        _ => None,
+                    })
+                    .flatten(),
+            )
+        {
+            if let syn::TypeParamBound::Trait(bound) = bound
+                && builtin_path(&bound.path) == Some("Sync")
+            {
+                self.repair_path(&bound.path, edits);
+            }
+        }
+    }
+
+    fn render_type(&self, ty: &Type) -> String {
+        let Type::Path(ty) = ty else {
+            return quote!(#ty).to_string();
+        };
+        if ty.qself.is_some() {
+            return quote!(#ty).to_string();
+        }
+        let path = &ty.path;
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| {
+                let ident = &segment.ident;
+                let plain = ident.unraw().to_string();
+                let name = if plain != "gen" && syn::parse_str::<syn::Ident>(&plain).is_ok() {
+                    plain
+                } else {
+                    ident.to_string()
+                };
+                match &segment.arguments {
+                    PathArguments::None => name,
+                    PathArguments::AngleBracketed(arguments) => {
+                        let arguments = arguments
+                            .args
+                            .iter()
+                            .map(|argument| match argument {
+                                GenericArgument::Type(ty) => self.render_type(ty),
+                                _ => quote!(#argument).to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{name}<{arguments}>")
+                    }
+                    arguments => format!("{name}{}", quote!(#arguments)),
+                }
+            })
+            .collect::<Vec<_>>();
+        if path.leading_colon.is_some()
+            && let Some(name) = builtin_path(path)
+        {
+            let last = segments.last().unwrap();
+            return format!(
+                "{}{}",
+                self.standard(name),
+                last.strip_prefix(name).unwrap()
+            );
+        }
+        let prefix = if path.leading_colon.is_some()
+            && (segments.first().is_none_or(|name| name != "necrassrs")
+                || self.blocked("necrassrs"))
+        {
+            "::"
+        } else {
+            ""
+        };
+        format!("{prefix}{}", segments.join("::"))
+    }
+}
+
+impl VisitMut for RenderScope {
+    fn visit_trait_bound_mut(&mut self, bound: &mut syn::TraitBound) {
+        if builtin_path(&bound.path) == Some("Sync")
+            && self.blocked("Sync")
+            && !self.existing_bindings.contains("Sync")
+            && !self.glob
+        {
+            bound.path = syn::parse_quote!(::core::marker::Sync);
+        }
+        syn::visit_mut::visit_trait_bound_mut(self, bound);
+    }
+}
+
+fn standard_path(name: &str) -> &'static str {
+    match name {
+        "String" => "::std::string::String",
+        "Vec" => "::std::vec::Vec",
+        "Option" => "::core::option::Option",
+        "Result" => "::core::result::Result",
+        "Sync" => "::core::marker::Sync",
+        "bool" => "::core::primitive::bool",
+        "i32" => "::core::primitive::i32",
+        "f64" => "::core::primitive::f64",
+        _ => unreachable!("only recognized standard types have canonical paths"),
+    }
 }
 
 fn render_field_resolver(
     resolver: &FieldResolver,
     generics: &syn::Generics,
     context: &Type,
+    scope: &RenderScope,
 ) -> String {
+    let scope = scope.with_generics(generics);
+    let framework = if scope.blocked("necrassrs") {
+        "::necrassrs"
+    } else {
+        "necrassrs"
+    };
+    let result = scope.standard("Result");
     let object = &resolver.object;
     let field = &resolver.field;
     let receiver = &resolver.receiver;
     let output = &resolver.output;
-    let mut impl_generics = proc_macro2::TokenStream::new();
-    generics.to_tokens(&mut impl_generics);
+    let mut generics = generics.clone();
+    scope.clone().visit_generics_mut(&mut generics);
+    let parameters = generics
+        .params
+        .iter()
+        .map(|parameter| match parameter {
+            syn::GenericParam::Type(param) if param.attrs.is_empty() && param.default.is_none() => {
+                let name = &param.ident;
+                if param.bounds.is_empty() {
+                    return name.to_string();
+                }
+                let bounds = param
+                    .bounds
+                    .iter()
+                    .map(|bound| match bound {
+                        syn::TypeParamBound::Trait(bound) if bound.lifetimes.is_none() => {
+                            let modifier = &bound.modifier;
+                            let path = &bound.path;
+                            format!(
+                                "{}{}",
+                                quote!(#modifier),
+                                scope.render_type(&syn::parse_quote!(#path))
+                            )
+                        }
+                        _ => quote!(#bound).to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                format!("{name}: {bounds}")
+            }
+            _ => quote!(#parameter).to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let impl_generics = if parameters.is_empty() {
+        String::new()
+    } else {
+        format!("<{parameters}>")
+    };
     let where_clause = &generics.where_clause;
     format!(
-        "impl{} ::necrassrs::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
+        "impl{} {framework}::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
          \x20   type Output = {};\n\n\
          \x20   async fn resolve(\n\
          \x20       &self,\n\
          \x20       _context: &{},\n\
          \x20       _args: crate::generated::types::{object}::{field}::Args,\n\
-         \x20   ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {{\n\
+         \x20   ) -> {result}<Self::Output, {framework}::ResolverError> {{\n\
          \x20       ::core::unimplemented!()\n\
          \x20   }}\n\
          }}",
         impl_generics,
-        quote!(#context),
-        quote!(#receiver),
+        scope.render_type(context),
+        scope.render_type(receiver),
         quote!(#where_clause),
-        quote!(#output),
-        quote!(#context),
+        scope.render_type(output),
+        scope.render_type(context),
     )
 }
 
@@ -1425,6 +1758,7 @@ struct Edit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quote::ToTokens;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct ResolverFile {
@@ -1648,18 +1982,150 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         file.synchronize("type Query { hello: Int! }").unwrap();
 
         let child_source = fs::read_to_string(child).unwrap();
-        assert_eq!(
-            field_output(&child_source, "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output(&child_source, "Query", "hello"), "i32");
         assert!(child_source.contains("/* retain this body */"));
         assert!(child_source.contains(receiver));
-        assert!(!file.read().contains("fields::r#Query::r#hello"));
+        assert!(!file.read().contains("fields::Query::hello"));
 
         let entry_source = file.read();
         file.synchronize("type Query { hello: Int! }").unwrap();
         assert_eq!(fs::read_to_string(child).unwrap(), child_source);
         assert_eq!(file.read(), entry_source);
+    }
+
+    #[test]
+    fn readable_rendering_preserves_existing_raw_receivers_and_user_source() {
+        let file = ResolverFile::new();
+        let sdl = "type Query { operator: Operator! } type Operator { name: String! }";
+        file.synchronize(sdl).unwrap();
+        let source = file
+            .read()
+            .replace(
+                "pub struct Operator;",
+                "pub struct Operator { pub state: u8 }",
+            )
+            .replace(
+                "for self::Operator",
+                "for self:: /* representation */ r#Operator",
+            )
+            .replace(
+                "    async fn resolve(",
+                "    #[allow(unused_variables)]\n    async fn resolve(",
+            )
+            .replace(
+                "::core::unimplemented!()",
+                "{ /* business logic */ ::core::unimplemented!() }",
+            );
+        fs::write(&file.path, &source).unwrap();
+        file.synchronize(sdl).unwrap();
+        assert_eq!(source, file.read());
+    }
+
+    #[test]
+    fn collision_rendering_uses_absolute_paths_for_local_names_and_imports() {
+        for declaration in [
+            "pub struct String;",
+            "use ::std::vec::Vec as String;",
+            "use ::std::string::String;",
+            "use super::*;",
+        ] {
+            let file = ResolverFile::new();
+            fs::write(&file.path, format!(
+                "{declaration}\npub struct Query;\nimpl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {{}}\n"
+            )).unwrap();
+            file.synchronize("type Query { label: String! count: Int! }")
+                .unwrap();
+            assert_eq!(
+                field_output(&file.read(), "Query", "label"),
+                ":: std :: string :: String",
+                "{declaration}"
+            );
+            if !declaration.contains('*') {
+                assert_eq!(field_output(&file.read(), "Query", "count"), "i32");
+            }
+        }
+    }
+
+    #[test]
+    fn collision_rendering_respects_impl_generic_names() {
+        let file = ResolverFile::new();
+        fs::write(&file.path, "pub struct Query;\nimpl<String: Sync> crate::generated::resolvers::QueryResolver<String> for Query {}\n").unwrap();
+        file.synchronize("type Query { label: String! }").unwrap();
+        assert_eq!(
+            field_output(&file.read(), "Query", "label"),
+            ":: std :: string :: String"
+        );
+        assert!(file.read().contains("_context: &String"));
+    }
+
+    #[test]
+    fn collision_rendering_repairs_paths_when_sdl_adds_shadowing_types() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { values: [Int!] }").unwrap();
+        let source = file.read().replace(
+            "type Output = Option<Vec<i32>>;",
+            "type Output = Option</* keep */ Vec<i32>>;",
+        );
+        fs::write(&file.path, &source).unwrap();
+        let sdl = "type Query { values: [Int!] option: Option! vec: Vec! result: Result! sync: Sync! framework: necrassrs! } \
+                   type Option { id: ID! } type Vec { id: ID! } type Result { id: ID! } type Sync { id: ID! } type necrassrs { id: ID! }";
+        file.synchronize(sdl).unwrap();
+        let updated = file.read();
+        assert!(updated.contains("::core::option::Option</* keep */ ::std::vec::Vec<i32>>"));
+        assert!(
+            updated.contains("-> ::core::result::Result<Self::Output, ::necrassrs::ResolverError>")
+        );
+        assert!(
+            updated.contains(
+                "impl<C: ::core::marker::Sync> crate::generated::resolvers::QueryResolver"
+            )
+        );
+        file.synchronize(sdl).unwrap();
+        assert_eq!(updated, file.read());
+    }
+
+    #[test]
+    fn collision_rendering_uses_the_destination_module_scope() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        let source = fs::read_to_string(&child).unwrap();
+        fs::write(&child, format!("pub struct Option;\n{source}")).unwrap();
+        file.synchronize("type Query { hello: [String!] }").unwrap();
+        assert_eq!(
+            field_output(&fs::read_to_string(&child).unwrap(), "Query", "hello"),
+            ":: core :: option :: Option < Vec < String > >"
+        );
+        assert!(
+            fs::read_to_string(&child)
+                .unwrap()
+                .contains("/* retain this body */")
+        );
+    }
+
+    #[test]
+    fn readable_names_and_types_keep_keyword_escapes() {
+        let file = ResolverFile::new();
+        file.synchronize(
+            "enum Status { OPEN } type Operator { id: ID! type: String! gen: String! } \
+             type Query { operators: [Operator!]! statuses: [Status!] label: String! }",
+        )
+        .unwrap();
+        let source = file.read();
+        assert!(source.contains("pub struct Operator;"));
+        assert!(source.contains("fields::Operator::id"));
+        assert!(source.contains("fields::Operator::r#type"));
+        assert!(source.contains("fields::Operator::r#gen"));
+        assert!(source.contains("type Output = Vec<self::Operator>;"));
+        assert!(source.contains("type Output = Option<Vec<crate::generated::types::Status>>;"));
+        assert!(source.contains("type Output = necrassrs::Id;"));
+        assert!(source.contains("type Output = String;"));
+        assert!(source.contains("-> Result<Self::Output, necrassrs::ResolverError>"));
+        file.synchronize(
+            "enum Status { OPEN } type Operator { id: ID! type: String! gen: String! } \
+             type Query { operators: [Operator!]! statuses: [Status!] label: String! }",
+        )
+        .unwrap();
+        assert_eq!(source, file.read());
     }
 
     #[test]
@@ -1739,7 +2205,7 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         let source = file.read();
         let ast = syn::parse_file(&source).unwrap();
         assert!(matches!(&ast.items[0], Item::Struct(item) if item.ident == "Query"));
-        assert!(source.contains("fields::r#Query::r#hello"));
+        assert!(source.contains("fields::Query::hello"));
         assert!(source.contains("async fn resolve"));
         assert!(source.contains("unimplemented"));
 
@@ -1947,7 +2413,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
 
         assert_eq!(
             field_output(&fs::read_to_string(&child).unwrap(), "Query", "hello"),
-            ":: core :: primitive :: i32"
+            "i32"
         );
         assert!(
             field_implementation_in(
@@ -1977,10 +2443,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             fs::read_to_string(unreachable).unwrap(),
             "not valid Rust source"
         );
-        assert_eq!(
-            field_output(&file.read(), "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output(&file.read(), "Query", "hello"), "i32");
     }
 
     #[test]
@@ -1997,7 +2460,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             file.synchronize("type Query { hello: String! }").unwrap();
             let source = file.read();
             let aliased = source.replacen(
-                "::necrassrs::Resolver<crate::generated::fields",
+                "necrassrs::Resolver<crate::generated::fields",
                 &format!("{trait_name}<crate::generated::fields"),
                 1,
             );
@@ -2067,14 +2530,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
 
         let first_updated = fs::read_to_string(&first).unwrap();
         let second_updated = fs::read_to_string(&second).unwrap();
-        assert_eq!(
-            field_output(&first_updated, "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
-        assert_eq!(
-            field_output(&second_updated, "Query", "goodbye"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output(&first_updated, "Query", "hello"), "i32");
+        assert_eq!(field_output(&second_updated, "Query", "goodbye"), "i32");
         assert!(first_updated.contains("/* retain this body */"));
         assert!(second_updated.contains("/* retain this body */"));
         assert_eq!(file.read(), entry_source);
@@ -2383,10 +2840,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 _ => None,
             })
             .unwrap();
-        assert_eq!(
-            field_output_in(inline_items, "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output_in(inline_items, "Query", "hello"), "i32");
         assert!(source.contains("/* retain this body */"));
         assert!(source.contains("for super::Query"));
         assert!(!ast.items.iter().any(|item| {
@@ -2454,10 +2908,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 _ => None,
             })
             .unwrap();
-        assert_eq!(
-            field_output_in(inline_items, "Query", "hello"),
-            ":: core :: primitive :: i32"
-        );
+        assert_eq!(field_output_in(inline_items, "Query", "hello"), "i32");
         assert!(source.contains("/* retain this body */"));
         assert!(source.contains("for super::super::Query"));
         assert!(!ast.items.iter().any(|item| {
@@ -2479,7 +2930,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
 
         let source = file.read();
         assert!(source.contains("QueryResolver<C> for self::Query {}"));
-        assert!(source.contains("fields::r#Query::r#hello"));
+        assert!(source.contains("fields::Query::hello"));
     }
 
     #[test]
@@ -2494,7 +2945,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 1,
             )
             .replace(
-                "impl<C: ::core::marker::Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}",
+                "impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}",
                 "impl crate::generated::resolvers::QueryResolver<AppContext> for self::AppQuery {}",
             )
             .replacen(
@@ -2578,8 +3029,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             .unwrap();
         let updated = file.read();
         assert!(updated.contains("/* retain this comment */"));
-        assert!(updated.contains("fields::r#Query::r#added"));
-        assert!(!updated.contains("fields::r#Query::r#old"));
+        assert!(updated.contains("fields::Query::added"));
+        assert!(!updated.contains("fields::Query::old"));
         syn::parse_file(&updated).unwrap();
     }
 
@@ -2594,8 +3045,8 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
                 .unwrap();
             let updated = file.read();
             assert!(updated.starts_with(prefix));
-            assert!(updated.contains("fields::r#Query::r#hello"));
-            assert!(updated.contains("fields::r#Query::r#added"));
+            assert!(updated.contains("fields::Query::hello"));
+            assert!(updated.contains("fields::Query::added"));
         }
     }
 
@@ -2649,19 +3100,13 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         fs::write(&file.path, source).unwrap();
 
         for (sdl, expected) in [
-            (
-                "type Query { value: String }",
-                ":: core :: option :: Option < :: std :: string :: String >",
-            ),
-            (
-                "type Query { value: [String!]! }",
-                ":: std :: vec :: Vec < :: std :: string :: String >",
-            ),
+            ("type Query { value: String }", "Option < String >"),
+            ("type Query { value: [String!]! }", "Vec < String >"),
             (
                 "type Query { value: User! } type User { name: String! }",
-                "self :: r#User",
+                "self :: User",
             ),
-            ("type Query { value: Int! }", ":: core :: primitive :: i32"),
+            ("type Query { value: Int! }", "i32"),
         ] {
             file.synchronize(sdl).unwrap();
             let source = file.read();
@@ -2704,13 +3149,13 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         file.synchronize(object_schema).unwrap();
         assert_eq!(
             field_output(&file.read(), "Query", "value"),
-            "self :: r#Status"
+            "self :: Status"
         );
 
         file.synchronize(enum_schema).unwrap();
         assert_eq!(
             field_output(&file.read(), "Query", "value"),
-            "crate :: generated :: types :: r#Status"
+            "crate :: generated :: types :: Status"
         );
     }
 
