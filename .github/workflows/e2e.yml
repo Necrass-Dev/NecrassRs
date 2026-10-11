@@ -15,6 +15,7 @@ on:
       - "crates/necrassrs-actix/**"
       - "crates/necrassrs-build/**"
       - "crates/necrassrs-cli/**"
+      - "docs/src/data/**"
       - "vendor/**"
       - ".github/workflows/e2e.yml"
   pull_request:
@@ -31,6 +32,7 @@ on:
       - "crates/necrassrs-actix/**"
       - "crates/necrassrs-build/**"
       - "crates/necrassrs-cli/**"
+      - "docs/src/data/**"
       - "vendor/**"
       - ".github/workflows/e2e.yml"
 
@@ -56,3 +58,6 @@ jobs:
 
       - name: Run generated-consumer E2E
         run: cargo test --locked --package necrassrs-cli --test init generated_consumer_builds_and_rebuilds_without_the_cli -- --exact
+
+      - name: Verify landing example synchronization
+        run: cargo test --locked --package necrassrs-build --test cargo_build landing_example_matches_real_synchronization -- --exact

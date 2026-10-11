@@ -68,13 +68,46 @@ Apply the same injective identifier mapping to object modules, field modules, an
 
 - Prefix `self`, `Self`, `super`, and `crate` with one underscore.
 - Prefix every SDL name already starting with an underscore with one additional underscore, including `_` itself. Thus `self` maps to `_self`, `_self` to `__self`, and `_` to `__`.
-- Preserve all other names. Emit mapped names as Rust raw identifiers so keywords such as `type` and `gen` remain usable. The `r#` syntax does not change identifier identity.
+- Preserve all other names. In synchronized application source, use ordinary identifiers unless Rust requires a raw identifier, including `type` and the Rust 2024 reserved name `gen`. The `r#` syntax does not change identifier identity. Disposable code in `OUT_DIR` may retain raw spelling for ordinary names.
 
-For example, `Query.type(self: String!, _self: String!)` produces `types::Query::r#type::Args` with distinct `_self` and `__self` fields. Consumers can omit `r#` for non-keywords. Permit `non_snake_case` only within the generated `types` module, and qualify standard-library types to avoid name shadowing.
+For example, `Query.type(self: String!, _self: String!)` produces `types::Query::r#type::Args` with distinct `_self` and `__self` fields. Consumers can omit `r#` for non-keywords even when the declaration in `OUT_DIR` uses it. Permit `non_snake_case` only within the generated `types` module, and keep disposable standard-library paths fully qualified to avoid name shadowing.
 
 Each field module reserves its own `Args` type; SDL field names occupy the parent object module instead. Keep future generated helpers separate from SDL-derived namespaces. This mapping does not rename SDL fields or change runtime field coordinates. Verify the mapping by compiling generated consumer code, including case differences, underscore boundaries, keywords, and raw-identifier exceptions.
 
 The injective mapping is also the identity rule for source synchronization. Compare the desired SDL-derived declarations with the existing Rust AST using mapped object and field names; do not match by position, similar spelling, or resolver body. Raw-identifier spelling does not change identity. A field rename is removal of the old resolver declaration and addition of a new stub, never migration of its old body. The old declaration is removed automatically only when it remains an untouched generated stub; application-owned content requires manual resolution before any source file is changed.
+
+#### Synchronized source rendering
+
+New resolver declarations use ordinary Rust spelling: `Operator`, `id`,
+`String`, `Vec<T>`, `Option<T>`, `Result<T, E>`, and `Sync`. Primitive scalar
+outputs use `bool`, `i32`, and `f64`. Keep application representations qualified
+as `self::Operator` and generated contracts rooted at `crate::generated`.
+NecrassRs contracts use direct paths such as `necrassrs::Resolver`,
+`necrassrs::ResolverError`, and `necrassrs::Id`; synchronization does not add
+imports or infer resolver ownership through aliases.
+
+Before shortening a path, inspect the destination module's type declarations,
+modules, explicit import bindings, extern-crate bindings, and impl type
+parameters. Include Object representations about to be added to the entry.
+Use an absolute standard-library path when its short name is bound in that
+scope, and retain `::necrassrs::` when `necrassrs` is bound. Treat glob imports
+conservatively by retaining absolute paths rather than resolving their exports.
+This applies separately in inline and external resolver modules.
+
+Preserve equivalent existing spelling, including raw identifiers and qualified
+paths. If a newly added local Object requires qualification of an unbound standard
+name in a retained contract, edit only
+the affected path tokens in the output, result signature, direct resolver trait,
+or `Sync` bounds; preserve surrounding comments, attributes, generic bindings,
+and method bodies. Do not reinterpret existing type aliases, custom trait
+bounds, or names supplied through glob imports as standard-library bindings;
+those retained application contracts remain subject to Rust type checking.
+New declarations and changed output shapes use the current
+rendering policy. Business logic is never rewritten to accommodate a newly
+shadowed name; remaining application type errors are reported by Rust.
+Keep the exact `::core::unimplemented!()` stub spelling used for ownership
+checks. Do not reprint entire existing files or invoke an external formatter
+from `build.rs`. Repeated synchronization must leave the source unchanged.
 
 The query root has one empty marker trait in `generated::resolvers`, named by appending `Resolver` to the mapped root name. Its Context parameter and implementation identify the application-owned Rust root and request Context. Every supported Query field and reachable Object field has an identity type in `generated::fields` and uses a separate `necrassrs::Resolver<Field, Context>` implementation, so result category does not determine source layout and each field can move independently.
 

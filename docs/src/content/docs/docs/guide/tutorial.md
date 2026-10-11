@@ -69,28 +69,28 @@ pub struct Query;
 
 impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {}
 
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#label, C> for Query {
-    type Output = ::std::string::String;
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::label, C> for Query {
+    type Output = String;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Query::r#label::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Query::label::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         ::core::unimplemented!()
     }
 }
 
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#statuses, C>
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::statuses, C>
     for Query
 {
-    type Output = ::std::vec::Vec<crate::generated::types::r#Status>;
+    type Output = Vec<crate::generated::types::Status>;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Query::r#statuses::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Query::statuses::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         ::core::unimplemented!()
     }
 }
@@ -113,31 +113,31 @@ pub struct Query;
 
 impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {}
 
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#label, C> for Query {
-    type Output = ::std::string::String;
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::label, C> for Query {
+    type Output = String;
 
     async fn resolve(
         &self,
         _context: &C,
-        args: crate::generated::types::r#Query::r#label::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        args: crate::generated::types::Query::label::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         match args.locator {
-            crate::generated::types::r#Locator::r#id(id) => Ok(id.as_str().to_owned()),
-            crate::generated::types::r#Locator::r#name(name) => Ok(name),
+            crate::generated::types::Locator::id(id) => Ok(id.as_str().to_owned()),
+            crate::generated::types::Locator::name(name) => Ok(name),
         }
     }
 }
 
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#statuses, C>
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::statuses, C>
     for Query
 {
-    type Output = ::std::vec::Vec<crate::generated::types::r#Status>;
+    type Output = Vec<crate::generated::types::Status>;
 
     async fn resolve(
         &self,
         _context: &C,
-        args: crate::generated::types::r#Query::r#statuses::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        args: crate::generated::types::Query::statuses::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         let GraphQLInput::Value(filter) = args.filter else {
             return Ok(Vec::new());
         };

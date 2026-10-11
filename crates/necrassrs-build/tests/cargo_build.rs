@@ -11,6 +11,67 @@ use syn::{
 };
 
 #[test]
+fn collision_rendering_preserves_application_aliases_and_context_bounds() {
+    let declarations = "pub type Result<T> = ::core::result::Result<T, necrassrs::ResolverError>;\npub trait Sync: ::core::marker::Sync { fn label(&self) -> String; }\nimpl Sync for () { fn label(&self) -> String { String::new() } }";
+    for declarations in [
+        declarations.to_owned(),
+        format!("mod contracts {{ {declarations} }}\nuse contracts::*;"),
+    ] {
+        let consumer = Consumer::new("type Query { label: String! }");
+        consumer.bootstrap();
+        let source = fs::read_to_string(consumer.resolvers())
+            .unwrap()
+            .replace(
+                "Result<Self::Output, necrassrs::ResolverError>",
+                "Result<Self::Output>",
+            )
+            .replace("::core::unimplemented!()", "Ok(_context.label())");
+        let source = format!("{declarations}\n{source}");
+        fs::write(consumer.resolvers(), &source).unwrap();
+        assert_success(&consumer.build());
+        assert_eq!(source, fs::read_to_string(consumer.resolvers()).unwrap());
+        consumer.schema("type Query { label: String! extra: String! }");
+        assert_success(&consumer.build());
+        assert!(
+            fs::read_to_string(consumer.resolvers())
+                .unwrap()
+                .starts_with(&source)
+        );
+    }
+}
+
+#[test]
+fn landing_example_matches_real_synchronization() {
+    let schema = include_str!("../../necrassrs-cli/templates/shared/schema.graphql");
+    let initial = include_str!("../../necrassrs-cli/templates/shared/resolvers.rs");
+    let added = include_str!("../../../docs/src/data/version-resolver.rs");
+    let consumer = Consumer::new(schema);
+    fs::write(consumer.resolvers(), initial).unwrap();
+    consumer.bootstrap();
+    assert_eq!(fs::read_to_string(consumer.resolvers()).unwrap(), initial);
+
+    consumer.schema(&format!(
+        "{}\n    version: String!\n}}",
+        schema.trim().strip_suffix("\n}").unwrap()
+    ));
+    assert_success(&consumer.build());
+    let evolved = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert_eq!(
+        evolved.trim(),
+        format!("{}\n\n{}", initial.trim(), added.trim())
+    );
+
+    let script = consumer.directory.join("build.rs");
+    fs::write(
+        &script,
+        format!("{}\n", fs::read_to_string(&script).unwrap()),
+    )
+    .unwrap();
+    assert_success(&consumer.build());
+    assert_eq!(evolved, fs::read_to_string(consumer.resolvers()).unwrap());
+}
+
+#[test]
 fn collision_rendering_preserves_where_bounds_when_adding_resolvers() {
     let consumer = Consumer::new("type Query { value: Int! sync: Sync! } type Sync { id: ID! }");
     fs::write(consumer.resolvers(), "pub struct Query;\nimpl<C> crate::generated::resolvers::QueryResolver<C> for Query where C: Sync {}\n").unwrap();

@@ -1386,6 +1386,7 @@ fn rust_ident(name: &str) -> syn::Ident {
 #[derive(Clone, Default)]
 struct RenderScope {
     names: BTreeSet<String>,
+    existing_bindings: BTreeSet<String>,
     glob: bool,
 }
 
@@ -1419,6 +1420,7 @@ impl RenderScope {
                 _ => {}
             }
         }
+        scope.existing_bindings = scope.names.clone();
         scope
     }
 
@@ -1451,6 +1453,11 @@ impl RenderScope {
                 .type_params()
                 .map(|param| param.ident.unraw().to_string()),
         );
+        scope.existing_bindings.extend(
+            generics
+                .type_params()
+                .map(|param| param.ident.unraw().to_string()),
+        );
         scope
     }
 
@@ -1474,7 +1481,8 @@ impl RenderScope {
             return;
         };
         let name = first.ident.unraw().to_string();
-        if !self.blocked(&name) {
+        // Existing bindings may be application aliases; do not reinterpret them.
+        if !self.blocked(&name) || self.existing_bindings.contains(&name) || self.glob {
             return;
         }
         if path.segments.len() == 1 && builtin_path(path).is_some() {
@@ -1596,7 +1604,11 @@ impl RenderScope {
 
 impl VisitMut for RenderScope {
     fn visit_trait_bound_mut(&mut self, bound: &mut syn::TraitBound) {
-        if builtin_path(&bound.path) == Some("Sync") && self.blocked("Sync") {
+        if builtin_path(&bound.path) == Some("Sync")
+            && self.blocked("Sync")
+            && !self.existing_bindings.contains("Sync")
+            && !self.glob
+        {
             bound.path = syn::parse_quote!(::core::marker::Sync);
         }
         syn::visit_mut::visit_trait_bound_mut(self, bound);

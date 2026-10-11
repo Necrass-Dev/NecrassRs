@@ -4,18 +4,16 @@ use necrassrs::ResolverError;
 pub struct Query;
 
 #[allow(non_snake_case)]
-impl<C: ::core::marker::Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
+impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
 
-impl<C: ::core::marker::Sync> ::necrassrs::Resolver<crate::generated::fields::Query::r#hello, C>
-    for self::Query
-{
-    type Output = ::std::string::String;
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::hello, C> for self::Query {
+    type Output = String;
 
     async fn resolve(
         &self,
         _context: &C,
-        args: crate::generated::types::Query::r#hello::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        args: crate::generated::types::Query::hello::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         let witches = ["Sheri", "Margot"];
         if witches.contains(&args.name.as_str()) {
             Ok(format!("Hello, {}", args.name))

@@ -29,16 +29,16 @@ the `Query` type remains in the parent module, change its receiver from
 `self::Query` to `super::Query`:
 
 ```rust title="src/resolvers/query.rs"
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::hello, C>
     for super::Query
 {
-    type Output = ::std::string::String;
+    type Output = String;
 
     async fn resolve(
         &self,
         _context: &C,
         args: crate::generated::types::Query::hello::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         Ok(format!("Hello, {}", args.name))
     }
 }
@@ -79,6 +79,26 @@ plain `#[cfg(test)] mod tests { ... }` is ignored during resolver discovery.
 
 Files that are not reachable from `src/resolvers.rs` are not inspected or
 modified.
+
+## Read generated declarations
+
+New declarations use ordinary names such as `Query` and `hello`. Rust keywords
+keep their raw spelling, such as `r#type` and `r#gen`. This changes spelling, not
+the SDL-to-Rust name mapping or GraphQL field names.
+
+Standard types normally appear as `String`, `Vec<T>`, `Option<T>`, and
+`Result<T, E>`. If a declaration, import, or generic parameter in that module
+uses the same name, synchronization uses an absolute path such as
+`::std::vec::Vec<T>`. A glob import also causes conservative qualification.
+NecrassRs traits and types retain direct paths such as `necrassrs::Resolver`;
+if `necrassrs` is shadowed, they use `::necrassrs::Resolver` instead.
+
+Existing equivalent spelling is preserved. When new declarations introduce a
+collision, synchronization can qualify the affected contract paths without
+reformatting the file or rewriting resolver bodies. Existing aliases, custom
+trait bounds, and names from glob imports are preserved rather than resolved.
+Those application contracts and code inside a body may still need manual
+adjustment if their own names become shadowed.
 
 ## Understand source ownership
 

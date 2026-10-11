@@ -93,7 +93,7 @@ add the small in-memory data set:
 ```rust ins={3-26}
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
-pub struct r#Operator {
+pub struct Operator {
     id: &'static str,
 }
 
@@ -114,24 +114,24 @@ fn operator_name(id: &str) -> Option<&'static str> {
     }
 }
 
-fn operator(id: &'static str) -> self::r#Operator {
-    self::r#Operator { id }
+fn operator(id: &'static str) -> self::Operator {
+    self::Operator { id }
 }
 ```
 
 Keep the generated resolver declarations and replace their bodies as follows:
 
 ```rust ins={11-14,28,42-44}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#operator, C>
-    for self::r#Query
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::operator, C>
+    for self::Query
 {
-    type Output = ::core::option::Option<self::r#Operator>;
+    type Output = Option<self::Operator>;
 
     async fn resolve(
         &self,
         _context: &C,
-        args: crate::generated::types::r#Query::r#operator::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        args: crate::generated::types::Query::operator::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         Ok(OPERATOR_IDS
             .into_iter()
             .find(|id| operator_name(id) == Some(args.codename.as_str()))
@@ -139,33 +139,33 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#operato
     }
 }
 
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#id, C>
-    for self::r#Operator
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Operator::id, C>
+    for self::Operator
 {
-    type Output = ::necrassrs::Id;
+    type Output = necrassrs::Id;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Operator::r#id::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
-        Ok(::necrassrs::Id::from(self.id))
+        _args: crate::generated::types::Operator::id::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
+        Ok(necrassrs::Id::from(self.id))
     }
 }
 
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#codename, C>
-    for self::r#Operator
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Operator::codename, C>
+    for self::Operator
 {
-    type Output = ::std::string::String;
+    type Output = String;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Operator::r#codename::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Operator::codename::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         operator_name(self.id)
             .map(str::to_owned)
-            .ok_or_else(|| ::necrassrs::ResolverError::new("Unknown operator"))
+            .ok_or_else(|| necrassrs::ResolverError::new("Unknown operator"))
     }
 }
 ```
@@ -240,18 +240,18 @@ type Query {
 After `cargo build`, the new root resolver has this generated output contract:
 
 ```rust
-type Output = ::std::vec::Vec<crate::generated::types::r#Person<self::r#Operator>>;
+type Output = Vec<crate::generated::types::Person<self::Operator>>;
 ```
 
 `Person` is generated as an enum over its possible concrete object types. Add
 helpers that wrap each `Operator` in the corresponding variant:
 
 ```rust ins={1-7}
-fn person(id: &'static str) -> crate::generated::types::r#Person<self::r#Operator> {
-    crate::generated::types::r#Person::r#Operator(operator(id))
+fn person(id: &'static str) -> crate::generated::types::Person<self::Operator> {
+    crate::generated::types::Person::Operator(operator(id))
 }
 
-fn personnel() -> Vec<crate::generated::types::r#Person<self::r#Operator>> {
+fn personnel() -> Vec<crate::generated::types::Person<self::Operator>> {
     OPERATOR_IDS.into_iter().map(person).collect()
 }
 ```
@@ -259,19 +259,19 @@ fn personnel() -> Vec<crate::generated::types::r#Person<self::r#Operator>> {
 Implement the new `displayName` field using the same stored identity:
 
 ```rust ins={11-13}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#displayName, C>
-    for self::r#Operator
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Operator::displayName, C>
+    for self::Operator
 {
-    type Output = ::std::string::String;
+    type Output = String;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Operator::r#displayName::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Operator::displayName::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         operator_name(self.id)
             .map(str::to_owned)
-            .ok_or_else(|| ::necrassrs::ResolverError::new("Unknown operator"))
+            .ok_or_else(|| necrassrs::ResolverError::new("Unknown operator"))
     }
 }
 ```
@@ -279,16 +279,16 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#disp
 Then implement the generated `Query.personnel` stub:
 
 ```rust ins={11}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#personnel, C>
-    for self::r#Query
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::personnel, C>
+    for self::Query
 {
-    type Output = ::std::vec::Vec<crate::generated::types::r#Person<self::r#Operator>>;
+    type Output = Vec<crate::generated::types::Person<self::Operator>>;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Query::r#personnel::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Query::personnel::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         Ok(personnel())
     }
 }
@@ -400,7 +400,7 @@ uses a generated enum for abstract results:
 
 ```rust
 type Output =
-    ::std::vec::Vec<crate::generated::types::r#Organization<self::r#Company, self::r#Faction>>;
+    Vec<crate::generated::types::Organization<self::Company, self::Faction>>;
 ```
 
 Keep the generated unit structures. Replace the bodies for their leaf and
@@ -420,20 +420,20 @@ replace only the `unimplemented!()` body. The completed resolver selects the
 concrete variants explicitly:
 
 ```rust ins={12-15}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#organizations, C>
-    for self::r#Query
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::organizations, C>
+    for self::Query
 {
     type Output =
-        ::std::vec::Vec<crate::generated::types::r#Organization<self::r#Company, self::r#Faction>>;
+        Vec<crate::generated::types::Organization<self::Company, self::Faction>>;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Query::r#organizations::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Query::organizations::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         Ok(vec![
-            crate::generated::types::r#Organization::r#Company(self::r#Company),
-            crate::generated::types::r#Organization::r#Faction(self::r#Faction),
+            crate::generated::types::Organization::Company(self::Company),
+            crate::generated::types::Organization::Faction(self::Faction),
         ])
     }
 }
@@ -444,24 +444,24 @@ uses the same generated enum. This tutorial associates the Necrass record with
 Dublinn and the other records with Rhodes Island:
 
 ```rust ins={13-21}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#affiliation, C>
-    for self::r#Operator
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Operator::affiliation, C>
+    for self::Operator
 {
-    type Output = ::core::option::Option<
-        crate::generated::types::r#Organization<self::r#Company, self::r#Faction>,
+    type Output = Option<
+        crate::generated::types::Organization<self::Company, self::Faction>,
     >;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Operator::r#affiliation::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Operator::affiliation::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         let organization = match self.id {
-            "necrass" => crate::generated::types::r#Organization::r#Faction(self::r#Faction),
+            "necrass" => crate::generated::types::Organization::Faction(self::Faction),
             "reed" | "reed-the-flame-shadow" | "amiya" => {
-                crate::generated::types::r#Organization::r#Company(self::r#Company)
+                crate::generated::types::Organization::Company(self::Company)
             }
-            _ => return Err(::necrassrs::ResolverError::new("Unknown operator")),
+            _ => return Err(necrassrs::ResolverError::new("Unknown operator")),
         };
 
         Ok(Some(organization))
@@ -548,13 +548,13 @@ type Operator implements Person {
 }
 ```
 
-After `cargo build`, replace the generated `r#PersonRelationship` unit
+After `cargo build`, replace the generated `PersonRelationship` unit
 structure with:
 
 ```rust ins={3-6}
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
-pub struct r#PersonRelationship {
+pub struct PersonRelationship {
     kind: &'static str,
     person_id: &'static str,
 }
@@ -562,23 +562,23 @@ pub struct r#PersonRelationship {
 
 `Operator` and the existing `operator(id)` helper remain unchanged. The
 relationship kind and related-person identifier belong to
-`r#PersonRelationship`, not `r#Operator`.
+`PersonRelationship`, not `Operator`.
 
 The operator resolver returns finite relationship records. Recursive GraphQL
 selection does not require a recursively sized Rust value because each edge stores
 only the next person's identifier:
 
 ```rust ins={11-43}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#relationships, C>
-    for self::r#Operator
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Operator::relationships, C>
+    for self::Operator
 {
-    type Output = ::std::vec::Vec<self::r#PersonRelationship>;
+    type Output = Vec<self::PersonRelationship>;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#Operator::r#relationships::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Operator::relationships::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         let relationships = match self.id {
             "necrass" => vec![PersonRelationship {
                 kind: "SIBLING",
@@ -608,7 +608,7 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#rela
                 kind: "COOPERATES_WITH",
                 person_id: "reed-the-flame-shadow",
             }],
-            _ => return Err(::necrassrs::ResolverError::new("Unknown operator")),
+            _ => return Err(necrassrs::ResolverError::new("Unknown operator")),
         };
 
         Ok(relationships)
@@ -619,25 +619,25 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#rela
 Map the stored relationship name to the generated GraphQL enum:
 
 ```rust ins={11-20}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#PersonRelationship::r#kind, C>
-    for self::r#PersonRelationship
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::PersonRelationship::kind, C>
+    for self::PersonRelationship
 {
-    type Output = crate::generated::types::r#RelationshipKind;
+    type Output = crate::generated::types::RelationshipKind;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#PersonRelationship::r#kind::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::PersonRelationship::kind::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         match self.kind {
-            "SIBLING" => Ok(crate::generated::types::r#RelationshipKind::r#SIBLING),
+            "SIBLING" => Ok(crate::generated::types::RelationshipKind::SIBLING),
             "ALTERNATE_FORM" => {
-                Ok(crate::generated::types::r#RelationshipKind::r#ALTERNATE_FORM)
+                Ok(crate::generated::types::RelationshipKind::ALTERNATE_FORM)
             }
             "COOPERATES_WITH" => {
-                Ok(crate::generated::types::r#RelationshipKind::r#COOPERATES_WITH)
+                Ok(crate::generated::types::RelationshipKind::COOPERATES_WITH)
             }
-            _ => Err(::necrassrs::ResolverError::new("Unknown relationship")),
+            _ => Err(necrassrs::ResolverError::new("Unknown relationship")),
         }
     }
 }
@@ -646,16 +646,16 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#PersonRelationsh
 Return the related person through the `Person` Interface:
 
 ```rust ins={11}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#PersonRelationship::r#person, C>
-    for self::r#PersonRelationship
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::PersonRelationship::person, C>
+    for self::PersonRelationship
 {
-    type Output = crate::generated::types::r#Person<self::r#Operator>;
+    type Output = crate::generated::types::Person<self::Operator>;
 
     async fn resolve(
         &self,
         _context: &C,
-        _args: crate::generated::types::r#PersonRelationship::r#person::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::PersonRelationship::person::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         Ok(person(self.person_id))
     }
 }
@@ -708,26 +708,26 @@ type Query {
 Run `cargo build`. The generated result contract lists every Union member:
 
 ```rust
-type Output = ::std::vec::Vec<
-    crate::generated::types::r#SearchResult<self::r#Operator, self::r#Company, self::r#Faction>,
+type Output = Vec<
+    crate::generated::types::SearchResult<self::Operator, self::Company, self::Faction>,
 >;
 ```
 
 Implement a small case-insensitive search:
 
 ```rust ins={13-36}
-impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#search, C>
-    for self::r#Query
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::search, C>
+    for self::Query
 {
-    type Output = ::std::vec::Vec<
-        crate::generated::types::r#SearchResult<self::r#Operator, self::r#Company, self::r#Faction>,
+    type Output = Vec<
+        crate::generated::types::SearchResult<self::Operator, self::Company, self::Faction>,
     >;
 
     async fn resolve(
         &self,
         _context: &C,
-        args: crate::generated::types::r#Query::r#search::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        args: crate::generated::types::Query::search::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         let text = args.text.to_lowercase();
         let mut results = OPERATOR_IDS
             .into_iter()
@@ -736,18 +736,18 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::r#Query::r#search,
                     .is_some_and(|name| name.to_lowercase().contains(text.as_str()))
             })
             .map(|id| {
-                crate::generated::types::r#SearchResult::r#Operator(operator(id))
+                crate::generated::types::SearchResult::Operator(operator(id))
             })
             .collect::<Vec<_>>();
 
         if "rhodes island".contains(text.as_str()) {
-            results.push(crate::generated::types::r#SearchResult::r#Company(
-                self::r#Company,
+            results.push(crate::generated::types::SearchResult::Company(
+                self::Company,
             ));
         }
         if "dublinn".contains(text.as_str()) {
-            results.push(crate::generated::types::r#SearchResult::r#Faction(
-                self::r#Faction,
+            results.push(crate::generated::types::SearchResult::Faction(
+                self::Faction,
             ));
         }
 
@@ -827,7 +827,7 @@ pub struct RequestContext {
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
-pub struct r#PersonnelFile {
+pub struct PersonnelFile {
     title: &'static str,
     content: &'static str,
 }
@@ -848,27 +848,27 @@ resolver must name `RequestContext` before it can access
 `can_read_confidential`. The highlighted declaration lines make that change:
 
 ```rust ins={1,8,11-22}
-impl ::necrassrs::Resolver<crate::generated::fields::r#Operator::r#files, RequestContext>
-    for self::r#Operator
+impl necrassrs::Resolver<crate::generated::fields::Operator::files, RequestContext>
+    for self::Operator
 {
-    type Output = ::core::option::Option<::std::vec::Vec<self::r#PersonnelFile>>;
+    type Output = Option<Vec<self::PersonnelFile>>;
 
     async fn resolve(
         &self,
         context: &RequestContext,
-        _args: crate::generated::types::r#Operator::r#files::Args,
-    ) -> ::core::result::Result<Self::Output, ::necrassrs::ResolverError> {
+        _args: crate::generated::types::Operator::files::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
         if !context.can_read_confidential {
             return Err(
-                ::necrassrs::ResolverError::new("Personnel files are confidential")
+                necrassrs::ResolverError::new("Personnel files are confidential")
                     .with_extension("code", "FORBIDDEN"),
             );
         }
 
-        Ok(Some(vec![self::r#PersonnelFile {
+        Ok(Some(vec![self::PersonnelFile {
             title: "Personnel summary",
             content: operator_name(self.id)
-                .ok_or_else(|| ::necrassrs::ResolverError::new("Unknown operator"))?,
+                .ok_or_else(|| necrassrs::ResolverError::new("Unknown operator"))?,
         }]))
     }
 }
