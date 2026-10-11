@@ -11,6 +11,56 @@ use syn::{
 };
 
 #[test]
+fn collision_rendering_preserves_where_bounds_when_adding_resolvers() {
+    let consumer = Consumer::new("type Query { value: Int! sync: Sync! } type Sync { id: ID! }");
+    fs::write(consumer.resolvers(), "pub struct Query;\nimpl<C> crate::generated::resolvers::QueryResolver<C> for Query where C: Sync {}\n").unwrap();
+    consumer.bootstrap();
+    let before = fs::read(consumer.resolvers()).unwrap();
+    consumer.schema("type Query { value: Int! sync: Sync! extra: Int! } type Sync { id: ID! }");
+    assert_success(&consumer.build());
+    assert!(fs::read(consumer.resolvers()).unwrap().starts_with(&before));
+}
+
+#[test]
+fn collision_rendering_compiles_moved_resolvers_and_glob_imports() {
+    let consumer = Consumer::new("type Query { value: Int! }");
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers()).unwrap();
+    let ast = consumer.ast();
+    let range = field_resolver_ref(&ast, "Query", "value")
+        .span()
+        .byte_range();
+    let implementation = source[range.clone()].replace("for self::Query", "for super::Query");
+    let mut entry = source.clone();
+    entry.replace_range(
+        range,
+        "mod external;\nmod inline {\nuse super::*;\npub struct String;\n}\n",
+    );
+    fs::create_dir(consumer.directory.join("src/resolvers")).unwrap();
+    let child = consumer.directory.join("src/resolvers/external.rs");
+    fs::write(
+        &child,
+        format!("use super::*;\n#[allow(dead_code)] pub struct Option;\n{implementation}"),
+    )
+    .unwrap();
+    fs::write(consumer.resolvers(), entry).unwrap();
+    consumer.schema("type Query { value: [String!] extra: ID! }");
+    assert_success(&consumer.build());
+    let child_source = fs::read_to_string(&child).unwrap();
+    assert!(
+        child_source.contains("::core::option::Option<::std::vec::Vec<::std::string::String>>")
+    );
+    let entry_source = fs::read_to_string(consumer.resolvers()).unwrap();
+    consumer.schema("type Query { value: [String!] extra: ID! } ");
+    assert_success(&consumer.build());
+    assert_eq!(child_source, fs::read_to_string(&child).unwrap());
+    assert_eq!(
+        entry_source,
+        fs::read_to_string(consumer.resolvers()).unwrap()
+    );
+}
+
+#[test]
 fn collision_rendering_compiles_sdl_names_and_keyword_boundaries() {
     let consumer = Consumer::new(
         "enum type { gen type OPEN } \
@@ -266,7 +316,7 @@ fn expanded_input_and_result_contracts_rebuild_without_replacing_user_body() {
         output_type(field_resolver_ref(&ast, "Query", "inspect"))
             .to_token_stream()
             .to_string()
-            .contains("Option < :: std :: vec :: Vec < :: necrassrs :: Id > >")
+            .contains("Option < Vec < necrassrs :: Id > >")
     );
     let executable = messages(&build)
         .find_map(|message| message["executable"].as_str().map(PathBuf::from))

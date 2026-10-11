@@ -1,5 +1,5 @@
 use apollo_compiler::{Schema, ast::Type as GraphqlType, schema::ExtendedType, validation::Valid};
-use quote::{ToTokens, format_ident, quote};
+use quote::{format_ident, quote};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -8,6 +8,7 @@ use std::{
 };
 use syn::{
     GenericArgument, Item, PathArguments, Type, ext::IdentExt, spanned::Spanned, visit::Visit,
+    visit_mut::VisitMut,
 };
 
 use crate::{BuildError, codegen};
@@ -959,7 +960,7 @@ fn reconcile_field_resolver(
         let current_receiver = &implementation.self_ty;
         let desired_receiver =
             receiver_with_existing_arguments(&resolver.receiver, current_receiver)?;
-        if quote!(#current_receiver).to_string() != quote!(#desired_receiver).to_string() {
+        if !equivalent_output_type(current_receiver, &desired_receiver) {
             edits.push(Edit {
                 range: implementation.self_ty.span().byte_range(),
                 replacement: quote!(#desired_receiver).to_string(),
@@ -1396,7 +1397,7 @@ impl RenderScope {
                 scope.names.insert(name);
             }
             match item {
-                Item::Use(item) => scope.imports(&item.tree),
+                Item::Use(item) => scope.imports(&item.tree, None),
                 Item::Mod(item) => {
                     scope.names.insert(item.ident.unraw().to_string());
                 }
@@ -1421,20 +1422,24 @@ impl RenderScope {
         scope
     }
 
-    fn imports(&mut self, tree: &syn::UseTree) {
+    fn imports(&mut self, tree: &syn::UseTree, parent: Option<&syn::Ident>) {
         match tree {
             syn::UseTree::Name(name) => {
-                self.names.insert(name.ident.unraw().to_string());
+                let ident = if name.ident == "self" {
+                    parent.unwrap_or(&name.ident)
+                } else {
+                    &name.ident
+                };
+                self.names.insert(ident.unraw().to_string());
             }
             syn::UseTree::Rename(name) => {
                 self.names.insert(name.rename.unraw().to_string());
             }
-            syn::UseTree::Path(path) => {
-                // `use module::{self, Item}` also binds `module`.
-                self.names.insert(path.ident.unraw().to_string());
-                self.imports(&path.tree);
-            }
-            syn::UseTree::Group(group) => group.items.iter().for_each(|tree| self.imports(tree)),
+            syn::UseTree::Path(path) => self.imports(&path.tree, Some(&path.ident)),
+            syn::UseTree::Group(group) => group
+                .items
+                .iter()
+                .for_each(|tree| self.imports(tree, parent)),
             syn::UseTree::Glob(_) => self.glob = true,
         }
     }
@@ -1567,7 +1572,9 @@ impl RenderScope {
                 }
             })
             .collect::<Vec<_>>();
-        if let Some(name) = builtin_path(path) {
+        if path.leading_colon.is_some()
+            && let Some(name) = builtin_path(path)
+        {
             let last = segments.last().unwrap();
             return format!(
                 "{}{}",
@@ -1584,6 +1591,15 @@ impl RenderScope {
             ""
         };
         format!("{prefix}{}", segments.join("::"))
+    }
+}
+
+impl VisitMut for RenderScope {
+    fn visit_trait_bound_mut(&mut self, bound: &mut syn::TraitBound) {
+        if builtin_path(&bound.path) == Some("Sync") && self.blocked("Sync") {
+            bound.path = syn::parse_quote!(::core::marker::Sync);
+        }
+        syn::visit_mut::visit_trait_bound_mut(self, bound);
     }
 }
 
@@ -1618,18 +1634,45 @@ fn render_field_resolver(
     let field = &resolver.field;
     let receiver = &resolver.receiver;
     let output = &resolver.output;
-    let mut impl_generics = proc_macro2::TokenStream::new();
-    generics.to_tokens(&mut impl_generics);
-    let generic_source = impl_generics.to_string();
-    let parsed: syn::Generics =
-        syn::parse_str(&generic_source).expect("existing generics must parse");
-    let mut generic_edits = Vec::new();
-    scope.repair_bounds(&parsed, &mut generic_edits);
-    generic_edits.sort_by_key(|edit| std::cmp::Reverse(edit.range.start));
-    let mut impl_generics = generic_source;
-    for edit in generic_edits {
-        impl_generics.replace_range(edit.range, &edit.replacement);
-    }
+    let mut generics = generics.clone();
+    scope.clone().visit_generics_mut(&mut generics);
+    let parameters = generics
+        .params
+        .iter()
+        .map(|parameter| match parameter {
+            syn::GenericParam::Type(param) if param.attrs.is_empty() && param.default.is_none() => {
+                let name = &param.ident;
+                if param.bounds.is_empty() {
+                    return name.to_string();
+                }
+                let bounds = param
+                    .bounds
+                    .iter()
+                    .map(|bound| match bound {
+                        syn::TypeParamBound::Trait(bound) if bound.lifetimes.is_none() => {
+                            let modifier = &bound.modifier;
+                            let path = &bound.path;
+                            format!(
+                                "{}{}",
+                                quote!(#modifier),
+                                scope.render_type(&syn::parse_quote!(#path))
+                            )
+                        }
+                        _ => quote!(#bound).to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                format!("{name}: {bounds}")
+            }
+            _ => quote!(#parameter).to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let impl_generics = if parameters.is_empty() {
+        String::new()
+    } else {
+        format!("<{parameters}>")
+    };
     let where_clause = &generics.where_clause;
     format!(
         "impl{} {framework}::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
@@ -1643,11 +1686,11 @@ fn render_field_resolver(
          \x20   }}\n\
          }}",
         impl_generics,
-        quote!(#context),
-        quote!(#receiver),
+        scope.render_type(context),
+        scope.render_type(receiver),
         quote!(#where_clause),
         scope.render_type(output),
-        quote!(#context),
+        scope.render_type(context),
     )
 }
 
@@ -1703,6 +1746,7 @@ struct Edit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quote::ToTokens;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct ResolverFile {
@@ -1935,6 +1979,34 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
         file.synchronize("type Query { hello: Int! }").unwrap();
         assert_eq!(fs::read_to_string(child).unwrap(), child_source);
         assert_eq!(file.read(), entry_source);
+    }
+
+    #[test]
+    fn readable_rendering_preserves_existing_raw_receivers_and_user_source() {
+        let file = ResolverFile::new();
+        let sdl = "type Query { operator: Operator! } type Operator { name: String! }";
+        file.synchronize(sdl).unwrap();
+        let source = file
+            .read()
+            .replace(
+                "pub struct Operator;",
+                "pub struct Operator { pub state: u8 }",
+            )
+            .replace(
+                "for self::Operator",
+                "for self:: /* representation */ r#Operator",
+            )
+            .replace(
+                "    async fn resolve(",
+                "    #[allow(unused_variables)]\n    async fn resolve(",
+            )
+            .replace(
+                "::core::unimplemented!()",
+                "{ /* business logic */ ::core::unimplemented!() }",
+            );
+        fs::write(&file.path, &source).unwrap();
+        file.synchronize(sdl).unwrap();
+        assert_eq!(source, file.read());
     }
 
     #[test]
