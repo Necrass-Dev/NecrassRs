@@ -1711,6 +1711,87 @@ impl<C: Sync> ::necrassrs::Resolver<crate::generated::fields::Query::hello, C>
     }
 
     #[test]
+    fn collision_rendering_uses_absolute_paths_for_local_names_and_imports() {
+        for declaration in [
+            "pub struct String;",
+            "use ::std::vec::Vec as String;",
+            "use ::std::string::String;",
+            "use super::*;",
+        ] {
+            let file = ResolverFile::new();
+            fs::write(&file.path, format!(
+                "{declaration}\npub struct Query;\nimpl<C: Sync> crate::generated::resolvers::QueryResolver<C> for Query {{}}\n"
+            )).unwrap();
+            file.synchronize("type Query { label: String! count: Int! }")
+                .unwrap();
+            assert_eq!(
+                field_output(&file.read(), "Query", "label"),
+                ":: std :: string :: String",
+                "{declaration}"
+            );
+            if !declaration.contains('*') {
+                assert_eq!(field_output(&file.read(), "Query", "count"), "i32");
+            }
+        }
+    }
+
+    #[test]
+    fn collision_rendering_respects_impl_generic_names() {
+        let file = ResolverFile::new();
+        fs::write(&file.path, "pub struct Query;\nimpl<String: Sync> crate::generated::resolvers::QueryResolver<String> for Query {}\n").unwrap();
+        file.synchronize("type Query { label: String! }").unwrap();
+        assert_eq!(
+            field_output(&file.read(), "Query", "label"),
+            ":: std :: string :: String"
+        );
+        assert!(file.read().contains("_context: &String"));
+    }
+
+    #[test]
+    fn collision_rendering_repairs_paths_when_sdl_adds_shadowing_types() {
+        let file = ResolverFile::new();
+        file.synchronize("type Query { values: [Int!] }").unwrap();
+        let source = file.read().replace(
+            "type Output = Option<Vec<i32>>;",
+            "type Output = Option</* keep */ Vec<i32>>;",
+        );
+        fs::write(&file.path, &source).unwrap();
+        let sdl = "type Query { values: [Int!] option: Option! vec: Vec! result: Result! sync: Sync! framework: necrassrs! } \
+                   type Option { id: ID! } type Vec { id: ID! } type Result { id: ID! } type Sync { id: ID! } type necrassrs { id: ID! }";
+        file.synchronize(sdl).unwrap();
+        let updated = file.read();
+        assert!(updated.contains("::core::option::Option</* keep */ ::std::vec::Vec<i32>>"));
+        assert!(
+            updated.contains("-> ::core::result::Result<Self::Output, ::necrassrs::ResolverError>")
+        );
+        assert!(
+            updated.contains(
+                "impl<C: ::core::marker::Sync> crate::generated::resolvers::QueryResolver"
+            )
+        );
+        file.synchronize(sdl).unwrap();
+        assert_eq!(updated, file.read());
+    }
+
+    #[test]
+    fn collision_rendering_uses_the_destination_module_scope() {
+        let file = ResolverFile::new();
+        let child = write_external_resolver(&file, "resolvers/fields.rs");
+        let source = fs::read_to_string(&child).unwrap();
+        fs::write(&child, format!("pub struct Option;\n{source}")).unwrap();
+        file.synchronize("type Query { hello: [String!] }").unwrap();
+        assert_eq!(
+            field_output(&fs::read_to_string(&child).unwrap(), "Query", "hello"),
+            ":: core :: option :: Option < Vec < String > >"
+        );
+        assert!(
+            fs::read_to_string(&child)
+                .unwrap()
+                .contains("/* retain this body */")
+        );
+    }
+
+    #[test]
     fn readable_names_and_types_keep_keyword_escapes() {
         let file = ResolverFile::new();
         file.synchronize(

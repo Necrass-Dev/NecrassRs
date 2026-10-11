@@ -11,6 +11,55 @@ use syn::{
 };
 
 #[test]
+fn collision_rendering_compiles_sdl_names_and_keyword_boundaries() {
+    let consumer = Consumer::new(
+        "enum type { gen type OPEN } \
+         type Query { values: [Int!] option: Option! vec: Vec! result: Result! sync: Sync! id: Id! resolver: Resolver! error: ResolverError! framework: necrassrs! std: std! core: core! int: i32! float: f64! boolean: bool! keyword(self: String!, _self: String!, _: String!, gen: String!): type! lower: user! upper: User! } \
+         type Option { id: ID! } type Vec { id: ID! } type Result { id: ID! } type Sync { id: ID! } \
+         type Id { id: ID! } type Resolver { id: ID! } type ResolverError { id: ID! } \
+         type necrassrs { id: ID! } type std { id: ID! } type core { id: ID! } \
+         type i32 { value: Int! } type f64 { value: Float! } type bool { value: Boolean! } \
+         type user { type: String! } type User { gen: String! }",
+    );
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(source.contains("fields::user::r#type"));
+    assert!(source.contains("fields::User::r#gen"));
+    assert!(source.contains("crate::generated::types::r#type"));
+    consumer.schema(&fs::read_to_string(consumer.directory.join("schema/schema.graphql")).unwrap());
+    assert_success(&consumer.build());
+    assert_eq!(source, fs::read_to_string(consumer.resolvers()).unwrap());
+}
+
+#[test]
+fn collision_rendering_compiles_after_new_sdl_names_shadow_retained_signatures() {
+    let consumer = Consumer::new("type Query { values: [Int!] }");
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers())
+        .unwrap()
+        .replace("::core::unimplemented!()", "{ /* retain body */ Ok(None) }");
+    fs::write(consumer.resolvers(), &source).unwrap();
+    consumer.schema("type Query { values: [Int!] option: Option! vec: Vec! result: Result! sync: Sync! framework: necrassrs! } type Option { id: ID! } type Vec { id: ID! } type Result { id: ID! } type Sync { id: ID! } type necrassrs { id: ID! }");
+    assert_success(&consumer.build());
+    assert!(
+        fs::read_to_string(consumer.resolvers())
+            .unwrap()
+            .contains("{ /* retain body */ Ok(None) }")
+    );
+}
+
+#[test]
+fn collision_rendering_compiles_user_imports_and_generic_names() {
+    let consumer = Consumer::new("type Query { label: String! values: [Int!] }");
+    fs::write(consumer.resolvers(), "use ::std::vec::Vec as String;\npub struct Query;\nimpl<Result: Sync> crate::generated::resolvers::QueryResolver<Result> for Query {}\n").unwrap();
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(source.contains("type Output = ::std::string::String;"));
+    assert!(source.contains("_context: &Result"));
+    assert!(source.contains("-> ::core::result::Result<Self::Output, necrassrs::ResolverError>"));
+}
+
+#[test]
 fn first_build_creates_query_and_explicit_unimplemented_methods_from_sdl() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     assert!(!consumer.resolvers().exists());
