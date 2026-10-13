@@ -510,12 +510,24 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
                 schema.schema_definition.location(),
             )
         })?;
-    let resolver_name = format_ident!("{}Resolver", rust_name(query.name.as_str()));
+    let roots = std::iter::once(query).chain(
+        schema
+            .schema_definition
+            .mutation
+            .as_ref()
+            .and_then(|name| schema.get_object(name.as_str())),
+    );
+    let resolvers = roots.map(|root| {
+        let resolver_name = format_ident!("{}Resolver", rust_name(root.name.as_str()));
+        quote! {
+            #[allow(dead_code, non_camel_case_types, non_snake_case)]
+            pub trait #resolver_name<C> {}
+        }
+    });
 
     Ok(quote! {
         pub mod resolvers {
-            #[allow(dead_code, non_camel_case_types, non_snake_case)]
-            pub trait #resolver_name<C> {}
+            #(#resolvers)*
         }
     })
 }
