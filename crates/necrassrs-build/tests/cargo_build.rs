@@ -659,6 +659,58 @@ fn main() {
 }
 
 #[test]
+fn adding_mutation_root_preserves_query_resolvers_and_adds_mutation_stubs() {
+    let consumer = Consumer::new("type Query { current: String! }");
+    consumer.bootstrap();
+    consumer.implement("current", "query value");
+    let before = body(method(&consumer.ast(), "current"));
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<()>>(_: D) {}
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(
+        resolvers::Query,
+        resolvers::Mutation,
+    ));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema(
+        r#"
+schema { query: Query mutation: Mutation }
+type Query { current: String! }
+type Mutation { current: String! }
+"#,
+    );
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    assert_eq!(body(method(&ast, "current")), before);
+    assert_eq!(
+        root_resolver_impl(&ast, "MutationResolver")
+            .self_ty
+            .to_token_stream()
+            .to_string(),
+        "self :: Mutation",
+    );
+    let mutation = field_resolver_ref(&ast, "Mutation", "current");
+    let resolve = mutation
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+            _ => None,
+        })
+        .expect("the mutation field must have an explicit resolver method");
+    assert_stub(resolve);
+}
+
+#[test]
 fn generic_bindings_remain_local_to_each_resolver_impl() {
     let consumer = Consumer::new("type Query { hello: String! }");
     consumer.bootstrap();
@@ -763,6 +815,10 @@ fn adding_field_to_bom_prefixed_source_preserves_existing_code() {
 }
 
 fn resolver_impl(ast: &syn::File) -> &ItemImpl {
+    root_resolver_impl(ast, "QueryResolver")
+}
+
+fn root_resolver_impl<'a>(ast: &'a syn::File, resolver: &str) -> &'a ItemImpl {
     ast.items
         .iter()
         .find_map(|item| match item {
@@ -770,14 +826,16 @@ fn resolver_impl(ast: &syn::File) -> &ItemImpl {
                 if item.trait_.as_ref().is_some_and(|(_, path, _)| {
                     path.segments
                         .last()
-                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                        .is_some_and(|segment| segment.ident == resolver)
                 }) =>
             {
                 Some(item)
             }
             _ => None,
         })
-        .expect("the source file must contain an explicit QueryResolver implementation")
+        .unwrap_or_else(|| {
+            panic!("the source file must contain an explicit {resolver} implementation")
+        })
 }
 
 fn field_resolver<'a>(ast: &'a mut syn::File, object: &str, field: &str) -> &'a mut ItemImpl {

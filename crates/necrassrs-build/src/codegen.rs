@@ -2058,6 +2058,198 @@ mod test {
     }
 
     #[test]
+    fn generated_dispatch_executes_query_and_mutation_roots() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                schema { query: ReadRoot mutation: WriteRoot }
+                type ReadRoot { current: Counter! }
+                type WriteRoot {
+                    increment(by: Int!): Counter!
+                    current: Counter!
+                    fail: Counter!
+                }
+                type Counter { value: Int! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("mutation generation must succeed");
+        let consumer = r##"
+            use generated::{fields, resolvers::{ReadRootResolver, WriteRootResolver}, types};
+            use necrassrs::{Field, Request, Resolver, ResolverError};
+            use std::sync::{
+                Arc, Mutex,
+                atomic::{AtomicI32, Ordering},
+            };
+
+            struct Query(Arc<AtomicI32>);
+            struct Mutation(Arc<AtomicI32>);
+            struct Counter {
+                value: i32,
+                completion: &'static str,
+            }
+            struct Context<'a> {
+                events: &'a Mutex<Vec<&'static str>>,
+            }
+
+            impl<'ctx> ReadRootResolver<Context<'ctx>> for Query {}
+            impl<'ctx> WriteRootResolver<Context<'ctx>> for Mutation {}
+
+            impl<'ctx> Resolver<fields::ReadRoot::current, Context<'ctx>> for Query {
+                type Output = Counter;
+
+                async fn resolve(
+                    &self,
+                    _context: &Context<'ctx>,
+                    _args: <fields::ReadRoot::current as Field>::Args,
+                ) -> Result<Self::Output, ResolverError> {
+                    Ok(Counter {
+                        value: self.0.load(Ordering::Relaxed),
+                        completion: "query-complete",
+                    })
+                }
+            }
+
+            impl<'ctx> Resolver<fields::WriteRoot::increment, Context<'ctx>> for Mutation {
+                type Output = Counter;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    args: types::WriteRoot::increment::Args,
+                ) -> Result<Self::Output, ResolverError> {
+                    context.events.lock().unwrap().push("first-root");
+                    Ok(Counter {
+                        value: self.0.fetch_add(args.by, Ordering::Relaxed) + args.by,
+                        completion: "first-complete",
+                    })
+                }
+            }
+
+            impl<'ctx> Resolver<fields::WriteRoot::current, Context<'ctx>> for Mutation {
+                type Output = Counter;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    _args: <fields::WriteRoot::current as Field>::Args,
+                ) -> Result<Self::Output, ResolverError> {
+                    assert_eq!(
+                        *context.events.lock().unwrap(),
+                        ["first-root", "first-complete"],
+                    );
+                    context.events.lock().unwrap().push("second-root");
+                    Ok(Counter {
+                        value: self.0.load(Ordering::Relaxed),
+                        completion: "second-complete",
+                    })
+                }
+            }
+
+            impl<'ctx> Resolver<fields::WriteRoot::fail, Context<'ctx>> for Mutation {
+                type Output = Counter;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    _args: <fields::WriteRoot::fail as Field>::Args,
+                ) -> Result<Self::Output, ResolverError> {
+                    context.events.lock().unwrap().push("failed-root");
+                    Err(ResolverError::new("Mutation failed.")
+                        .with_extension("code", "MUTATION_FAILED"))
+                }
+            }
+
+            impl<'ctx> Resolver<fields::Counter::value, Context<'ctx>> for Counter {
+                type Output = i32;
+
+                async fn resolve(
+                    &self,
+                    context: &Context<'ctx>,
+                    _args: <fields::Counter::value as Field>::Args,
+                ) -> Result<Self::Output, ResolverError> {
+                    context.events.lock().unwrap().push(self.completion);
+                    Ok(self.value)
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL, "schema.graphql",
+                ).unwrap();
+                let value = Arc::new(AtomicI32::new(0));
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(
+                    Query(Arc::clone(&value)),
+                    Mutation(Arc::clone(&value)),
+                );
+                let events = Mutex::new(Vec::new());
+                let context = Context { events: &events };
+
+                let query = Request::new("query { current { value } }");
+                let response = futures::executor::block_on(necrassrs::execute(
+                    &schema, &query, &dispatcher, &context,
+                ));
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "current": { "value": 0 } } }),
+                );
+                events.lock().unwrap().clear();
+
+                let mutation = Request::new(r#"
+                    mutation Update($include: Boolean!) {
+                        first: increment(by: 1) { value ...CounterFields }
+                        first: increment(by: 1) { value }
+                        ...More
+                    }
+                    fragment More on WriteRoot {
+                        ignored: increment(by: 100) @skip(if: true) { value }
+                        second: current @include(if: $include) { value ...CounterFields }
+                    }
+                    fragment CounterFields on Counter { value }
+                "#).with_variables(
+                    serde_json::from_value(serde_json::json!({ "include": true })).unwrap(),
+                );
+                let future = necrassrs::execute(&schema, &mutation, &dispatcher, &context);
+                fn assert_send<T: Send>(_: &T) {}
+                assert_send(&future);
+                let response = futures::executor::block_on(future);
+                assert_eq!(
+                    serde_json::to_string(&response).unwrap(),
+                    r#"{"data":{"first":{"value":1},"second":{"value":1}}}"#,
+                );
+                assert_eq!(
+                    *events.lock().unwrap(),
+                    ["first-root", "first-complete", "second-root", "second-complete"],
+                );
+
+                events.lock().unwrap().clear();
+                let failed = Request::new(
+                    "mutation { failed: fail { value } after: current { value } }",
+                );
+                let response = serde_json::to_value(futures::executor::block_on(
+                    necrassrs::execute(&schema, &failed, &dispatcher, &context),
+                )).unwrap();
+                assert_eq!(response["data"], serde_json::Value::Null);
+                assert_eq!(response["errors"][0]["message"], "Mutation failed.");
+                assert_eq!(response["errors"][0]["path"], serde_json::json!(["failed"]));
+                assert_eq!(response["errors"][0]["extensions"]["code"], "MUTATION_FAILED");
+                assert_eq!(*events.lock().unwrap(), ["failed-root"]);
+
+                let recovery = Request::new("query { current { value } }");
+                let response = futures::executor::block_on(necrassrs::execute(
+                    &schema, &recovery, &dispatcher, &context,
+                ));
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "current": { "value": 1 } } }),
+                );
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn generated_query_leaf_dispatch_uses_field_resolver() {
         let schema = Schema::parse_and_validate(
             "type Query { hello(name: String!): String! }",
