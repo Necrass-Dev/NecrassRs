@@ -1027,6 +1027,8 @@ mod tests {
 
     struct CountingDispatcher(AtomicUsize);
 
+    struct CountingFailingDispatcher(AtomicUsize);
+
     struct RecoveringDispatcher(AtomicUsize);
 
     struct OrderingDispatcher(Mutex<Vec<String>>);
@@ -1137,6 +1139,19 @@ mod tests {
             self.0.fetch_add(1, Ordering::Relaxed);
 
             Ok(ResolvedValue::Json(json!("unexpected resolver call")))
+        }
+    }
+
+    impl super::Dispatcher<()> for CountingFailingDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> Result<ResolvedValue, ResolverError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+
+            Err(ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED"))
         }
     }
 
@@ -1337,6 +1352,32 @@ mod tests {
         assert_eq!(
             to_value(response).unwrap(),
             json!({ "data": { "hello": "unexpected resolver call" } })
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_field_error_is_reported_once_with_all_locations() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String }", "schema.graphql").unwrap();
+        let request = Request::new(
+            "query {\n  greeting: hello\n  ...Again\n}\nfragment Again on Query {\n  greeting: hello\n}",
+        );
+        let dispatcher = CountingFailingDispatcher(AtomicUsize::new(0));
+
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(response["data"], json!({ "greeting": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["greeting"]));
+        assert_eq!(errors[0]["extensions"]["code"], "GREETING_FAILED");
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 13 },
+                { "line": 6, "column": 13 },
+            ])
         );
         assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
     }
