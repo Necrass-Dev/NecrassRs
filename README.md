@@ -114,6 +114,7 @@ Applications normally depend on their HTTP adapter, which uses `necrassrs-http` 
 
 ## Further reading
 
+- [Tutorial example](examples/tutorial/README.md): inspect the completed Axum project from the step-by-step tutorial, including its in-memory mutation.
 - [Axum server example](examples/axum-server/README.md): run a workspace example and explore requests, errors, and manual setup details.
 - [Actix server example](examples/actix-server/README.md): run generated resolvers through Actix Web with built-in GraphiQL.
 - [Personnel Management System](docs/src/content/docs/docs/guide/personnel-management.md): build Object, Interface, and Union result resolvers.

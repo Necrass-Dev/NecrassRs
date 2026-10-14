@@ -2027,6 +2027,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutorial"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "necrassrs",
+ "necrassrs-axum",
+ "necrassrs-build",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
