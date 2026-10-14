@@ -686,6 +686,7 @@ fn update_existing(
     }
     let query_generics = &implementation.generics;
     let query_context = resolver_context(implementation)?;
+    let query_context_generics = context_generics(query_generics, query_context);
     let mut scope = RenderScope::from_items(&ast.items);
     scope.names.extend(
         objects
@@ -825,7 +826,7 @@ fn update_existing(
         if root_implementation.is_some() {
             continue;
         }
-        let (impl_generics, _, where_clause) = query_generics.split_for_impl();
+        let (impl_generics, _, where_clause) = query_context_generics.split_for_impl();
         let root_implementation = quote! {
             #[allow(non_snake_case)]
             impl #impl_generics crate::generated::resolvers::#resolver<#query_context>
@@ -844,7 +845,7 @@ fn update_existing(
                     &root_implementation.generics,
                     resolver_context(root_implementation)?,
                 ),
-                None => (query_generics, query_context),
+                None => (&query_context_generics, query_context),
             },
             None => (&implementation.generics, resolver_context(implementation)?),
         };
@@ -1052,6 +1053,126 @@ fn resolver_context(implementation: &syn::ItemImpl) -> syn::Result<&Type> {
         .ok_or_else(|| {
             syn::Error::new_spanned(implementation, "Expected one resolver Context type")
         })
+}
+
+fn context_generics(generics: &syn::Generics, context: &Type) -> syn::Generics {
+    let names = generics
+        .params
+        .iter()
+        .map(|parameter| match parameter {
+            syn::GenericParam::Lifetime(parameter) => parameter.lifetime.ident.to_string(),
+            syn::GenericParam::Type(parameter) => parameter.ident.to_string(),
+            syn::GenericParam::Const(parameter) => parameter.ident.to_string(),
+        })
+        .collect::<BTreeSet<_>>();
+    let retained = generic_references(&names, |visitor| visitor.visit_type(context));
+    let mut filtered = generics.clone();
+    filtered.params = filtered
+        .params
+        .into_iter()
+        .filter(|parameter| {
+            let name = match parameter {
+                syn::GenericParam::Lifetime(parameter) => parameter.lifetime.ident.to_string(),
+                syn::GenericParam::Type(parameter) => parameter.ident.to_string(),
+                syn::GenericParam::Const(parameter) => parameter.ident.to_string(),
+            };
+            retained.contains(&name)
+        })
+        .collect();
+    for parameter in &mut filtered.params {
+        match parameter {
+            syn::GenericParam::Lifetime(parameter) => {
+                parameter.bounds = parameter
+                    .bounds
+                    .clone()
+                    .into_iter()
+                    .filter(|bound| {
+                        generic_references(&names, |visitor| {
+                            visitor.visit_lifetime(bound);
+                        })
+                        .is_subset(&retained)
+                    })
+                    .collect()
+            }
+            syn::GenericParam::Type(parameter) => {
+                parameter.bounds = parameter
+                    .bounds
+                    .clone()
+                    .into_iter()
+                    .filter(|bound| {
+                        generic_references(&names, |visitor| {
+                            visitor.visit_type_param_bound(bound);
+                        })
+                        .is_subset(&retained)
+                    })
+                    .collect()
+            }
+            syn::GenericParam::Const(_) => {}
+        }
+    }
+    if let Some(where_clause) = &mut filtered.where_clause {
+        where_clause.predicates = where_clause
+            .predicates
+            .clone()
+            .into_iter()
+            .filter(|predicate| {
+                generic_references(&names, |visitor| {
+                    visitor.visit_where_predicate(predicate);
+                })
+                .is_subset(&retained)
+            })
+            .collect();
+        if where_clause.predicates.is_empty() {
+            filtered.where_clause = None;
+        }
+    }
+    filtered
+}
+
+fn generic_references(
+    names: &BTreeSet<String>,
+    visit: impl FnOnce(&mut GenericReferences<'_>),
+) -> BTreeSet<String> {
+    let mut references = GenericReferences {
+        names,
+        references: BTreeSet::new(),
+    };
+    visit(&mut references);
+    references.references
+}
+
+struct GenericReferences<'a> {
+    names: &'a BTreeSet<String>,
+    references: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for GenericReferences<'_> {
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if path.qself.is_none()
+            && let Some(segment) = path.path.segments.first()
+            && self.names.contains(&segment.ident.to_string())
+        {
+            self.references.insert(segment.ident.to_string());
+        }
+        syn::visit::visit_expr_path(self, path);
+    }
+
+    fn visit_lifetime(&mut self, lifetime: &'ast syn::Lifetime) {
+        let name = lifetime.ident.to_string();
+        if self.names.contains(&name) {
+            self.references.insert(name);
+        }
+    }
+
+    fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+        if path.qself.is_none()
+            && let Some(segment) = path.path.segments.first()
+            && self.names.contains(&segment.ident.to_string())
+        {
+            self.references.insert(segment.ident.to_string());
+        }
+        syn::visit::visit_type_path(self, path);
+    }
 }
 
 fn reconcile_field_resolvers<'a>(
