@@ -32,7 +32,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         })?;
     let object = rust_ident(query.name.as_str());
     let resolver = format_ident!("{}Resolver", codegen::rust_name(query.name.as_str()));
-    let object_names = codegen::reachable_object_names(schema, query.name.as_str());
+    let object_names = codegen::reachable_object_names(schema, &[query.name.as_str()]);
     let objects = object_names
         .iter()
         .map(|name| rust_ident(name))
