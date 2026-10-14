@@ -701,11 +701,11 @@ where
             values.into_iter().map(ResolvedValue::Json).collect()
         }
         _ => {
-            errors.push(*new_execution_error(
+            errors.push(*new_field_execution_error(
                 prepared,
+                fields,
                 path,
                 format!("Expected field '{}' to return a list.", field.name),
-                field.name.location(),
             ));
             return complete_null(ty);
         }
