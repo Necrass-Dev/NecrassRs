@@ -2262,6 +2262,74 @@ mod test {
     }
 
     #[test]
+    fn generated_mutation_dispatch_includes_mutation_only_objects() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                schema { query: ReadRoot mutation: WriteRoot }
+                type ReadRoot { version: String! }
+                type WriteRoot { create: Receipt! }
+                type Receipt { label: String! }
+            "#,
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("mutation generation must succeed");
+        let consumer = r#"
+            use necrassrs::{Field, Resolver};
+
+            struct Query;
+            struct Mutation;
+            struct Receipt;
+
+            impl resolvers::ReadRootResolver<()> for Query {}
+            impl resolvers::WriteRootResolver<()> for Mutation {}
+
+            impl Resolver<fields::ReadRoot::version, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::ReadRoot::version as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    unimplemented!()
+                }
+            }
+
+            impl Resolver<fields::WriteRoot::create, ()> for Mutation {
+                type Output = Receipt;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::WriteRoot::create as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    unimplemented!()
+                }
+            }
+
+            impl Resolver<fields::Receipt::label, ()> for Receipt {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _context: &(),
+                    _args: <fields::Receipt::label as Field>::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    unimplemented!()
+                }
+            }
+
+            fn check() {
+                fn require_dispatcher<D: necrassrs::Dispatcher<()>>(_: D) {}
+                require_dispatcher(dispatch::SchemaDispatcher::new(Query, Mutation));
+            }
+        "#;
+
+        assert_consumer_compiles(&generated, consumer);
+    }
+
+    #[test]
     fn generated_query_leaf_dispatch_uses_field_resolver() {
         let schema = Schema::parse_and_validate(
             "type Query { hello(name: String!): String! }",
