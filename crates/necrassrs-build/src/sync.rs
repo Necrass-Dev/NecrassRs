@@ -684,8 +684,8 @@ fn update_existing(
             "Multiple root resolver implementations are ambiguous",
         )?);
     }
-    let default_generics: syn::Generics = syn::parse_quote!(<C: ::core::marker::Sync>);
-    let default_context: Type = syn::parse_quote!(C);
+    let query_generics = &implementation.generics;
+    let query_context = resolver_context(implementation)?;
     let mut scope = RenderScope::from_items(&ast.items);
     scope.names.extend(
         objects
@@ -825,13 +825,14 @@ fn update_existing(
         if root_implementation.is_some() {
             continue;
         }
-        let root_implementation: syn::ItemImpl = syn::parse_quote! {
+        let (impl_generics, _, where_clause) = query_generics.split_for_impl();
+        let root_implementation = quote! {
             #[allow(non_snake_case)]
-            impl<C: ::core::marker::Sync> crate::generated::resolvers::#resolver<C>
-                for self::#object
+            impl #impl_generics crate::generated::resolvers::#resolver<#query_context>
+                for self::#object #where_clause
             {}
         };
-        additions.push(quote!(#root_implementation).to_string());
+        additions.push(root_implementation.to_string());
     }
     for resolver in desired_fields.into_values() {
         let root_index = root_objects
@@ -843,7 +844,7 @@ fn update_existing(
                     &root_implementation.generics,
                     resolver_context(root_implementation)?,
                 ),
-                None => (&default_generics, &default_context),
+                None => (query_generics, query_context),
             },
             None => (&implementation.generics, resolver_context(implementation)?),
         };

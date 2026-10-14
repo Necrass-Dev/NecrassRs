@@ -659,6 +659,123 @@ fn main() {
 }
 
 #[test]
+fn adding_mutation_root_reuses_query_context_contract() {
+    let consumer = Consumer::new("type Query { hello: String! }");
+    consumer.bootstrap();
+    let mut ast = consumer.ast();
+    for item in &mut ast.items {
+        match item {
+            Item::Struct(item) if item.ident == "Query" => {
+                item.ident = syn::parse_quote!(AppQuery);
+            }
+            Item::Impl(implementation)
+                if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                }) =>
+            {
+                implementation.generics = syn::parse_quote!(<T>);
+                implementation.generics.where_clause =
+                    Some(syn::parse_quote!(where T: Database + Sync));
+                implementation.trait_.as_mut().unwrap().1 =
+                    syn::parse_quote!(crate::generated::resolvers::QueryResolver<AppContext<T>>);
+                *implementation.self_ty = syn::parse_quote!(self::AppQuery);
+            }
+            _ => {}
+        }
+    }
+    ast.items.extend([
+        syn::parse_quote!(
+            pub trait Database {
+                fn value(&self) -> String;
+            }
+        ),
+        syn::parse_quote!(
+            pub struct Db;
+        ),
+        syn::parse_quote!(
+            impl Database for Db {
+                fn value(&self) -> String {
+                    String::from("value")
+                }
+            }
+        ),
+        syn::parse_quote!(
+            pub struct AppContext<T> {
+                pub db: T,
+            }
+        ),
+    ]);
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<resolvers::AppContext<resolvers::Db>>>(_: D) {}
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(
+        resolvers::AppQuery,
+        resolvers::Mutation,
+    ));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema(
+        "schema { query: Query mutation: Mutation } \
+         type Query { hello: String! } \
+         type Mutation { update: String! }",
+    );
+
+    assert_success(&consumer.build());
+    let mut ast = consumer.ast();
+    let marker = root_resolver_impl(&ast, "MutationResolver");
+    assert_eq!(marker.generics.to_token_stream().to_string(), "< T >");
+    assert_eq!(
+        marker.generics.where_clause.to_token_stream().to_string(),
+        "where T : Database + Sync"
+    );
+    assert_eq!(
+        marker
+            .trait_
+            .as_ref()
+            .unwrap()
+            .1
+            .to_token_stream()
+            .to_string(),
+        "crate :: generated :: resolvers :: MutationResolver < AppContext < T > >"
+    );
+    let mutation = ast
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            Item::Impl(implementation)
+                if field_resolver_coordinate(implementation)
+                    .is_some_and(|(object, field)| object == "Mutation" && field == "update") =>
+            {
+                Some(implementation)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let resolve = mutation
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+            _ => None,
+        })
+        .unwrap();
+    resolve.block = syn::parse_quote!({ Ok(_context.db.value()) });
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+
+    assert_success(&consumer.build());
+}
+
+#[test]
 fn adding_and_removing_mutation_root_preserves_query_resolvers_and_updates_stubs() {
     let consumer = Consumer::new("type Query { current: String! }");
     consumer.bootstrap();
