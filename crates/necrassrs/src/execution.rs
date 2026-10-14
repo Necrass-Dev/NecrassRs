@@ -1036,9 +1036,9 @@ mod tests {
 
     struct ValueDispatcher(JsonValue);
 
-    struct InvalidAbstractDispatcher;
+    struct InvalidAbstractDispatcher(&'static str);
 
-    struct InvalidAbstractObject;
+    struct InvalidAbstractObject(&'static str);
 
     struct CountingDispatcher(AtomicUsize);
 
@@ -1119,13 +1119,15 @@ mod tests {
             _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
         ) -> Result<ResolvedValue, ResolverError> {
-            Ok(ResolvedValue::Object(Box::new(InvalidAbstractObject)))
+            Ok(ResolvedValue::Object(Box::new(InvalidAbstractObject(
+                self.0,
+            ))))
         }
     }
 
     impl crate::ResolvedObject<()> for InvalidAbstractObject {
         fn type_name(&self) -> &'static str {
-            "Post"
+            self.0
         }
 
         fn resolve<'a>(
@@ -1511,9 +1513,39 @@ mod tests {
             "query {\n  result: search { __typename }\n  ...Again\n}\nfragment Again on Query {\n  result: search { __typename }\n}",
         );
 
-        let response =
-            to_value(super::execute(&schema, &request, &InvalidAbstractDispatcher, &()).await)
-                .unwrap();
+        let response = to_value(
+            super::execute(&schema, &request, &InvalidAbstractDispatcher("Post"), &()).await,
+        )
+        .unwrap();
+
+        assert_eq!(response["data"], json!({ "result": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["result"]));
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 11 },
+                { "line": 6, "column": 11 },
+            ])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_unknown_runtime_type_error_is_reported_once_with_all_locations() {
+        let schema = Schema::parse_and_validate(
+            "type Query { viewer: User } type User { name: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            "query {\n  result: viewer { __typename }\n  ...Again\n}\nfragment Again on Query {\n  result: viewer { __typename }\n}",
+        );
+
+        let response = to_value(
+            super::execute(&schema, &request, &InvalidAbstractDispatcher("Ghost"), &()).await,
+        )
+        .unwrap();
 
         assert_eq!(response["data"], json!({ "result": null }));
         let errors = response["errors"].as_array().unwrap();
@@ -2348,9 +2380,10 @@ mod tests {
         .unwrap();
         let request = Request::new("{ result: search { __typename } }");
 
-        let response =
-            to_value(super::execute(&schema, &request, &InvalidAbstractDispatcher, &()).await)
-                .unwrap();
+        let response = to_value(
+            super::execute(&schema, &request, &InvalidAbstractDispatcher("Post"), &()).await,
+        )
+        .unwrap();
 
         assert_eq!(response["data"], json!({ "result": null }));
         assert_eq!(response["errors"].as_array().unwrap().len(), 1);
