@@ -784,11 +784,11 @@ where
     };
 
     let Some(object_type) = schema.get_object(object.type_name()) else {
-        errors.push(*new_execution_error(
+        errors.push(*new_field_execution_error(
             prepared,
+            fields,
             path,
             format!("Unknown runtime Object type '{}'.", object.type_name()),
-            field.name.location(),
         ));
         return complete_null(ty);
     };
