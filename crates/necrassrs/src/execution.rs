@@ -794,14 +794,14 @@ where
     };
 
     if !does_fragment_type_apply(schema, object_type, name) {
-        errors.push(*new_execution_error(
+        errors.push(*new_field_execution_error(
             prepared,
+            fields,
             path,
             format!(
                 "Runtime Object type '{}' is not valid for '{name}'.",
                 object_type.name
             ),
-            field.name.location(),
         ));
         return complete_null(ty);
     }
