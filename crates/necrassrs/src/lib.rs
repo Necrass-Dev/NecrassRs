@@ -20,12 +20,12 @@
 //!
 //! # Current scope
 //!
-//! Generated query contracts support built-in scalar and enum results, ordinary
+//! Generated query and mutation contracts support built-in scalar and enum results, ordinary
 //! and OneOf input objects, nullable/list forms, recursive input boxing, and owned
 //! Object results with nullable/list wrappers, recursive relationships, leaf fields,
 //! and abstract results. The runtime preserves Object parents, list-item conversion
 //! errors, and nullability during completion. Custom scalar conversion, borrowed
-//! Object results, and generated mutation/subscription routing remain unsupported.
+//! Object results, and generated subscription routing remain unsupported.
 //! Runtime subscriptions are rejected. Schema introspection is enabled by default;
 //! use [`execute_with_options`] to disable it independently of any UI.
 
@@ -229,17 +229,26 @@ impl From<&str> for Id {
     }
 }
 
+/// Identifies one generated GraphQL field and its argument type.
 pub trait Field {
+    /// Arguments passed to the field resolver after GraphQL coercion.
     type Args: Send;
 }
 
+/// Resolves a generated GraphQL field against an application-owned parent value.
+///
+/// Generated field marker types implement [`Field`]. Implement this trait for the
+/// matching parent type and request Context to connect application logic to the
+/// generated dispatcher.
 pub trait Resolver<F, C>: Send + Sync
 where
     F: Field,
     C: Sync,
 {
+    /// Rust value returned by this field before GraphQL value completion.
     type Output: Send;
 
+    /// Resolves the field with its coerced arguments and request Context.
     fn resolve<'a>(
         &'a self,
         context: &'a C,

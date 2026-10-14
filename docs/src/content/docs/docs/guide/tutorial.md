@@ -1,20 +1,24 @@
 ---
 title: Tutorial
-description: Build a GraphQL web server, implement resolvers, and send queries with GraphiQL or HTTP.
+description: Build a GraphQL web server, implement resolvers, and send queries and mutations with GraphiQL or HTTP.
 ---
 
 In this tutorial, you will define a GraphQL schema, implement its generated Rust
-resolvers, and run a web server. You will send queries using GraphiQL and HTTP.
-The example introduces enums, input defaults,
-nullable values, OneOf inputs, and recursive input types.
+resolvers, and run a web server. You will send queries and mutations using
+GraphiQL and HTTP. The example introduces enums, input defaults, nullable values,
+OneOf inputs, recursive input types, and shared in-memory state.
+
+The completed Axum project is available in
+[`examples/tutorial`](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/tutorial).
 
 The source checkout supports built-in scalar and enum results, ordinary and OneOf
 input objects, owned Object results, Interface and Union results, nullable and
-list forms, and recursive input and Object relationships. Custom scalars,
-borrowed Object results, and generated mutation/subscription routing remain
-unsupported. These examples describe this checkout; a previously resolved Git
-dependency must be updated before it contains these changes. Use the maintained
-Apollo source replacement configured in the repository's Cargo manifests.
+list forms, recursive input and Object relationships, and generated query and
+mutation routing. Custom scalars, borrowed Object results, and generated
+subscription routing remain unsupported. These examples describe this checkout;
+a previously resolved Git dependency must be updated before it contains these
+changes. Use the maintained Apollo source replacement configured in the
+repository's Cargo manifests.
 
 ## 1. Create a project
 
@@ -207,7 +211,182 @@ curl http://127.0.0.1:3000/graphql \
 The endpoint returns the same JSON response. See [Types](/docs/types/) for Rust
 type mappings, `GraphQLInput`, defaults, OneOf inputs, and recursive inputs.
 
-## 5. Change the schema and rebuild
+## 5. Add an in-memory mutation
+
+This example stores a counter in the application Context shared by every
+request. The Query and Mutation roots remain stateless. Stop the server with
+Ctrl+C, append this definition to `schema/schema.graphql`, and run `cargo build`:
+
+```graphql
+type Mutation {
+  increment(by: Int!): Int!
+}
+```
+
+Cargo adds a `Mutation` root marker and a resolver stub for the new field. This
+first build then reports Rust errors because `main.rs` still constructs a
+query-only dispatcher; the changes below complete the new contract.
+
+In `src/main.rs`, import `Mutex`, define the application Context, and store it
+with the schema and dispatcher:
+
+```rust
+use std::sync::Mutex;
+
+pub struct Context {
+    counter: Mutex<i32>,
+}
+
+struct AppState {
+    schema: Valid<Schema>,
+    dispatcher: generated::dispatch::SchemaDispatcher<
+        resolvers::Query,
+        resolvers::Mutation,
+    >,
+    context: Context,
+}
+```
+
+In `src/resolvers.rs`, leave both root types empty and make their marker
+implementations use the application Context:
+
+```rust
+pub struct Query;
+pub struct Mutation;
+
+impl crate::generated::resolvers::QueryResolver<crate::Context> for Query {}
+impl crate::generated::resolvers::MutationResolver<crate::Context> for Mutation {}
+```
+
+Update the two existing Query field implementations in the same way: replace
+their generic `C` with `crate::Context`, and change `_context: &C` to
+`_context: &crate::Context`. This gives every generated root the same Context
+contract.
+
+Replace the new resolver stub body with this implementation:
+
+```rust
+impl necrassrs::Resolver<
+    crate::generated::fields::Mutation::increment,
+    crate::Context,
+> for Mutation
+{
+    type Output = i32;
+
+    async fn resolve(
+        &self,
+        context: &crate::Context,
+        args: crate::generated::types::Mutation::increment::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
+        let mut counter = context
+            .counter
+            .lock()
+            .map_err(|_| necrassrs::ResolverError::new("Counter is unavailable"))?;
+        *counter = counter
+            .checked_add(args.by)
+            .ok_or_else(|| necrassrs::ResolverError::new("Counter overflow"))?;
+        Ok(*counter)
+    }
+}
+```
+
+Pass the shared Context to `execute` instead of creating a unit Context for each
+request:
+
+```rust
+necrassrs::execute(
+    &state.schema,
+    &request,
+    &state.dispatcher,
+    &state.context,
+)
+.await
+```
+
+For the Axum starter, create both stateless roots and initialize the Context
+inside the existing `Arc<AppState>`:
+
+```rust
+let dispatcher = generated::dispatch::SchemaDispatcher::new(
+    resolvers::Query,
+    resolvers::Mutation,
+);
+let state = Arc::new(AppState {
+    schema,
+    dispatcher,
+    context: Context {
+        counter: Mutex::new(0),
+    },
+});
+```
+
+Axum shares this `Arc<AppState>` across requests. Actix calls its server factory
+once per worker, so create one `web::Data<AppState>` before `HttpServer::new`
+and clone that handle into every worker. Leave `configure` responsible only for
+routes:
+
+```rust
+fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::resource("/graphql")
+            .route(web::post().to(graphql))
+            .route(web::get().to(|| async { graphiql_html("/graphql") })),
+    );
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let schema = Schema::parse_and_validate(generated::SDL, "embedded.graphql").unwrap();
+    let state = web::Data::new(AppState {
+        schema,
+        dispatcher: generated::dispatch::SchemaDispatcher::new(
+            resolvers::Query,
+            resolvers::Mutation,
+        ),
+        context: Context {
+            counter: Mutex::new(0),
+        },
+    });
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(state.clone())
+            .configure(configure)
+    })
+    .bind(("127.0.0.1", 3000))?
+    .run()
+    .await
+}
+```
+
+All requests and Actix workers now share the same Context. A production server
+can use the same structure with a database pool in place of the counter.
+Restart the server and run this mutation in GraphiQL:
+
+```graphql
+mutation {
+  first: increment(by: 2)
+  second: increment(by: 3)
+}
+```
+
+Top-level mutation fields complete serially in document order, so the response
+shows each successive counter value:
+
+```json
+{
+  "data": {
+    "first": 2,
+    "second": 5
+  }
+}
+```
+
+Running the mutation again continues from five. The counter returns to zero when
+the server restarts. A real application can replace the `Mutex<i32>` with its
+database or service state without changing the generated resolver contract.
+
+## 6. Change the schema and rebuild
 
 Stop the server with Ctrl+C, edit `schema/schema.graphql`, and run `cargo build`
 again. Rebuilding adds new resolver stubs and retains existing resolver bodies.

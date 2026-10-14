@@ -243,7 +243,7 @@ where
                     Ok(value) => (value, false),
                     Err(error) => {
                         errors.push(*resolver_error_to_graphql_error(
-                            &prepared, field, &path, error,
+                            &prepared, &fields, &path, error,
                         ));
 
                         (ResolvedValue::Json(JsonValue::Null), true)
@@ -287,7 +287,7 @@ where
 
 fn resolver_error_to_graphql_error(
     prepared: &PreparedRequest,
-    field: &Field,
+    fields: &[&Field],
     path: &[ResponseDataPathSegment],
     resolver_error: ResolverError,
 ) -> Box<GraphQLError> {
@@ -296,7 +296,7 @@ fn resolver_error_to_graphql_error(
         extensions,
     } = resolver_error;
 
-    let mut error = new_execution_error(prepared, path, message, field.name.location());
+    let mut error = new_field_execution_error(prepared, fields, path, message);
 
     error.extensions = extensions.unwrap_or_default();
 
@@ -589,6 +589,24 @@ fn new_execution_error(
     Box::new(error)
 }
 
+fn new_field_execution_error(
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    path: &[ResponseDataPathSegment],
+    message: impl Into<String>,
+) -> Box<GraphQLError> {
+    let mut error = new_execution_error(prepared, path, message, fields[0].name.location());
+    error
+        .locations
+        .extend(fields[1..].iter().filter_map(|field| {
+            field
+                .name
+                .location()?
+                .line_column(&prepared.document.sources)
+        }));
+    error
+}
+
 struct PropagateNull;
 
 type CompletionResult = Result<JsonValue, PropagateNull>;
@@ -614,7 +632,7 @@ where
         let value = match value {
             ResolvedValue::Error(error) => {
                 errors.push(*resolver_error_to_graphql_error(
-                    prepared, field, path, error,
+                    prepared, fields, path, error,
                 ));
                 return complete_null(ty);
             }
@@ -623,14 +641,14 @@ where
 
         if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
             if ty.is_non_null() {
-                errors.push(*new_execution_error(
+                errors.push(*new_field_execution_error(
                     prepared,
+                    fields,
                     path,
                     format!(
                         "Cannot return null for non-nullable field '{}'.",
                         field.name
                     ),
-                    field.name.location(),
                 ));
             }
             return complete_null(ty);
@@ -683,11 +701,11 @@ where
             values.into_iter().map(ResolvedValue::Json).collect()
         }
         _ => {
-            errors.push(*new_execution_error(
+            errors.push(*new_field_execution_error(
                 prepared,
+                fields,
                 path,
                 format!("Expected field '{}' to return a list.", field.name),
-                field.name.location(),
             ));
             return complete_null(ty);
         }
@@ -735,7 +753,7 @@ where
         )
         .await
     } else {
-        complete_leaf_value(schema, prepared, fields[0], ty, name, value, path, errors)
+        complete_leaf_value(schema, prepared, fields, ty, name, value, path, errors)
     }
 }
 
@@ -756,34 +774,34 @@ where
 {
     let field = fields[0];
     let ResolvedValue::Object(object) = value else {
-        errors.push(*new_execution_error(
+        errors.push(*new_field_execution_error(
             prepared,
+            fields,
             path,
             format!("Expected field '{}' to return an Object value.", field.name),
-            field.name.location(),
         ));
         return complete_null(ty);
     };
 
     let Some(object_type) = schema.get_object(object.type_name()) else {
-        errors.push(*new_execution_error(
+        errors.push(*new_field_execution_error(
             prepared,
+            fields,
             path,
             format!("Unknown runtime Object type '{}'.", object.type_name()),
-            field.name.location(),
         ));
         return complete_null(ty);
     };
 
     if !does_fragment_type_apply(schema, object_type, name) {
-        errors.push(*new_execution_error(
+        errors.push(*new_field_execution_error(
             prepared,
+            fields,
             path,
             format!(
                 "Runtime Object type '{}' is not valid for '{name}'.",
                 object_type.name
             ),
-            field.name.location(),
         ));
         return complete_null(ty);
     }
@@ -821,7 +839,7 @@ where
         let (field_value, has_error) = resolve_object_field(
             schema,
             prepared,
-            selected_field,
+            &fields,
             definition,
             object.as_ref(),
             object_type,
@@ -867,7 +885,7 @@ where
 async fn resolve_object_field<C>(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
-    field: &Field,
+    fields: &[&Field],
     definition: &FieldDefinition,
     object: &dyn ResolvedObject<C>,
     object_type: &ObjectType,
@@ -878,6 +896,7 @@ async fn resolve_object_field<C>(
 where
     C: Sync,
 {
+    let field = fields[0];
     let arguments = match coerce_argument_values(schema, prepared, path, field, definition) {
         Ok(arguments) => arguments,
         Err(error) => {
@@ -900,7 +919,7 @@ where
         Ok(value) => (value, false),
         Err(error) => {
             errors.push(*resolver_error_to_graphql_error(
-                prepared, field, path, error,
+                prepared, fields, path, error,
             ));
             (ResolvedValue::Json(JsonValue::Null), true)
         }
@@ -911,19 +930,20 @@ where
 fn complete_leaf_value<C>(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
-    field: &Field,
+    fields: &[&Field],
     ty: &Type,
     name: &Name,
     value: ResolvedValue<C>,
     path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
 ) -> CompletionResult {
+    let field = fields[0];
     let ResolvedValue::Json(value) = value else {
-        errors.push(*new_execution_error(
+        errors.push(*new_field_execution_error(
             prepared,
+            fields,
             path,
             format!("Expected field '{}' to return a leaf value.", field.name),
-            field.name.location(),
         ));
         return complete_null(ty);
     };
@@ -950,12 +970,7 @@ fn complete_leaf_value<C>(
         None => format!("Unknown output type '{name}'."),
     };
 
-    errors.push(*new_execution_error(
-        prepared,
-        path,
-        message,
-        field.name.location(),
-    ));
+    errors.push(*new_field_execution_error(prepared, fields, path, message));
     complete_null(ty)
 }
 
@@ -1021,11 +1036,13 @@ mod tests {
 
     struct ValueDispatcher(JsonValue);
 
-    struct InvalidAbstractDispatcher;
+    struct InvalidAbstractDispatcher(&'static str);
 
-    struct InvalidAbstractObject;
+    struct InvalidAbstractObject(&'static str);
 
     struct CountingDispatcher(AtomicUsize);
+
+    struct CountingFailingDispatcher(AtomicUsize);
 
     struct RecoveringDispatcher(AtomicUsize);
 
@@ -1102,13 +1119,15 @@ mod tests {
             _coordinate: FieldCoordinate<'a>,
             _arguments: &'a JsonMap,
         ) -> Result<ResolvedValue, ResolverError> {
-            Ok(ResolvedValue::Object(Box::new(InvalidAbstractObject)))
+            Ok(ResolvedValue::Object(Box::new(InvalidAbstractObject(
+                self.0,
+            ))))
         }
     }
 
     impl crate::ResolvedObject<()> for InvalidAbstractObject {
         fn type_name(&self) -> &'static str {
-            "Post"
+            self.0
         }
 
         fn resolve<'a>(
@@ -1137,6 +1156,19 @@ mod tests {
             self.0.fetch_add(1, Ordering::Relaxed);
 
             Ok(ResolvedValue::Json(json!("unexpected resolver call")))
+        }
+    }
+
+    impl super::Dispatcher<()> for CountingFailingDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> Result<ResolvedValue, ResolverError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+
+            Err(ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED"))
         }
     }
 
@@ -1339,6 +1371,193 @@ mod tests {
             json!({ "data": { "hello": "unexpected resolver call" } })
         );
         assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_field_error_is_reported_once_with_all_locations() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String }", "schema.graphql").unwrap();
+        let request = Request::new(
+            "query {\n  greeting: hello\n  ...Again\n}\nfragment Again on Query {\n  greeting: hello\n}",
+        );
+        let dispatcher = CountingFailingDispatcher(AtomicUsize::new(0));
+
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(response["data"], json!({ "greeting": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["greeting"]));
+        assert_eq!(errors[0]["extensions"]["code"], "GREETING_FAILED");
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 13 },
+                { "line": 6, "column": 13 },
+            ])
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_field_completion_error_is_reported_once_with_all_locations() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String }", "schema.graphql").unwrap();
+        let request = Request::new(
+            "query {\n  greeting: hello\n  ...Again\n}\nfragment Again on Query {\n  greeting: hello\n}",
+        );
+        let dispatcher = ValueDispatcher(json!({ "unexpected": true }));
+
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(response["data"], json!({ "greeting": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["greeting"]));
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 13 },
+                { "line": 6, "column": 13 },
+            ])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_non_null_completion_error_is_reported_once_with_all_locations() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let request = Request::new(
+            "query {\n  greeting: hello\n  ...Again\n}\nfragment Again on Query {\n  greeting: hello\n}",
+        );
+
+        let response =
+            to_value(super::execute(&schema, &request, &NullDispatcher, &()).await).unwrap();
+
+        assert_eq!(response["data"], JsonValue::Null);
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["greeting"]));
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 13 },
+                { "line": 6, "column": 13 },
+            ])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_list_completion_error_is_reported_once_with_all_locations() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: [String] }", "schema.graphql").unwrap();
+        let request = Request::new(
+            "query {\n  greeting: hello\n  ...Again\n}\nfragment Again on Query {\n  greeting: hello\n}",
+        );
+        let dispatcher = ValueDispatcher(json!("not a list"));
+
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(response["data"], json!({ "greeting": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["greeting"]));
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 13 },
+                { "line": 6, "column": 13 },
+            ])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_object_completion_error_is_reported_once_with_all_locations() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello: User } type User { name: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            "query {\n  greeting: hello { name }\n  ...Again\n}\nfragment Again on Query {\n  greeting: hello { name }\n}",
+        );
+        let dispatcher = ValueDispatcher(json!({ "name": "Sheri" }));
+
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(response["data"], json!({ "greeting": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["greeting"]));
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 13 },
+                { "line": 6, "column": 13 },
+            ])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_invalid_runtime_type_error_is_reported_once_with_all_locations() {
+        let schema = Schema::parse_and_validate(
+            "union Search = User | Organization \
+             type Query { search: Search } \
+             type User { name: String! } \
+             type Organization { name: String! } \
+             type Post { name: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            "query {\n  result: search { __typename }\n  ...Again\n}\nfragment Again on Query {\n  result: search { __typename }\n}",
+        );
+
+        let response = to_value(
+            super::execute(&schema, &request, &InvalidAbstractDispatcher("Post"), &()).await,
+        )
+        .unwrap();
+
+        assert_eq!(response["data"], json!({ "result": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["result"]));
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 11 },
+                { "line": 6, "column": 11 },
+            ])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_unknown_runtime_type_error_is_reported_once_with_all_locations() {
+        let schema = Schema::parse_and_validate(
+            "type Query { viewer: User } type User { name: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            "query {\n  result: viewer { __typename }\n  ...Again\n}\nfragment Again on Query {\n  result: viewer { __typename }\n}",
+        );
+
+        let response = to_value(
+            super::execute(&schema, &request, &InvalidAbstractDispatcher("Ghost"), &()).await,
+        )
+        .unwrap();
+
+        assert_eq!(response["data"], json!({ "result": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["result"]));
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 11 },
+                { "line": 6, "column": 11 },
+            ])
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1636,7 +1855,8 @@ mod tests {
         let resolver_error =
             ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED");
 
-        let error = super::resolver_error_to_graphql_error(&prepared, field, &path, resolver_error);
+        let error =
+            super::resolver_error_to_graphql_error(&prepared, &[field], &path, resolver_error);
 
         assert_eq!(error.message, "Greeting failed.");
         assert_eq!(
@@ -2160,9 +2380,10 @@ mod tests {
         .unwrap();
         let request = Request::new("{ result: search { __typename } }");
 
-        let response =
-            to_value(super::execute(&schema, &request, &InvalidAbstractDispatcher, &()).await)
-                .unwrap();
+        let response = to_value(
+            super::execute(&schema, &request, &InvalidAbstractDispatcher("Post"), &()).await,
+        )
+        .unwrap();
 
         assert_eq!(response["data"], json!({ "result": null }));
         assert_eq!(response["errors"].as_array().unwrap().len(), 1);

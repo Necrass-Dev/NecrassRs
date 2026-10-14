@@ -126,6 +126,6 @@ The workspace test run included all five axum-server tests, the build-library Ca
 | Nullable list-item null propagation and other execution behavior | `necrassrs::execution::tests::null_non_null_item_nullifies_nullable_list` and related list, selection, and mutation tests |
 | HTTP methods, extraction, response status, and body limits | `necrassrs-axum` HTTP tests and the axum-server HTTP tests |
 
-This greeting example deliberately exercises `String!` field arguments and results. Generated consumer coverage for broader input and result types, including composite results, lives in `necrassrs-build`; generated mutation and subscription routing remains unsupported. CLI initialization and packaged release builds are outside this example's scope.
+This greeting example deliberately exercises `String!` field arguments and results. Generated consumer coverage for broader input and result types, including composite results and mutation routing, lives in `necrassrs-build`; subscription routing remains unsupported. CLI initialization and packaged release builds are outside this example's scope.
 
 The GraphQL POST route includes `necrassrs_axum::negotiate_response` middleware. It negotiates `Accept` without applying GraphQL response rules to the HTML page. Syntax errors return 400, other GraphQL request errors 422, and execution results remain 200 even with errors.

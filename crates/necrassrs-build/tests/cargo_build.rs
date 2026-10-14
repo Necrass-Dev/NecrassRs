@@ -659,6 +659,205 @@ fn main() {
 }
 
 #[test]
+fn adding_mutation_root_reuses_query_context_contract() {
+    let consumer = Consumer::new("type Query { hello: String! }");
+    consumer.bootstrap();
+    let mut ast = consumer.ast();
+    for item in &mut ast.items {
+        match item {
+            Item::Struct(item) if item.ident == "Query" => {
+                item.ident = syn::parse_quote!(AppQuery);
+            }
+            Item::Impl(implementation)
+                if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                }) =>
+            {
+                implementation.generics = syn::parse_quote!(<T>);
+                implementation.generics.where_clause =
+                    Some(syn::parse_quote!(where T: Database + Sync));
+                implementation.trait_.as_mut().unwrap().1 =
+                    syn::parse_quote!(crate::generated::resolvers::QueryResolver<AppContext<T>>);
+                *implementation.self_ty = syn::parse_quote!(self::AppQuery);
+            }
+            _ => {}
+        }
+    }
+    ast.items.extend([
+        syn::parse_quote!(
+            pub trait Database {
+                fn value(&self) -> String;
+            }
+        ),
+        syn::parse_quote!(
+            pub struct Db;
+        ),
+        syn::parse_quote!(
+            impl Database for Db {
+                fn value(&self) -> String {
+                    String::from("value")
+                }
+            }
+        ),
+        syn::parse_quote!(
+            pub struct AppContext<T> {
+                pub db: T,
+            }
+        ),
+    ]);
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<resolvers::AppContext<resolvers::Db>>>(_: D) {}
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(
+        resolvers::AppQuery,
+        resolvers::Mutation,
+    ));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema(
+        "schema { query: Query mutation: Mutation } \
+         type Query { hello: String! } \
+         type Mutation { update: String! }",
+    );
+
+    assert_success(&consumer.build());
+    let mut ast = consumer.ast();
+    let marker = root_resolver_impl(&ast, "MutationResolver");
+    assert_eq!(marker.generics.to_token_stream().to_string(), "< T >");
+    assert_eq!(
+        marker.generics.where_clause.to_token_stream().to_string(),
+        "where T : Database + Sync"
+    );
+    assert_eq!(
+        marker
+            .trait_
+            .as_ref()
+            .unwrap()
+            .1
+            .to_token_stream()
+            .to_string(),
+        "crate :: generated :: resolvers :: MutationResolver < AppContext < T > >"
+    );
+    let mutation = ast
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            Item::Impl(implementation)
+                if field_resolver_coordinate(implementation)
+                    .is_some_and(|(object, field)| object == "Mutation" && field == "update") =>
+            {
+                Some(implementation)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let resolve = mutation
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+            _ => None,
+        })
+        .unwrap();
+    resolve.block = syn::parse_quote!({ Ok(_context.db.value()) });
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+
+    assert_success(&consumer.build());
+}
+
+#[test]
+fn adding_and_removing_mutation_root_preserves_query_resolvers_and_updates_stubs() {
+    let consumer = Consumer::new("type Query { current: String! }");
+    consumer.bootstrap();
+    consumer.implement("current", "query value");
+    let before = body(method(&consumer.ast(), "current"));
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<()>>(_: D) {}
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(
+        resolvers::Query,
+        resolvers::Mutation,
+    ));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema(
+        r#"
+schema { query: Query mutation: Mutation }
+type Query { current: String! }
+type Mutation { current: String! }
+"#,
+    );
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    assert_eq!(body(method(&ast, "current")), before);
+    assert_eq!(
+        root_resolver_impl(&ast, "MutationResolver")
+            .self_ty
+            .to_token_stream()
+            .to_string(),
+        "self :: Mutation",
+    );
+    let mutation = field_resolver_ref(&ast, "Mutation", "current");
+    let resolve = mutation
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+            _ => None,
+        })
+        .expect("the mutation field must have an explicit resolver method");
+    assert_stub(resolve);
+
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<()>>(_: D) {}
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(resolvers::Query));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema("type Query { current: String! }");
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    assert_eq!(body(method(&ast, "current")), before);
+    assert!(ast.items.iter().all(|item| {
+        !matches!(
+            item,
+            Item::Impl(implementation)
+                if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments.last().is_some_and(|segment| {
+                        segment.ident == "MutationResolver"
+                    })
+                })
+        )
+    }));
+}
+
+#[test]
 fn generic_bindings_remain_local_to_each_resolver_impl() {
     let consumer = Consumer::new("type Query { hello: String! }");
     consumer.bootstrap();
@@ -721,11 +920,21 @@ mod resolvers;
 fn main() {
     fn require_dispatcher<D: necrassrs::Dispatcher<()>>(_: D) {}
     let query = resolvers::Query::<String>(::core::marker::PhantomData);
-    require_dispatcher(generated::dispatch::SchemaDispatcher::new(query));
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(
+        query,
+        resolvers::Mutation,
+    ));
 }
 "#,
     )
     .unwrap();
+    consumer.schema(
+        r#"
+schema { query: Query mutation: Mutation }
+type Query { hello: String! }
+type Mutation { update: String! }
+"#,
+    );
 
     assert_success(&consumer.build());
     let ast = consumer.ast();
@@ -738,6 +947,138 @@ fn main() {
         implementation.self_ty.to_token_stream().to_string(),
         "self :: Query < U >"
     );
+}
+
+#[test]
+fn existing_mutation_root_contract_drives_new_mutation_fields() {
+    let consumer = Consumer::new("type Query { hello: String! }");
+    consumer.bootstrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<()>>(_: D) {}
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(
+        resolvers::Query,
+        resolvers::Mutation,
+    ));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema(
+        r#"
+schema { query: Query mutation: Mutation }
+type Query { hello: String! }
+type Mutation { update: String! }
+"#,
+    );
+    assert_success(&consumer.build());
+
+    let mut ast = consumer.ast();
+    for item in &mut ast.items {
+        match item {
+            Item::Struct(item) if item.ident == "Mutation" => {
+                *item = syn::parse_quote!(
+                    pub struct AppMutation<T>(pub ::core::marker::PhantomData<T>);
+                );
+            }
+            Item::Impl(implementation)
+                if implementation.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "MutationResolver")
+                }) =>
+            {
+                implementation.generics = syn::parse_quote!(<T: Send + Sync>);
+                implementation.trait_.as_mut().unwrap().1 =
+                    syn::parse_quote!(crate::generated::resolvers::MutationResolver<AppContext>);
+                *implementation.self_ty = syn::parse_quote!(self::AppMutation<T>);
+            }
+            Item::Impl(implementation)
+                if field_resolver_coordinate(implementation)
+                    .is_some_and(|(object, _)| object.unraw() == "Mutation") =>
+            {
+                implementation.generics = syn::parse_quote!(<T: Send + Sync>);
+                let (_, trait_path, _) = implementation.trait_.as_mut().unwrap();
+                let PathArguments::AngleBracketed(arguments) =
+                    &mut trait_path.segments.last_mut().unwrap().arguments
+                else {
+                    unreachable!()
+                };
+                arguments.args[1] = syn::parse_quote!(AppContext);
+                *implementation.self_ty = syn::parse_quote!(self::AppMutation<T>);
+                let resolve = implementation
+                    .items
+                    .iter_mut()
+                    .find_map(|item| match item {
+                        ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+                        _ => None,
+                    })
+                    .unwrap();
+                let syn::FnArg::Typed(context) = &mut resolve.sig.inputs[1] else {
+                    unreachable!()
+                };
+                *context.ty = syn::parse_quote!(&AppContext);
+            }
+            _ => {}
+        }
+    }
+    ast.items.push(syn::parse_quote!(
+        pub struct AppContext;
+    ));
+    fs::write(consumer.resolvers(), ast.to_token_stream().to_string()).unwrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        r#"
+mod generated { include!(concat!(env!("OUT_DIR"), "/necrassrs.rs")); }
+mod resolvers;
+
+fn main() {
+    fn require_dispatcher<D: necrassrs::Dispatcher<resolvers::AppContext>>(_: D) {}
+    let mutation = resolvers::AppMutation::<String>(::core::marker::PhantomData);
+    require_dispatcher(generated::dispatch::SchemaDispatcher::new(
+        resolvers::Query,
+        mutation,
+    ));
+}
+"#,
+    )
+    .unwrap();
+    consumer.schema(
+        r#"
+schema { query: Query mutation: Mutation }
+type Query { hello: String! }
+type Mutation { update: String! added: String! }
+"#,
+    );
+
+    assert_success(&consumer.build());
+    let ast = consumer.ast();
+    let added = field_resolver_ref(&ast, "AppMutation", "added");
+    assert_eq!(
+        added.generics.to_token_stream().to_string(),
+        "< T : Send + Sync >"
+    );
+    assert_eq!(
+        added.self_ty.to_token_stream().to_string(),
+        "self :: AppMutation < T >"
+    );
+    let resolve = added
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "resolve" => Some(method),
+            _ => None,
+        })
+        .unwrap();
+    let syn::FnArg::Typed(context) = &resolve.sig.inputs[1] else {
+        unreachable!()
+    };
+    assert_eq!(context.ty.to_token_stream().to_string(), "& AppContext");
 }
 
 #[test]
@@ -763,6 +1104,10 @@ fn adding_field_to_bom_prefixed_source_preserves_existing_code() {
 }
 
 fn resolver_impl(ast: &syn::File) -> &ItemImpl {
+    root_resolver_impl(ast, "QueryResolver")
+}
+
+fn root_resolver_impl<'a>(ast: &'a syn::File, resolver: &str) -> &'a ItemImpl {
     ast.items
         .iter()
         .find_map(|item| match item {
@@ -770,14 +1115,16 @@ fn resolver_impl(ast: &syn::File) -> &ItemImpl {
                 if item.trait_.as_ref().is_some_and(|(_, path, _)| {
                     path.segments
                         .last()
-                        .is_some_and(|segment| segment.ident == "QueryResolver")
+                        .is_some_and(|segment| segment.ident == resolver)
                 }) =>
             {
                 Some(item)
             }
             _ => None,
         })
-        .expect("the source file must contain an explicit QueryResolver implementation")
+        .unwrap_or_else(|| {
+            panic!("the source file must contain an explicit {resolver} implementation")
+        })
 }
 
 fn field_resolver<'a>(ast: &'a mut syn::File, object: &str, field: &str) -> &'a mut ItemImpl {

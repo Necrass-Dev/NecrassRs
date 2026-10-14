@@ -9,7 +9,7 @@
 NecrassRs is an SDL-first GraphQL server framework for Rust. Define your public API in GraphQL SDL, let Cargo generate Rust contracts and resolver scaffolding, and fill in the resolver bodies with your application logic.
 
 > [!WARNING]
-> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API supports built-in scalar and enum results, ordinary and OneOf input objects, owned Object results, Interface and Union results, nullable and list forms, and recursive input and Object relationships. Custom scalars, borrowed Object results, and generated mutation/subscription routing remain unsupported.
+> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API supports built-in scalar and enum results, ordinary and OneOf input objects, owned Object results, Interface and Union results, nullable and list forms, recursive input and Object relationships, and query and mutation routing. Custom scalars, borrowed Object results, and subscription routing remain unsupported.
 
 ## Quick start
 
@@ -114,6 +114,7 @@ Applications normally depend on their HTTP adapter, which uses `necrassrs-http` 
 
 ## Further reading
 
+- [Tutorial example](examples/tutorial/README.md): inspect the completed Axum project from the step-by-step tutorial, including its in-memory mutation.
 - [Axum server example](examples/axum-server/README.md): run a workspace example and explore requests, errors, and manual setup details.
 - [Actix server example](examples/actix-server/README.md): run generated resolvers through Actix Web with built-in GraphiQL.
 - [Personnel Management System](docs/src/content/docs/docs/guide/personnel-management.md): build Object, Interface, and Union result resolvers.

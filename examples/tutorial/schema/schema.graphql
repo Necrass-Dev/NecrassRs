@@ -1,0 +1,25 @@
+enum Status {
+  OPEN
+  CLOSED
+}
+
+input Filter {
+  status: Status = OPEN
+  limit: Int
+  next: Filter
+  children: [Filter!]
+}
+
+input Locator @oneOf {
+  id: ID
+  name: String
+}
+
+type Query {
+  statuses(filter: Filter = {}): [Status!]!
+  label(locator: Locator!): String!
+}
+
+type Mutation {
+  increment(by: Int!): Int!
+}
