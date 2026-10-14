@@ -641,14 +641,14 @@ where
 
         if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
             if ty.is_non_null() {
-                errors.push(*new_execution_error(
+                errors.push(*new_field_execution_error(
                     prepared,
+                    fields,
                     path,
                     format!(
                         "Cannot return null for non-nullable field '{}'.",
                         field.name
                     ),
-                    field.name.location(),
                 ));
             }
             return complete_null(ty);
