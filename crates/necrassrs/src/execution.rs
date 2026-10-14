@@ -296,16 +296,7 @@ fn resolver_error_to_graphql_error(
         extensions,
     } = resolver_error;
 
-    let field = fields[0];
-    let mut error = new_execution_error(prepared, path, message, field.name.location());
-    error
-        .locations
-        .extend(fields[1..].iter().filter_map(|field| {
-            field
-                .name
-                .location()?
-                .line_column(&prepared.document.sources)
-        }));
+    let mut error = new_field_execution_error(prepared, fields, path, message);
 
     error.extensions = extensions.unwrap_or_default();
 
@@ -598,6 +589,24 @@ fn new_execution_error(
     Box::new(error)
 }
 
+fn new_field_execution_error(
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    path: &[ResponseDataPathSegment],
+    message: impl Into<String>,
+) -> Box<GraphQLError> {
+    let mut error = new_execution_error(prepared, path, message, fields[0].name.location());
+    error
+        .locations
+        .extend(fields[1..].iter().filter_map(|field| {
+            field
+                .name
+                .location()?
+                .line_column(&prepared.document.sources)
+        }));
+    error
+}
+
 struct PropagateNull;
 
 type CompletionResult = Result<JsonValue, PropagateNull>;
@@ -744,7 +753,7 @@ where
         )
         .await
     } else {
-        complete_leaf_value(schema, prepared, fields[0], ty, name, value, path, errors)
+        complete_leaf_value(schema, prepared, fields, ty, name, value, path, errors)
     }
 }
 
@@ -921,19 +930,20 @@ where
 fn complete_leaf_value<C>(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
-    field: &Field,
+    fields: &[&Field],
     ty: &Type,
     name: &Name,
     value: ResolvedValue<C>,
     path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
 ) -> CompletionResult {
+    let field = fields[0];
     let ResolvedValue::Json(value) = value else {
-        errors.push(*new_execution_error(
+        errors.push(*new_field_execution_error(
             prepared,
+            fields,
             path,
             format!("Expected field '{}' to return a leaf value.", field.name),
-            field.name.location(),
         ));
         return complete_null(ty);
     };
@@ -960,12 +970,7 @@ fn complete_leaf_value<C>(
         None => format!("Unknown output type '{name}'."),
     };
 
-    errors.push(*new_execution_error(
-        prepared,
-        path,
-        message,
-        field.name.location(),
-    ));
+    errors.push(*new_field_execution_error(prepared, fields, path, message));
     complete_null(ty)
 }
 
