@@ -243,7 +243,7 @@ where
                     Ok(value) => (value, false),
                     Err(error) => {
                         errors.push(*resolver_error_to_graphql_error(
-                            &prepared, field, &path, error,
+                            &prepared, &fields, &path, error,
                         ));
 
                         (ResolvedValue::Json(JsonValue::Null), true)
@@ -287,7 +287,7 @@ where
 
 fn resolver_error_to_graphql_error(
     prepared: &PreparedRequest,
-    field: &Field,
+    fields: &[&Field],
     path: &[ResponseDataPathSegment],
     resolver_error: ResolverError,
 ) -> Box<GraphQLError> {
@@ -296,7 +296,16 @@ fn resolver_error_to_graphql_error(
         extensions,
     } = resolver_error;
 
+    let field = fields[0];
     let mut error = new_execution_error(prepared, path, message, field.name.location());
+    error
+        .locations
+        .extend(fields[1..].iter().filter_map(|field| {
+            field
+                .name
+                .location()?
+                .line_column(&prepared.document.sources)
+        }));
 
     error.extensions = extensions.unwrap_or_default();
 
@@ -614,7 +623,7 @@ where
         let value = match value {
             ResolvedValue::Error(error) => {
                 errors.push(*resolver_error_to_graphql_error(
-                    prepared, field, path, error,
+                    prepared, fields, path, error,
                 ));
                 return complete_null(ty);
             }
@@ -821,7 +830,7 @@ where
         let (field_value, has_error) = resolve_object_field(
             schema,
             prepared,
-            selected_field,
+            &fields,
             definition,
             object.as_ref(),
             object_type,
@@ -867,7 +876,7 @@ where
 async fn resolve_object_field<C>(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
-    field: &Field,
+    fields: &[&Field],
     definition: &FieldDefinition,
     object: &dyn ResolvedObject<C>,
     object_type: &ObjectType,
@@ -878,6 +887,7 @@ async fn resolve_object_field<C>(
 where
     C: Sync,
 {
+    let field = fields[0];
     let arguments = match coerce_argument_values(schema, prepared, path, field, definition) {
         Ok(arguments) => arguments,
         Err(error) => {
@@ -900,7 +910,7 @@ where
         Ok(value) => (value, false),
         Err(error) => {
             errors.push(*resolver_error_to_graphql_error(
-                prepared, field, path, error,
+                prepared, fields, path, error,
             ));
             (ResolvedValue::Json(JsonValue::Null), true)
         }
@@ -1677,7 +1687,8 @@ mod tests {
         let resolver_error =
             ResolverError::new("Greeting failed.").with_extension("code", "GREETING_FAILED");
 
-        let error = super::resolver_error_to_graphql_error(&prepared, field, &path, resolver_error);
+        let error =
+            super::resolver_error_to_graphql_error(&prepared, &[field], &path, resolver_error);
 
         assert_eq!(error.message, "Greeting failed.");
         assert_eq!(
