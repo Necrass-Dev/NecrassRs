@@ -275,8 +275,8 @@ struct AppState {
 }
 ```
 
-Create the dispatcher inside the existing `app` or `configure` function, then
-store it in `AppState`:
+For the Axum starter, create the dispatcher inside the existing `app` function
+and keep wrapping `AppState { schema, dispatcher }` in its existing `Arc`:
 
 ```rust
 let dispatcher = generated::dispatch::SchemaDispatcher::new(
@@ -285,9 +285,43 @@ let dispatcher = generated::dispatch::SchemaDispatcher::new(
 );
 ```
 
-For the Axum starter, keep wrapping `AppState { schema, dispatcher }` in its
-existing `Arc`. For the Actix starter, pass the same value to the existing
-`web::Data::new` call. Restart the server and run this mutation in GraphiQL:
+Actix calls its server factory once per worker. Create one `web::Data<AppState>`
+before `HttpServer::new`, clone that handle into every worker, and leave
+`configure` responsible only for routes:
+
+```rust
+fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::resource("/graphql")
+            .route(web::post().to(graphql))
+            .route(web::get().to(|| async { graphiql_html("/graphql") })),
+    );
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let schema = Schema::parse_and_validate(generated::SDL, "embedded.graphql").unwrap();
+    let state = web::Data::new(AppState {
+        schema,
+        dispatcher: generated::dispatch::SchemaDispatcher::new(
+            resolvers::Query,
+            resolvers::Mutation(Mutex::new(0)),
+        ),
+    });
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(state.clone())
+            .configure(configure)
+    })
+    .bind(("127.0.0.1", 3000))?
+    .run()
+    .await
+}
+```
+
+All Actix workers now share the same counter. Restart the server and run this
+mutation in GraphiQL:
 
 ```graphql
 mutation {
