@@ -34,10 +34,10 @@
 //!
 //! Generated contract types cover built-in scalars, enums, ordinary input
 //! objects, lists, nullable wrappers, owned Object results, and Interface and
-//! Union results. Query dispatch accepts built-in scalar, enum, and ordinary input
-//! object arguments and supports nullable/list forms, OneOf inputs, recursive
-//! input boxing, and recursive Object relationships. Custom scalars, borrowed
-//! Object results, and mutation and subscription roots are unsupported.
+//! Union results. Query and mutation dispatch accept built-in scalar, enum, and
+//! ordinary input object arguments and support nullable/list forms, OneOf inputs,
+//! recursive input boxing, and recursive Object relationships. Custom scalars,
+//! borrowed Object results, and subscription roots are unsupported.
 //! Applications must configure `panic = "abort"` in their root dev
 //! and release profiles to enforce process termination on unimplemented calls.
 //! This affects all panics; ordinary application failures should be returned as
@@ -51,7 +51,7 @@ mod sync;
 
 /// Generates `OUT_DIR/necrassrs.rs` from `.graphql` files recursively discovered
 /// under `schema_dir`, sorted by path. Symbolic-link entries are skipped.
-/// Creates and synchronizes editable query and Object resolvers in
+/// Creates and synchronizes editable query, mutation, and Object resolvers in
 /// `src/resolvers.rs`.
 ///
 /// Relative schema paths are resolved against the process's working directory

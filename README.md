@@ -9,7 +9,7 @@
 NecrassRs is an SDL-first GraphQL server framework for Rust. Define your public API in GraphQL SDL, let Cargo generate Rust contracts and resolver scaffolding, and fill in the resolver bodies with your application logic.
 
 > [!WARNING]
-> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API supports built-in scalar and enum results, ordinary and OneOf input objects, owned Object results, Interface and Union results, nullable and list forms, and recursive input and Object relationships. Custom scalars, borrowed Object results, and generated mutation/subscription routing remain unsupported.
+> NecrassRs is under active development. Feature support is incomplete, and APIs may change. The generated API supports built-in scalar and enum results, ordinary and OneOf input objects, owned Object results, Interface and Union results, nullable and list forms, recursive input and Object relationships, and query and mutation routing. Custom scalars, borrowed Object results, and subscription routing remain unsupported.
 
 ## Quick start
 

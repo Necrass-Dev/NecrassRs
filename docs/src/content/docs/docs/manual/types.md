@@ -9,9 +9,9 @@ web server example, follow the [Tutorial](/docs/tutorial/).
 
 The generated API currently supports built-in scalar and enum results, ordinary
 and OneOf input objects, owned Object results, Interface and Union results,
-nullable and list forms, and recursive input and Object relationships. Custom
-scalars, borrowed Object results, and generated mutation/subscription routing
-remain unsupported.
+nullable and list forms, recursive input and Object relationships, and generated
+query and mutation routing. Custom scalars, borrowed Object results, and
+generated subscription routing remain unsupported.
 
 ## Rust mappings
 

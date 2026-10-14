@@ -48,10 +48,10 @@ developers to write the business logic in ordinary Rust resolver bodies.
 :::caution[Under active development]
 The generated API supports built-in scalar and enum results, ordinary and OneOf
 input objects, owned Object results, Interface and Union results, nullable and
-list forms, and recursive input and Object relationships. Custom scalars,
-borrowed Object results, and generated mutation/subscription routing remain
-unsupported. These pages describe this source checkout, not an older resolved Git
-dependency.
+list forms, recursive input and Object relationships, and generated query and
+mutation routing. Custom scalars, borrowed Object results, and generated
+subscription routing remain unsupported. These pages describe this source
+checkout, not an older resolved Git dependency.
 :::
 
 ## Namesake
@@ -64,8 +64,8 @@ Special thanks to [XiNiHa](https://xiniha.dev/#about) for his contributions to N
 
 ## Next steps
 
-- [Tutorial](/docs/tutorial/): build a GraphQL web server and query it with
-  GraphiQL or HTTP.
+- [Tutorial](/docs/tutorial/): build a GraphQL web server and send queries and
+  mutations with GraphiQL or HTTP.
 - [Personnel Management System](/docs/personnel-management/): add Object,
   Interface, and Union results to a working server.
 - [Types](/docs/types/): Rust type mappings, input presence, defaults, and

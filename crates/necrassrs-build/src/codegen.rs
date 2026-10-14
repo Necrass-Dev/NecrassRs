@@ -23,11 +23,11 @@ use quote::{format_ident, quote};
 ///
 /// # Errors
 ///
-/// Returns [`CodegenError`] for unsupported types or mutation and subscription
-/// roots. Generated contracts support built-in scalars, enums, ordinary input
-/// objects, lists, nullable wrappers, and owned Object results with nullable/list
-/// wrappers, leaf fields, recursive relationships, and abstract results. Custom
-/// scalars and borrowed Objects are not yet supported.
+/// Returns [`CodegenError`] for unsupported types or subscription roots.
+/// Generated query and mutation contracts support built-in scalars, enums,
+/// ordinary input objects, lists, nullable wrappers, and owned Object results
+/// with nullable/list wrappers, leaf fields, recursive relationships, and
+/// abstract results. Custom scalars and borrowed Objects are not yet supported.
 ///
 /// ```
 /// use apollo_compiler::Schema;
