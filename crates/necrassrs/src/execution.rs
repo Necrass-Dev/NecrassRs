@@ -1497,6 +1497,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn merged_invalid_runtime_type_error_is_reported_once_with_all_locations() {
+        let schema = Schema::parse_and_validate(
+            "union Search = User | Organization \
+             type Query { search: Search } \
+             type User { name: String! } \
+             type Organization { name: String! } \
+             type Post { name: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new(
+            "query {\n  result: search { __typename }\n  ...Again\n}\nfragment Again on Query {\n  result: search { __typename }\n}",
+        );
+
+        let response =
+            to_value(super::execute(&schema, &request, &InvalidAbstractDispatcher, &()).await)
+                .unwrap();
+
+        assert_eq!(response["data"], json!({ "result": null }));
+        let errors = response["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["path"], json!(["result"]));
+        assert_eq!(
+            errors[0]["locations"],
+            json!([
+                { "line": 2, "column": 11 },
+                { "line": 6, "column": 11 },
+            ])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn merged_object_fields_complete_every_subselection_once() {
         let schema = Schema::parse_and_validate(
             "type Query { viewer: User! } type User { name: String! id: ID! friend: User! }",
