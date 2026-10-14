@@ -774,11 +774,11 @@ where
 {
     let field = fields[0];
     let ResolvedValue::Object(object) = value else {
-        errors.push(*new_execution_error(
+        errors.push(*new_field_execution_error(
             prepared,
+            fields,
             path,
             format!("Expected field '{}' to return an Object value.", field.name),
-            field.name.location(),
         ));
         return complete_null(ty);
     };
