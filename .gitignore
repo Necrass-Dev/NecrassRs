@@ -1,6 +1,7 @@
 .DS_Store
 
 /target
+/crates/necrassrs/target/criterion/
 
 rust-loc-history.zsh
 
