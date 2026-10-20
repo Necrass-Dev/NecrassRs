@@ -1010,9 +1010,14 @@ fn should_include(selection: &Selection, variables: &JsonMap) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        future::{Future, pending, poll_fn},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::Poll,
+        time::Duration,
     };
 
     use crate::{FieldCoordinate, Request, ResolvedValue, ResolverError, request::prepare_request};
@@ -1023,6 +1028,7 @@ mod tests {
             serde_json_bytes::{json, to_value},
         },
     };
+    use tokio::sync::Barrier;
 
     struct TestContext<'a> {
         greeting: &'a str,
@@ -1047,6 +1053,34 @@ mod tests {
     struct RecoveringDispatcher(AtomicUsize);
 
     struct OrderingDispatcher(Mutex<Vec<String>>);
+
+    struct ConcurrentDispatcher {
+        barrier: Arc<Barrier>,
+    }
+
+    enum ConcurrentObject {
+        Siblings {
+            barrier: Arc<Barrier>,
+            fail_first: bool,
+        },
+        Item {
+            barrier: Arc<Barrier>,
+            index: usize,
+        },
+    }
+
+    struct PendingDispatcher {
+        started: AtomicUsize,
+        dropped: AtomicUsize,
+    }
+
+    struct DropCounter<'a>(&'a AtomicUsize);
+
+    impl Drop for DropCounter<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     struct MergedObjectDispatcher {
         viewer_calls: AtomicUsize,
@@ -1197,6 +1231,109 @@ mod tests {
             self.0.lock().unwrap().push(coordinate.field.to_owned());
 
             Ok(ResolvedValue::Json(json!(coordinate.field)))
+        }
+    }
+
+    impl super::Dispatcher<()> for ConcurrentDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> Result<ResolvedValue, ResolverError> {
+            match (coordinate.parent_type, coordinate.field) {
+                ("Query", "first" | "second") => {
+                    self.barrier.wait().await;
+                    Ok(ResolvedValue::Json(json!(coordinate.field)))
+                }
+                ("Query", "nested") => Ok(ResolvedValue::Object(Box::new(
+                    ConcurrentObject::Siblings {
+                        barrier: Arc::clone(&self.barrier),
+                        fail_first: true,
+                    },
+                ))),
+                ("Query", "items") => Ok(ResolvedValue::List(
+                    (0..3)
+                        .map(|index| {
+                            ResolvedValue::Object(Box::new(ConcurrentObject::Item {
+                                barrier: Arc::clone(&self.barrier),
+                                index,
+                            }))
+                        })
+                        .collect(),
+                )),
+                ("Mutation", "update") => Ok(ResolvedValue::Object(Box::new(
+                    ConcurrentObject::Siblings {
+                        barrier: Arc::clone(&self.barrier),
+                        fail_first: false,
+                    },
+                ))),
+                _ => Err(ResolverError::new(format!(
+                    "Unknown {} field '{}'",
+                    coordinate.parent_type, coordinate.field
+                ))),
+            }
+        }
+    }
+
+    impl crate::ResolvedObject<()> for ConcurrentObject {
+        fn type_name(&self) -> &'static str {
+            match self {
+                Self::Siblings { .. } => "Nested",
+                Self::Item { .. } => "Item",
+            }
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = Result<ResolvedValue, ResolverError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                match self {
+                    Self::Siblings {
+                        barrier,
+                        fail_first,
+                    } => {
+                        barrier.wait().await;
+                        if *fail_first && coordinate.field == "first" {
+                            Err(ResolverError::new("Nested field failed.")
+                                .with_extension("code", "NESTED_FAILED"))
+                        } else {
+                            Ok(ResolvedValue::Json(json!(coordinate.field)))
+                        }
+                    }
+                    Self::Item { barrier, index } => {
+                        barrier.wait().await;
+                        if index % 2 == 0 {
+                            Err(ResolverError::new(format!("Item {index} failed."))
+                                .with_extension("code", "ITEM_FAILED"))
+                        } else {
+                            Ok(ResolvedValue::Json(json!(*index)))
+                        }
+                    }
+                }
+            })
+        }
+    }
+
+    impl super::Dispatcher<()> for PendingDispatcher {
+        async fn resolve<'a>(
+            &'a self,
+            _context: &'a (),
+            _coordinate: FieldCoordinate<'a>,
+            _arguments: &'a JsonMap,
+        ) -> Result<ResolvedValue, ResolverError> {
+            self.started.fetch_add(1, Ordering::Relaxed);
+            let _drop_counter = DropCounter(&self.dropped);
+            pending().await
         }
     }
 
@@ -1945,6 +2082,148 @@ mod tests {
                 .is_some_and(|errors| !errors.is_empty())
         );
         assert_eq!(succeeded, json!({ "data": { "hello": "Hello" } }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn query_root_fields_make_progress_concurrently_and_preserve_response_order() {
+        let schema = Schema::parse_and_validate(
+            "type Query { first: String!, second: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("query { second first }");
+        let dispatcher = ConcurrentDispatcher {
+            barrier: Arc::new(Barrier::new(2)),
+        };
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::execute(&schema, &request, &dispatcher, &()),
+        )
+        .await
+        .expect("independent query root fields must make progress concurrently");
+
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"data":{"second":"second","first":"first"}}"#
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn nested_fields_make_progress_concurrently_and_preserve_error_metadata() {
+        let schema = Schema::parse_and_validate(
+            "type Query { nested: Nested } type Nested { first: String!, second: String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("query { nested { failed: first second } }");
+        let dispatcher = ConcurrentDispatcher {
+            barrier: Arc::new(Barrier::new(2)),
+        };
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::execute(&schema, &request, &dispatcher, &()),
+        )
+        .await
+        .expect("independent nested fields must make progress concurrently");
+        let response = to_value(response).unwrap();
+
+        assert_eq!(response["data"]["nested"], JsonValue::Null);
+        assert_eq!(response["errors"][0]["message"], "Nested field failed.");
+        assert_eq!(response["errors"][0]["path"], json!(["nested", "failed"]));
+        assert_eq!(response["errors"][0]["extensions"]["code"], "NESTED_FAILED");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_items_make_progress_concurrently_and_preserve_ordered_errors() {
+        let schema = Schema::parse_and_validate(
+            "type Query { items: [Item!]! } type Item { value: Int }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("query { results: items { value } }");
+        let dispatcher = ConcurrentDispatcher {
+            barrier: Arc::new(Barrier::new(3)),
+        };
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::execute(&schema, &request, &dispatcher, &()),
+        )
+        .await
+        .expect("independent list items must make progress concurrently");
+        let response = to_value(response).unwrap();
+
+        assert_eq!(
+            response["data"]["results"],
+            json!([{ "value": null }, { "value": 1 }, { "value": null }])
+        );
+        assert_eq!(response["errors"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            response["errors"][0]["path"],
+            json!(["results", 0, "value"])
+        );
+        assert_eq!(response["errors"][0]["extensions"]["code"], "ITEM_FAILED");
+        assert_eq!(
+            response["errors"][1]["path"],
+            json!(["results", 2, "value"])
+        );
+        assert_eq!(response["errors"][1]["extensions"]["code"], "ITEM_FAILED");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn nested_mutation_fields_use_normal_concurrent_execution() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                type Query { noop: Boolean }
+                type Mutation { update: Nested! }
+                type Nested { first: String!, second: String! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("mutation { update { second first } }");
+        let dispatcher = ConcurrentDispatcher {
+            barrier: Arc::new(Barrier::new(2)),
+        };
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::execute(&schema, &request, &dispatcher, &()),
+        )
+        .await
+        .expect("nested mutation fields must use normal concurrent execution");
+
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"data":{"update":{"second":"second","first":"first"}}}"#
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_request_future_drops_all_started_field_futures() {
+        let schema = Schema::parse_and_validate(
+            "type Query { first: String, second: String }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let request = Request::new("query { first second }");
+        let dispatcher = PendingDispatcher {
+            started: AtomicUsize::new(0),
+            dropped: AtomicUsize::new(0),
+        };
+        let mut execution = Box::pin(super::execute(&schema, &request, &dispatcher, &()));
+
+        poll_fn(|context| {
+            assert!(execution.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(execution);
+
+        assert_eq!(dispatcher.started.load(Ordering::Relaxed), 2);
+        assert_eq!(dispatcher.dropped.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
