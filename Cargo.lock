@@ -1669,6 +1669,7 @@ dependencies = [
  "apollo-compiler",
  "async-graphql",
  "criterion",
+ "futures-util",
  "serde",
  "serde_json",
  "tokio",

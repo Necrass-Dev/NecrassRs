@@ -9,6 +9,7 @@ use apollo_compiler::{
     schema::{ExtendedType, FieldDefinition, ObjectType},
     validation::Valid,
 };
+use futures_util::future::join_all;
 
 use crate::{
     Request, ResolvedObject, ResolvedValue, ResolverError, Response,
@@ -126,7 +127,6 @@ where
 /// Resolver errors become execution errors and follow GraphQL null propagation.
 /// Resolver panics are not caught. Applications enforcing termination for
 /// unimplemented resolvers must set `panic = "abort"` in their root Cargo profiles.
-///
 /// See [`execute`] for a complete example. To disable introspection, pass
 /// `ExecutionOptions { introspection: false }` as the final argument here.
 pub async fn execute_with_options<C, D>(
@@ -196,93 +196,159 @@ where
     }
 
     let mut data = JsonMap::new();
-    for (response_key, fields) in fields {
-        let field = fields[0];
-        if matches!(field.name.as_str(), "__schema" | "__type") {
-            if let Some(value) = introspection_data.remove(response_key.as_str()) {
+    if prepared.operation.is_mutation() {
+        for (response_key, fields) in fields {
+            let (response_key, value, mut field_errors) = execute_root_field(
+                schema,
+                &prepared,
+                object_type,
+                response_key,
+                fields,
+                &introspection_data,
+                dispatcher,
+                context,
+            )
+            .await;
+            errors.append(&mut field_errors);
+
+            match value {
+                Some(Ok(value)) => {
+                    data.insert(response_key.as_str(), value);
+                }
+                Some(Err(PropagateNull)) => return Response::execution(None, errors),
+                None => {}
+            }
+        }
+
+        return Response::execution(Some(data), errors);
+    }
+
+    let results = join_all(fields.into_iter().map(|(response_key, fields)| {
+        execute_root_field(
+            schema,
+            &prepared,
+            object_type,
+            response_key,
+            fields,
+            &introspection_data,
+            dispatcher,
+            context,
+        )
+    }))
+    .await;
+    let mut propagate_null = false;
+    for (response_key, value, mut field_errors) in results {
+        errors.append(&mut field_errors);
+
+        match value {
+            Some(Ok(value)) => {
                 data.insert(response_key.as_str(), value);
             }
-            continue;
+            Some(Err(PropagateNull)) => propagate_null = true,
+            None => {}
         }
-        let mut path = vec![ResponseDataPathSegment::Field(response_key.clone())];
+    }
 
-        let definition: &FieldDefinition =
-            match schema.type_field(object_type.name.as_str(), field.name.as_str()) {
-                Ok(definition) => definition,
-                Err(_) => {
-                    errors.push(*new_execution_error(
-                        &prepared,
-                        &path,
-                        format!("Could not resolve field definition '{}'.", field.name),
-                        field.name.location(),
-                    ));
+    Response::execution((!propagate_null).then_some(data), errors)
+}
 
-                    return Response::execution(None, errors);
-                }
-            };
+#[allow(clippy::too_many_arguments)]
+async fn execute_root_field<'a, C, D>(
+    schema: &'a Valid<Schema>,
+    prepared: &'a PreparedRequest,
+    object_type: &'a ObjectType,
+    response_key: Name,
+    fields: Vec<&'a Field>,
+    introspection_data: &'a JsonMap,
+    dispatcher: &'a D,
+    context: &'a C,
+) -> (Name, Option<CompletionResult>, Vec<GraphQLError>)
+where
+    C: Sync,
+    D: Dispatcher<C> + Sync,
+{
+    let field = fields[0];
+    if matches!(field.name.as_str(), "__schema" | "__type") {
+        return (
+            response_key.clone(),
+            introspection_data
+                .get(response_key.as_str())
+                .cloned()
+                .map(Ok),
+            Vec::new(),
+        );
+    }
 
-        let (value, has_error) = match field.name.as_str() {
-            "__typename" => (
-                ResolvedValue::Json(JsonValue::from(
-                    prepared.operation.selection_set.ty.as_str(),
-                )),
-                false,
-            ),
-            _ => match coerce_argument_values(schema, &prepared, &path, field, definition) {
-                Ok(arguments) => match dispatcher
-                    .resolve(
-                        context,
-                        FieldCoordinate {
-                            parent_type: object_type.name.as_str(),
-                            field: field.name.as_str(),
-                        },
-                        &arguments,
-                    )
-                    .await
-                {
-                    Ok(value) => (value, false),
-                    Err(error) => {
-                        errors.push(*resolver_error_to_graphql_error(
-                            &prepared, &fields, &path, error,
-                        ));
+    let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
+    let mut errors = Vec::new();
+    let definition = match schema.type_field(object_type.name.as_str(), field.name.as_str()) {
+        Ok(definition) => definition,
+        Err(_) => {
+            errors.push(*new_execution_error(
+                prepared,
+                &path,
+                format!("Could not resolve field definition '{}'.", field.name),
+                field.name.location(),
+            ));
 
-                        (ResolvedValue::Json(JsonValue::Null), true)
-                    }
-                },
+            return (response_key, Some(Err(PropagateNull)), errors);
+        }
+    };
+
+    let (value, has_error) = match field.name.as_str() {
+        "__typename" => (
+            ResolvedValue::Json(JsonValue::from(
+                prepared.operation.selection_set.ty.as_str(),
+            )),
+            false,
+        ),
+        _ => match coerce_argument_values(schema, prepared, &path, field, definition) {
+            Ok(arguments) => match dispatcher
+                .resolve(
+                    context,
+                    FieldCoordinate {
+                        parent_type: object_type.name.as_str(),
+                        field: field.name.as_str(),
+                    },
+                    &arguments,
+                )
+                .await
+            {
+                Ok(value) => (value, false),
                 Err(error) => {
-                    errors.push(*error);
+                    errors.push(*resolver_error_to_graphql_error(
+                        prepared, &fields, &path, error,
+                    ));
                     (ResolvedValue::Json(JsonValue::Null), true)
                 }
             },
-        };
+            Err(error) => {
+                errors.push(*error);
+                (ResolvedValue::Json(JsonValue::Null), true)
+            }
+        },
+    };
 
-        if has_error
-            && matches!(&value, ResolvedValue::Json(value) if value.is_null())
-            && definition.ty.is_non_null()
-        {
-            return Response::execution(None, errors);
-        }
-
-        let value = match complete_value(
-            schema,
-            &prepared,
-            &fields,
-            &definition.ty,
-            value,
-            context,
-            &mut path,
-            &mut errors,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(PropagateNull) => return Response::execution(None, errors),
-        };
-
-        data.insert(response_key.as_str(), value);
+    if has_error
+        && matches!(&value, ResolvedValue::Json(value) if value.is_null())
+        && definition.ty.is_non_null()
+    {
+        return (response_key, Some(Err(PropagateNull)), errors);
     }
 
-    Response::execution(Some(data), errors)
+    let value = complete_value(
+        schema,
+        prepared,
+        &fields,
+        &definition.ty,
+        value,
+        context,
+        &path,
+        &mut errors,
+    )
+    .await;
+
+    (response_key, Some(value), errors)
 }
 
 fn resolver_error_to_graphql_error(
@@ -621,7 +687,7 @@ fn complete_value<'a, C>(
     ty: &'a Type,
     value: ResolvedValue<C>,
     context: &'a C,
-    path: &'a mut Vec<ResponseDataPathSegment>,
+    path: &'a [ResponseDataPathSegment],
     errors: &'a mut Vec<GraphQLError>,
 ) -> CompletionFuture<'a>
 where
@@ -688,7 +754,7 @@ async fn complete_list_value<C>(
     item_type: &Type,
     value: ResolvedValue<C>,
     context: &C,
-    path: &mut Vec<ResponseDataPathSegment>,
+    path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
 ) -> CompletionResult
 where
@@ -711,22 +777,43 @@ where
         }
     };
 
-    let mut completed = Vec::with_capacity(values.len());
-    for (index, value) in values.into_iter().enumerate() {
-        path.push(ResponseDataPathSegment::ListIndex(index));
-        let item = complete_value(
-            schema, prepared, fields, item_type, value, context, path, errors,
-        )
-        .await;
-        path.pop();
+    let results = join_all(values.into_iter().enumerate().map(|(index, value)| {
+        let mut item_path = path.to_vec();
+        item_path.push(ResponseDataPathSegment::ListIndex(index));
 
+        async move {
+            let mut item_errors = Vec::new();
+            let item = complete_value(
+                schema,
+                prepared,
+                fields,
+                item_type,
+                value,
+                context,
+                &item_path,
+                &mut item_errors,
+            )
+            .await;
+            (item, item_errors)
+        }
+    }))
+    .await;
+
+    let mut completed = Vec::with_capacity(results.len());
+    let mut propagate_null = false;
+    for (item, mut item_errors) in results {
+        errors.append(&mut item_errors);
         match item {
             Ok(value) => completed.push(value),
-            Err(PropagateNull) => return complete_null(ty),
+            Err(PropagateNull) => propagate_null = true,
         }
     }
 
-    Ok(completed.into())
+    if propagate_null {
+        complete_null(ty)
+    } else {
+        Ok(completed.into())
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -738,7 +825,7 @@ async fn complete_named_value<C>(
     name: &Name,
     value: ResolvedValue<C>,
     context: &C,
-    path: &mut Vec<ResponseDataPathSegment>,
+    path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
 ) -> CompletionResult
 where
@@ -766,7 +853,7 @@ async fn complete_object_value<C>(
     name: &Name,
     value: ResolvedValue<C>,
     context: &C,
-    path: &mut Vec<ResponseDataPathSegment>,
+    path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
 ) -> CompletionResult
 where
@@ -819,66 +906,101 @@ where
         );
     }
 
-    let mut completed = JsonMap::new();
-    for (response_key, fields) in subfields {
-        let selected_field = fields[0];
-        path.push(ResponseDataPathSegment::Field(response_key.clone()));
-
-        if selected_field.name.as_str() == "__typename" {
-            completed.insert(
-                response_key.as_str(),
-                JsonValue::from(object_type.name.as_str()),
-            );
-            path.pop();
-            continue;
-        }
-
-        let definition = schema
-            .type_field(object_type.name.as_str(), selected_field.name.as_str())
-            .expect("validated Object selection must have a field definition");
-        let (field_value, has_error) = resolve_object_field(
+    let results = join_all(subfields.into_iter().map(|(response_key, fields)| {
+        let mut field_path = path.to_vec();
+        field_path.push(ResponseDataPathSegment::Field(response_key.clone()));
+        complete_object_field(
             schema,
             prepared,
-            &fields,
-            definition,
+            response_key,
+            fields,
             object.as_ref(),
             object_type,
             context,
-            path,
-            errors,
+            field_path,
         )
-        .await;
+    }))
+    .await;
 
-        if has_error
-            && matches!(&field_value, ResolvedValue::Json(value) if value.is_null())
-            && definition.ty.is_non_null()
-        {
-            path.pop();
-            return complete_null(ty);
-        }
-
-        let field_value = complete_value(
-            schema,
-            prepared,
-            &fields,
-            &definition.ty,
-            field_value,
-            context,
-            path,
-            errors,
-        )
-        .await;
-        path.pop();
-
+    let mut completed = JsonMap::new();
+    let mut propagate_null = false;
+    for (response_key, field_value, mut field_errors) in results {
+        errors.append(&mut field_errors);
         match field_value {
             Ok(value) => {
                 completed.insert(response_key.as_str(), value);
             }
-            Err(PropagateNull) => return complete_null(ty),
+            Err(PropagateNull) => propagate_null = true,
         }
     }
 
-    Ok(completed.into())
+    if propagate_null {
+        complete_null(ty)
+    } else {
+        Ok(completed.into())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_object_field<'a, C>(
+    schema: &'a Valid<Schema>,
+    prepared: &'a PreparedRequest,
+    response_key: Name,
+    fields: Vec<&'a Field>,
+    object: &'a dyn ResolvedObject<C>,
+    object_type: &'a ObjectType,
+    context: &'a C,
+    path: Vec<ResponseDataPathSegment>,
+) -> (Name, CompletionResult, Vec<GraphQLError>)
+where
+    C: Sync,
+{
+    let selected_field = fields[0];
+    if selected_field.name.as_str() == "__typename" {
+        return (
+            response_key,
+            Ok(JsonValue::from(object_type.name.as_str())),
+            Vec::new(),
+        );
+    }
+
+    let definition = schema
+        .type_field(object_type.name.as_str(), selected_field.name.as_str())
+        .expect("validated Object selection must have a field definition");
+    let mut errors = Vec::new();
+    let (field_value, has_error) = resolve_object_field(
+        schema,
+        prepared,
+        &fields,
+        definition,
+        object,
+        object_type,
+        context,
+        &path,
+        &mut errors,
+    )
+    .await;
+
+    if has_error
+        && matches!(&field_value, ResolvedValue::Json(value) if value.is_null())
+        && definition.ty.is_non_null()
+    {
+        return (response_key, Err(PropagateNull), errors);
+    }
+
+    let field_value = complete_value(
+        schema,
+        prepared,
+        &fields,
+        &definition.ty,
+        field_value,
+        context,
+        &path,
+        &mut errors,
+    )
+    .await;
+
+    (response_key, field_value, errors)
 }
 
 #[allow(clippy::too_many_arguments)]
