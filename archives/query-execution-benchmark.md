@@ -146,16 +146,38 @@ not establish general framework superiority.
 For independent delayed root fields, nested sibling fields, and list item fields,
 NecrassRs latency grows approximately with the number of delayed resolver calls.
 async-graphql stays near the cost of one observed timer wait as the independent work
-increases. This is evidence that NecrassRs currently awaits these independent values
-sequentially while the measured async-graphql paths overlap their waits.
+increases. At baseline revision `57f2f696167bd1f3fec6511e530f5efef3b14ee1`,
+this is evidence that NecrassRs awaited these independent values sequentially while
+the measured async-graphql paths overlapped their waits.
 
 The deep path takes the same time in both implementations because each resolver
 depends on the object returned by the preceding resolver. Concurrent scheduling
 cannot reduce that dependency chain.
 
-The results motivate evaluating concurrent query-field and list-item completion in a
-separate change. They do not imply per-field task spawning, a global scheduler, or a
-specific executor design.
+## Post-change comparison
+
+The benchmark was rerun after revision
+`7f07045d525a075272e71b9b39307c95f76e1787` changed query-root fields, nested
+sibling fields, and list items to concurrent polling within the request future.
+The following values are the Criterion point estimates from that run on the same
+environment. Baseline values are repeated from the tables above.
+
+| Workload | Independent values | Sequential baseline | Concurrent executor |
+| --- | ---: | ---: | ---: |
+| Delayed root fields | 4 | 15.048 ms | 3.770 ms |
+| Delayed root fields | 16 | 59.672 ms | 3.943 ms |
+| Delayed nested sibling fields | 4 | 15.014 ms | 3.839 ms |
+| Delayed nested sibling fields | 16 | 59.831 ms | 3.954 ms |
+| Delayed list item fields | 4 | 15.046 ms | 3.791 ms |
+| Delayed list item fields | 16 | 59.394 ms | 3.876 ms |
+| Delayed deep path | 9 calls | 33.608 ms | 33.789 ms |
+
+The independent delayed workloads stay near one observed timer wait after the
+change instead of growing with the number of selected values. The dependent deep
+path is effectively unchanged. This supports the conclusion that the new executor
+overlaps independent asynchronous waits without shortening work whose results form
+a dependency chain. It does not imply per-field task spawning, a global scheduler,
+or general framework superiority.
 
 ## Limitations
 

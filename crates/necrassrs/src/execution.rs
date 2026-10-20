@@ -66,8 +66,25 @@ impl Default for ExecutionOptions {
 ///
 /// Equivalent to [`execute_with_options`] with [`ExecutionOptions::default`].
 /// The application owns the validated schema, dispatcher, and Context; the
-/// returned future borrows them and is `Send`. No independent field tasks are
-/// spawned. Validation failures are returned as request-error [`Response`] values.
+/// returned future borrows them and is `Send`. Validation failures are returned
+/// as request-error [`Response`] values.
+///
+/// # Scheduling and cancellation
+///
+/// Query-root fields, fields in nested selection sets, and list items are polled
+/// concurrently. Top-level mutation fields are awaited serially in document order;
+/// nested selections below each mutation field use normal concurrent execution.
+/// A mutation field that propagates null to the operation root prevents later
+/// top-level mutation fields from starting.
+///
+/// Concurrent scheduling does not change response ordering. Object fields retain
+/// query order, list items retain input order, and execution errors are merged in
+/// the corresponding field or item order. Applications must not rely on sibling
+/// resolver start or completion order.
+///
+/// Execution does not spawn independent field tasks or impose a concurrency limit.
+/// Dropping the returned future drops in-progress field futures, but it does not
+/// roll back external effects that resolvers have already performed.
 ///
 /// # Example
 ///
@@ -127,8 +144,9 @@ where
 /// Resolver errors become execution errors and follow GraphQL null propagation.
 /// Resolver panics are not caught. Applications enforcing termination for
 /// unimplemented resolvers must set `panic = "abort"` in their root Cargo profiles.
-/// See [`execute`] for a complete example. To disable introspection, pass
-/// `ExecutionOptions { introspection: false }` as the final argument here.
+/// Scheduling and cancellation follow [`execute`]. See that function for a complete
+/// example. To disable introspection, pass `ExecutionOptions { introspection: false }`
+/// as the final argument here.
 pub async fn execute_with_options<C, D>(
     schema: &Valid<Schema>,
     request: &Request,
