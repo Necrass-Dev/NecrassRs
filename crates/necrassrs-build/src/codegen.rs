@@ -2761,7 +2761,7 @@ mod test {
                     Ok(Some(vec![
                         User { value: "first", fail: false },
                         User { value: "second", fail: true },
-                        User { value: "unreached", fail: false },
+                        User { value: "third", fail: false },
                     ]))
                 }
             }
@@ -2876,7 +2876,7 @@ mod test {
                     serde_json::json!({ "sibling": "safe", "nullableList": null }),
                     serde_json::json!(["nullableList", 1, "value"]),
                 );
-                assert_eq!(context.calls.load(Ordering::Relaxed), 6);
+                assert_eq!(context.calls.load(Ordering::Relaxed), 7);
 
                 let abstract_value = run(
                     "{ sibling result: abstract { ... on User { broken: value } } }",
@@ -2886,7 +2886,7 @@ mod test {
                     serde_json::json!({ "sibling": "safe", "result": null }),
                     serde_json::json!(["result", "broken"]),
                 );
-                assert_eq!(context.calls.load(Ordering::Relaxed), 7);
+                assert_eq!(context.calls.load(Ordering::Relaxed), 8);
 
                 let strict = run("{ sibling root: strict(fail: true) { value } }");
                 assert_failure(
@@ -2894,7 +2894,7 @@ mod test {
                     serde_json::Value::Null,
                     serde_json::json!(["root"]),
                 );
-                assert_eq!(context.calls.load(Ordering::Relaxed), 7);
+                assert_eq!(context.calls.load(Ordering::Relaxed), 8);
 
                 assert_eq!(
                     run("{ root: strict(fail: false) { value } }") ,
@@ -2902,7 +2902,7 @@ mod test {
                         "data": { "root": { "value": "recovered" } },
                     }),
                 );
-                assert_eq!(context.calls.load(Ordering::Relaxed), 8);
+                assert_eq!(context.calls.load(Ordering::Relaxed), 9);
             }
         "##;
 

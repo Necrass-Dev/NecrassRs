@@ -5,7 +5,16 @@ edition.workspace = true
 
 [dependencies]
 apollo-compiler.workspace = true
+futures-util = "0.3"
 serde.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["macros", "rt"] }
+async-graphql = { version = "=7.2.1", default-features = false }
+criterion = "0.7.0"
+serde_json = "1.0"
+tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
+
+[[bench]]
+name = "query_execution"
+path = "benches/query_execution/main.rs"
+harness = false
