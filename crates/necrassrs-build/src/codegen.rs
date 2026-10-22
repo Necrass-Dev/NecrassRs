@@ -2494,6 +2494,96 @@ mod test {
     }
 
     #[test]
+    fn generated_custom_scalar_input_defaults_preserve_literal_kinds() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar EnumOnly
+                input Payload { value: EnumOnly! = DEFAULT_VALUE }
+                type Query { echo(payload: Payload! = {}): String! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct EnumOnly(String);
+
+                impl EnumOnly {
+                    pub fn into_inner(self) -> String {
+                        self.0
+                    }
+                }
+
+                impl Scalar for EnumOnly {
+                    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        match value {
+                            ScalarLiteral::Enum(value) => Ok(Self(value.as_str().to_owned())),
+                            _ => Err(ScalarError::new("expected an enum literal")),
+                        }
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("variable coercion is not expected"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::echo, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::echo::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(args.payload.value.into_inner())
+                }
+            }
+
+            fn execute(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+                document: &str,
+            ) -> serde_json::Value {
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &necrassrs::Request::new(document),
+                    dispatcher,
+                    &(),
+                ))).unwrap()
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+
+                for document in ["{ echo }", "{ echo(payload: {}) }"] {
+                    assert_eq!(
+                        execute(&schema, &dispatcher, document),
+                        serde_json::json!({ "data": { "echo": "DEFAULT_VALUE" } }),
+                        "{document}",
+                    );
+                }
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn generated_custom_scalar_variables_are_coerced_before_resolvers() {
         let schema = Schema::parse_and_validate(
             r#"
