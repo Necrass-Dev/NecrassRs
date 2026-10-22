@@ -1911,6 +1911,93 @@ mod test {
     }
 
     #[test]
+    fn generated_consumer_compiles_user_owned_custom_scalar_contracts() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar DateTime
+                scalar Epoch
+
+                type Query {
+                    date(value: DateTime!): DateTime!
+                    epoch(value: Epoch!): Epoch!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalars must be supported");
+        assert_consumer_compiles(
+            &format!("mod generated {{ {generated} }}"),
+            r#"
+                mod resolvers {
+                    use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                    pub struct DateTime(String);
+
+                    impl Scalar for DateTime {
+                        fn parse_literal(_: &ScalarLiteral) -> Result<Self, ScalarError> {
+                            Err(ScalarError::new("not executed"))
+                        }
+
+                        fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                            Err(ScalarError::new("not executed"))
+                        }
+
+                        fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                            Ok(self.0.as_str().into())
+                        }
+                    }
+
+                    pub struct Epoch(i64);
+
+                    impl Scalar for Epoch {
+                        fn parse_literal(_: &ScalarLiteral) -> Result<Self, ScalarError> {
+                            Err(ScalarError::new("not executed"))
+                        }
+
+                        fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                            Err(ScalarError::new("not executed"))
+                        }
+
+                        fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                            Ok(self.0.into())
+                        }
+                    }
+                }
+
+                struct Query;
+                impl generated::resolvers::QueryResolver<()> for Query {}
+
+                impl necrassrs::Resolver<generated::fields::Query::date, ()> for Query {
+                    type Output = resolvers::DateTime;
+
+                    async fn resolve(
+                        &self,
+                        _: &(),
+                        args: generated::types::Query::date::Args,
+                    ) -> Result<Self::Output, necrassrs::ResolverError> {
+                        Ok(args.value)
+                    }
+                }
+
+                impl necrassrs::Resolver<generated::fields::Query::epoch, ()> for Query {
+                    type Output = resolvers::Epoch;
+
+                    async fn resolve(
+                        &self,
+                        _: &(),
+                        args: generated::types::Query::epoch::Args,
+                    ) -> Result<Self::Output, necrassrs::ResolverError> {
+                        Ok(args.value)
+                    }
+                }
+
+                fn main() {}
+            "#,
+        );
+    }
+
+    #[test]
     fn codegen_error_preserves_argument_type_source_and_span() {
         let source = "# Source: café\nextend type Query { lookup(at: Timestamp!): String! }";
         let schema = Schema::builder()
