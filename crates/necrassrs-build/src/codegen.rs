@@ -2455,6 +2455,147 @@ mod test {
     }
 
     #[test]
+    fn generated_custom_scalar_variables_are_coerced_before_resolvers() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar StringOnly
+                type Query {
+                    ping: String!
+                    echo(value: StringOnly!): String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct StringOnly(String);
+
+                impl StringOnly {
+                    pub fn into_inner(self) -> String {
+                        self.0
+                    }
+                }
+
+                impl Scalar for StringOnly {
+                    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        match value {
+                            ScalarLiteral::String(value) => Ok(Self(value.to_owned())),
+                            _ => Err(ScalarError::new("expected a string literal")),
+                        }
+                    }
+
+                    fn parse_value(value: &JsonValue) -> Result<Self, ScalarError> {
+                        value
+                            .as_str()
+                            .map(|value| Self(value.to_owned()))
+                            .ok_or_else(|| ScalarError::new("expected a string value"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<AtomicUsize> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::ping, AtomicUsize> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    calls: &AtomicUsize,
+                    _: generated::types::Query::ping::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    Ok("pong".to_owned())
+                }
+            }
+
+            impl necrassrs::Resolver<generated::fields::Query::echo, AtomicUsize> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    calls: &AtomicUsize,
+                    args: generated::types::Query::echo::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(args.value.into_inner())
+                }
+            }
+
+            fn execute(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+                calls: &AtomicUsize,
+                value: serde_json::Value,
+            ) -> serde_json::Value {
+                let variables = serde_json::from_value(serde_json::json!({
+                    "value": value,
+                })).unwrap();
+                let request = necrassrs::Request::new(
+                    "query($value: StringOnly!) { ping echo(value: $value) }",
+                ).with_variables(variables);
+
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &request,
+                    dispatcher,
+                    calls,
+                ))).unwrap()
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let calls = AtomicUsize::new(0);
+
+                assert_eq!(
+                    execute(
+                        &schema,
+                        &dispatcher,
+                        &calls,
+                        serde_json::json!("variable"),
+                    ),
+                    serde_json::json!({
+                        "data": { "ping": "pong", "echo": "variable" },
+                    }),
+                );
+                assert_eq!(calls.swap(0, Ordering::Relaxed), 2);
+
+                let rejected = execute(
+                    &schema,
+                    &dispatcher,
+                    &calls,
+                    serde_json::json!(3),
+                );
+                assert!(rejected.get("data").is_none());
+                assert!(
+                    rejected["errors"][0]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("expected a string value"),
+                );
+                assert!(rejected["errors"][0].get("path").is_none());
+                assert_eq!(calls.load(Ordering::Relaxed), 0);
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn pending_custom_scalar_scaffold_error_preserves_source_and_span() {
         let source = "# Source: café\nscalar Timestamp";
         let schema = Schema::builder()
