@@ -1187,6 +1187,36 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
         .copied()
         .chain(object_types.iter())
         .collect::<Vec<_>>();
+    let scalar_variable_branches = schema
+        .types
+        .iter()
+        .filter_map(|(name, definition)| {
+            let ExtendedType::Scalar(scalar) = definition else {
+                return None;
+            };
+            if scalar.is_built_in() {
+                return None;
+            }
+
+            let scalar_name = name.as_str();
+            let scalar_type = custom_scalar_type(name);
+            Some(quote! {
+                #scalar_name => {
+                    <#scalar_type as ::necrassrs::Scalar>::parse_value(value).map(|_| ())
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let scalar_variable_validation = if scalar_variable_branches.is_empty() {
+        quote! { Ok(()) }
+    } else {
+        quote! {
+            match scalar_name {
+                #(#scalar_variable_branches,)*
+                _ => Ok(()),
+            }
+        }
+    };
     Ok(quote! {
         pub mod dispatch {
             #object_dispatcher
@@ -1208,6 +1238,15 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                 #(#root_sync_bounds,)*
                 #(#dispatcher_bounds,)*
             {
+                fn validate_custom_scalar_variable(
+                    &self,
+                    scalar_name: &str,
+                    value: &::necrassrs::JsonValue,
+                ) -> ::core::result::Result<(), ::necrassrs::ScalarError> {
+                    let _ = (scalar_name, value);
+                    #scalar_variable_validation
+                }
+
                 async fn resolve<'a>(
                     &'a self,
                     context: &'a C,

@@ -12,7 +12,7 @@ use apollo_compiler::{
 use futures_util::future::join_all;
 
 use crate::{
-    Request, ResolvedObject, ResolvedValue, ResolverError, Response, ScalarLiteralMap,
+    Request, ResolvedObject, ResolvedValue, ResolverError, Response, ScalarError, ScalarLiteralMap,
     input::literal_to_json as input_literal_to_json,
     request::{PreparedRequest, prepare_request},
 };
@@ -31,6 +31,18 @@ pub struct FieldCoordinate<'a> {
 /// Usually implemented by the generated `SchemaDispatcher`. Applications can
 /// provide a custom dispatcher when integrating directly with the runtime.
 pub trait Dispatcher<C> {
+    /// Validates one custom scalar value during variable coercion.
+    ///
+    /// Generated dispatchers call [`crate::Scalar::parse_value`]. The default
+    /// accepts the value so existing handwritten dispatchers remain compatible.
+    fn validate_custom_scalar_variable(
+        &self,
+        _scalar_name: &str,
+        _value: &JsonValue,
+    ) -> Result<(), ScalarError> {
+        Ok(())
+    }
+
     /// Resolves a selected field using coerced arguments and request Context.
     ///
     /// Argument keys are original SDL names. The returned `Send` future may
@@ -174,6 +186,10 @@ where
         Err(error) => return error.into(),
     };
 
+    if let Err(error) = validate_custom_scalar_variables::<C, D>(schema, &prepared, dispatcher) {
+        return Response::request_error(*error);
+    }
+
     // TODO: Temporary unsupported-feature contract
     if prepared.operation.is_subscription() {
         return Response::request_error(GraphQLError::new(
@@ -279,6 +295,89 @@ where
     }
 
     Response::execution((!propagate_null).then_some(data), errors)
+}
+
+fn validate_custom_scalar_variables<C, D>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    dispatcher: &D,
+) -> Result<(), Box<GraphQLError>>
+where
+    D: Dispatcher<C>,
+{
+    for definition in &prepared.operation.variables {
+        let Some(value) = prepared.variables.get(definition.name.as_str()) else {
+            continue;
+        };
+
+        validate_custom_scalar_value::<C, D>(schema, &definition.ty, value, dispatcher).map_err(
+            |ResolverError {
+                 message,
+                 extensions,
+             }| {
+                let mut error =
+                    GraphQLError::new(message, definition.location(), &prepared.document.sources);
+                error.extensions = extensions.unwrap_or_default();
+                Box::new(error)
+            },
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_custom_scalar_value<C, D>(
+    schema: &Valid<Schema>,
+    ty: &Type,
+    value: &JsonValue,
+    dispatcher: &D,
+) -> Result<(), ScalarError>
+where
+    D: Dispatcher<C>,
+{
+    if value.is_null() {
+        return Ok(());
+    }
+
+    let type_name = match ty {
+        Type::List(item_type) | Type::NonNullList(item_type) => {
+            if let Some(items) = value.as_array() {
+                for item_value in items {
+                    validate_custom_scalar_value::<C, D>(
+                        schema, item_type, item_value, dispatcher,
+                    )?;
+                }
+            }
+            return Ok(());
+        }
+        Type::Named(name) | Type::NonNullNamed(name) => name,
+    };
+
+    match schema.types.get(type_name) {
+        Some(ExtendedType::Scalar(scalar)) if !scalar.is_built_in() => {
+            <D as Dispatcher<C>>::validate_custom_scalar_variable(
+                dispatcher,
+                type_name.as_str(),
+                value,
+            )
+        }
+        Some(ExtendedType::InputObject(input)) => {
+            if let Some(object) = value.as_object() {
+                for (name, definition) in &input.fields {
+                    if let Some(value) = object.get(name.as_str()) {
+                        validate_custom_scalar_value::<C, D>(
+                            schema,
+                            &definition.ty,
+                            value,
+                            dispatcher,
+                        )?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2497,6 +2596,75 @@ mod tests {
             );
             assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0, "{case}");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn nested_custom_scalar_variables_are_validated_before_dispatch() {
+        struct ScalarVariableDispatcher {
+            resolver_calls: AtomicUsize,
+            values: Mutex<Vec<JsonValue>>,
+        }
+
+        impl super::Dispatcher<()> for ScalarVariableDispatcher {
+            fn validate_custom_scalar_variable(
+                &self,
+                scalar_name: &str,
+                value: &JsonValue,
+            ) -> Result<(), ResolverError> {
+                assert_eq!(scalar_name, "Token");
+                self.values.lock().unwrap().push(value.clone());
+                if value == "bad" {
+                    Err(ResolverError::new("invalid token").with_extension("code", "INVALID_TOKEN"))
+                } else {
+                    Ok(())
+                }
+            }
+
+            async fn resolve<'a>(
+                &'a self,
+                _context: &'a (),
+                _coordinate: FieldCoordinate<'a>,
+                _arguments: &'a JsonMap,
+            ) -> Result<ResolvedValue, ResolverError> {
+                self.resolver_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(ResolvedValue::Json(json!("accepted")))
+            }
+        }
+
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar Token
+                input Payload { values: [Token!]! }
+                type Query { inspect(payload: Payload!): String! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let variables = json!({
+            "payload": { "values": ["ok", "bad"] },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let request = Request::new("query($payload: Payload!) { inspect(payload: $payload) }")
+            .with_variables(variables);
+        let dispatcher = ScalarVariableDispatcher {
+            resolver_calls: AtomicUsize::new(0),
+            values: Mutex::new(Vec::new()),
+        };
+
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
+        let response = to_value(response).unwrap();
+
+        assert!(response.get("data").is_none());
+        assert_eq!(response["errors"][0]["message"], "invalid token");
+        assert_eq!(response["errors"][0]["extensions"]["code"], "INVALID_TOKEN");
+        assert!(response["errors"][0].get("path").is_none());
+        assert_eq!(dispatcher.resolver_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            *dispatcher.values.lock().unwrap(),
+            [json!("ok"), json!("bad")]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
