@@ -2046,6 +2046,81 @@ mod test {
     }
 
     #[test]
+    fn generated_custom_scalar_result_uses_application_serialization() {
+        let schema = Schema::parse_and_validate(
+            "scalar DateTime type Query { now: DateTime! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct DateTime(String);
+
+                impl DateTime {
+                    pub fn new(value: &str) -> Self {
+                        Self(value.to_owned())
+                    }
+                }
+
+                impl Scalar for DateTime {
+                    fn parse_literal(_: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("not used"))
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("not used"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::now, ()> for Query {
+                type Output = resolvers::DateTime;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    _: generated::types::Query::now::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(resolvers::DateTime::new("2026-10-22T00:00:00Z"))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let response = futures::executor::block_on(necrassrs::execute(
+                    &schema,
+                    &necrassrs::Request::new("{ now }"),
+                    &dispatcher,
+                    &(),
+                ));
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": { "now": "2026-10-22T00:00:00Z" }
+                    }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn pending_custom_scalar_scaffold_error_preserves_source_and_span() {
         let source = "# Source: café\nscalar Timestamp";
         let schema = Schema::builder()
