@@ -1093,6 +1093,7 @@ fn complete_leaf_value<C>(
         Some(ExtendedType::Scalar(_)) if is_builtin_scalar(name) => {
             format!("Expected field '{}' to return a {name}.", field.name)
         }
+        Some(ExtendedType::Scalar(_)) => return Ok(value),
         Some(ExtendedType::Enum(enum_type))
             if value
                 .as_str()
