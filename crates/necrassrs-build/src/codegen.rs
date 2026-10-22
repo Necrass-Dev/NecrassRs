@@ -245,6 +245,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             schema,
                             &payload_type,
                             &quote! { value },
+                            &quote! { literal },
                             &coordinate,
                             &quote! { self },
                         )
@@ -285,6 +286,13 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                         pub(super) fn _from_graphql_value(
                             value: &::necrassrs::JsonValue,
                         ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                            Self::_from_graphql_value_with_literal(value, None)
+                        }
+
+                        pub(super) fn _from_graphql_value_with_literal(
+                            value: &::necrassrs::JsonValue,
+                            literal: ::core::option::Option<&::necrassrs::ScalarLiteral>,
+                        ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
                             let object = value
                                 .as_object()
                                 .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?;
@@ -297,6 +305,15 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             if value.is_null() {
                                 return Err(::necrassrs::ResolverError::new(#selection_message));
                             }
+                            let literal = match literal {
+                                Some(::necrassrs::ScalarLiteral::Variable(_)) => literal,
+                                Some(::necrassrs::ScalarLiteral::Object(fields)) => fields
+                                    .iter()
+                                    .find(|(name, _)| name.as_str() == field.as_str())
+                                    .map(|(_, value)| value.as_ref()),
+                                _ => None,
+                            };
+                            let _ = literal;
                             match field.as_str() {
                                 #(#conversions)*
                                 _ => Err(::necrassrs::ResolverError::new(#unknown_message)),
@@ -332,6 +349,16 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                         })?;
                     let coordinate = format!("{type_name}.{field_name}");
                     let lookup = quote! { object.get(#graphql_name) };
+                    let literal = quote! {
+                        match literal {
+                            Some(::necrassrs::ScalarLiteral::Variable(_)) => literal,
+                            Some(::necrassrs::ScalarLiteral::Object(fields)) => fields
+                                .iter()
+                                .find(|(name, _)| name.as_str() == #graphql_name)
+                                .map(|(_, value)| value.as_ref()),
+                            _ => None,
+                        }
+                    };
                     let field_value = if boxed {
                         field_type = quote! {
                             ::necrassrs::GraphQLInput<::std::boxed::Box<#field_type>>
@@ -340,6 +367,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             schema,
                             &ty,
                             &quote! { value },
+                            &literal,
                             &coordinate,
                             &quote! { self },
                         )
@@ -351,7 +379,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             schema,
                             &ty,
                             &lookup,
-                            &quote! { None },
+                            &literal,
                             &coordinate,
                             &quote! { self },
                         )
@@ -383,6 +411,14 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                     pub(super) fn _from_graphql_value(
                         value: &::necrassrs::JsonValue,
                     ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                        Self::_from_graphql_value_with_literal(value, None)
+                    }
+
+                    pub(super) fn _from_graphql_value_with_literal(
+                        value: &::necrassrs::JsonValue,
+                        literal: ::core::option::Option<&::necrassrs::ScalarLiteral>,
+                    ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                        let _ = literal;
                         let object = value
                             .as_object()
                             .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?;
@@ -1379,16 +1415,34 @@ fn list_value(
     schema: &Schema,
     item: &Type,
     value: &TokenStream,
+    literal: &TokenStream,
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
-    let item = list_item_value(schema, item, &quote! { item }, coordinate, types_path)?;
+    let item = list_item_value(
+        schema,
+        item,
+        &quote! { item },
+        &quote! { literal },
+        coordinate,
+        types_path,
+    )?;
     let message = format!("Expected a List argument at {coordinate}");
     Some(quote! {
         (#value).as_array()
             .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(index, item)| {
+                let literal = match #literal {
+                    Some(::necrassrs::ScalarLiteral::Variable(_)) => #literal,
+                    Some(::necrassrs::ScalarLiteral::List(items)) => {
+                        items.get(index).map(|value| value.as_ref())
+                    }
+                    Some(literal) => Some(literal),
+                    None => None,
+                };
+                let _ = literal;
                 Ok(#item)
             })
             .collect::<::core::result::Result<
@@ -1402,27 +1456,17 @@ fn list_item_value(
     schema: &Schema,
     ty: &Type,
     value: &TokenStream,
+    literal: &TokenStream,
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
     match ty {
-        Type::NonNullNamed(type_name) => named_input_value(
-            schema,
-            type_name,
-            value,
-            &quote! { None },
-            coordinate,
-            types_path,
-        ),
+        Type::NonNullNamed(type_name) => {
+            named_input_value(schema, type_name, value, literal, coordinate, types_path)
+        }
         Type::Named(type_name) => {
-            let inner = named_input_value(
-                schema,
-                type_name,
-                value,
-                &quote! { None },
-                coordinate,
-                types_path,
-            )?;
+            let inner =
+                named_input_value(schema, type_name, value, literal, coordinate, types_path)?;
             Some(quote! {
                 if (#value).is_null() {
                     None
@@ -1431,9 +1475,9 @@ fn list_item_value(
                 }
             })
         }
-        Type::NonNullList(item) => list_value(schema, item, value, coordinate, types_path),
+        Type::NonNullList(item) => list_value(schema, item, value, literal, coordinate, types_path),
         Type::List(item) => {
-            let inner = list_value(schema, item, value, coordinate, types_path)?;
+            let inner = list_value(schema, item, value, literal, coordinate, types_path)?;
             Some(quote! {
                 if (#value).is_null() {
                     None
@@ -1514,7 +1558,7 @@ fn named_input_value(
                 let name = format_ident!("r#{}", rust_name(type_name.as_str()));
 
                 Some(quote! {
-                    #types_path::#name::_from_graphql_value(#value)?
+                    #types_path::#name::_from_graphql_value_with_literal(#value, #literal)?
                 })
             }
 
@@ -1646,11 +1690,18 @@ fn input_position_value(
                     })?
             };
 
-            list_value(schema, item, &value, coordinate, types_path)
+            list_value(schema, item, &value, literal, coordinate, types_path)
         }
 
         Type::List(item) => {
-            let value = list_value(schema, item, &quote! { value }, coordinate, types_path)?;
+            let value = list_value(
+                schema,
+                item,
+                &quote! { value },
+                literal,
+                coordinate,
+                types_path,
+            )?;
 
             Some(nullable_input(lookup, &value))
         }
