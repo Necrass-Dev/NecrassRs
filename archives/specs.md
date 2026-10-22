@@ -83,22 +83,30 @@ This accepted representation preserves the distinction between GraphQL ID and St
 
 ### Custom scalar bindings
 
-Resolve each SDL custom scalar to the fixed consumer path `crate::scalars::<mapped SDL name>`. Reuse the existing injective identifier mapping in [codegen.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-build/src/codegen.rs) and the naming rules in [architecture.md](architecture.md): preserve case, prefix `self`, `Self`, `super`, `crate`, and names already starting with an underscore with one additional underscore, and emit raw identifiers for other Rust keywords. Do not add a configurable name-to-type mapping.
+Resolve each SDL custom scalar to the fixed consumer path `crate::resolvers::<mapped SDL name>`. Reuse the existing injective identifier mapping in [codegen.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-build/src/codegen.rs) and the naming rules in [architecture.md](architecture.md): preserve case, prefix `self`, `Self`, `super`, `crate`, and names already starting with an underscore with one additional underscore, and emit raw identifiers for other Rust keywords. Do not add a configurable name-to-type mapping.
 
 Examples:
 
-| SDL declaration   | Consumer Rust type path    |
-| ----------------- | -------------------------- |
-| `scalar DateTime` | `crate::scalars::DateTime` |
-| `scalar type`     | `crate::scalars::r#type`   |
-| `scalar self`     | `crate::scalars::_self`    |
-| `scalar _self`    | `crate::scalars::__self`   |
+| SDL declaration   | Consumer Rust type path      |
+| ----------------- | ---------------------------- |
+| `scalar DateTime` | `crate::resolvers::DateTime` |
+| `scalar type`     | `crate::resolvers::r#type`   |
+| `scalar self`     | `crate::resolvers::_self`    |
+| `scalar _self`    | `crate::resolvers::__self`   |
 
-The consumer owns the custom scalar type and its coercion implementation outside `OUT_DIR`, for example in `src/scalars.rs`. The fixed contract is the module path, not a required physical file layout. Generated argument/result contracts and conversion wiring remain in `OUT_DIR` and reference the consumer type; users do not edit generated files. The generator must not infer a storage type from a scalar's name or specification URL, or assume all custom scalars wrap `String`. A consumer may choose `pub struct DateTime(String);` when appropriate to its scalar definition.
+The consumer owns the custom scalar type and its coercion implementation in the existing editable resolver module tree rooted at `src/resolvers.rs`. By default, scalar scaffolds live in `src/resolvers/scalars.rs`; `src/resolvers.rs` declares that child module and re-exports each scalar so generated contracts use the stable `crate::resolvers::<mapped SDL name>` path. This is not a second source-synchronization root: discovery, validation, staging, and rollback reuse the existing traversal of resolver modules. Generated argument/result contracts and conversion wiring remain in `OUT_DIR` and reference the consumer type; users do not edit generated files. Do not infer behavior from the scalar name or specification URL.
+
+New scalar scaffolds default to a transparent string-backed representation:
+
+```rust
+pub struct DateTime(String);
+```
+
+The generated conversion bodies accept GraphQL string literals and JSON string values and serialize the stored string as JSON. They reject other literal and transport value kinds. This is an editable starting point, not a permanent storage contract or validation of formats implied by names such as `DateTime`. A consumer may change the representation and conversion bodies when its scalar requires validation, another primitive, or another internal type.
 
 Use one shared scalar trait with three conversion operations: `parse_literal` converts a GraphQL literal to `Self`, `parse_value` converts a variable input value to `Self`, and `serialize` converts the scalar value to a response value. Preserve literal kinds until the custom conversion runs; converting every literal to JSON first would erase distinctions such as enum versus string literals. NecrassRs retains responsibility for omission, nullability, GraphQL list wrappers, and contextual error classification and metadata.
 
-Generate the editable scalar implementation scaffold outside `OUT_DIR`, under the consumer's `scalars` module. Users provide the storage representation and fill in the conversion bodies there. Preserve user-defined representation and completed bodies on subsequent generation. The common trait belongs to the runtime library; only the per-scalar implementation scaffold belongs in consumer source. Disposable conversion call sites and generated contracts remain in `OUT_DIR`. This decision does not prescribe a `String` placeholder representation or finalize source-synchronization behavior for scalar removal and renaming.
+Generate the editable scalar implementation scaffold in `src/resolvers/scalars.rs` and maintain its declaration and re-exports from `src/resolvers.rs`. Reuse the resolver synchronization rules: preserve retained user-modified representations and conversion bodies, remove only untouched scaffolds for removed scalars, and treat a rename as deletion plus addition. The common trait belongs to the runtime library; only the per-scalar implementation scaffold belongs in consumer source. Disposable conversion call sites and generated contracts remain in `OUT_DIR`.
 
 This binding and conversion design supports G05 but is not prescribed by GraphQL. Exact method signatures, public input/output value types, and the conversion error type are deferred to implementation; they do not block further specification planning. Naming a type does not implement its scalar validation. References: [§3.5 Scalars](https://spec.graphql.org/September2025/#sec-Scalars), [§3.13.4 @specifiedBy](https://spec.graphql.org/September2025/#sec--specifiedBy), [Scalar implementation guide](https://scalars.graphql.org/implementation-guide).
 
