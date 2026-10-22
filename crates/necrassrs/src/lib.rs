@@ -32,6 +32,7 @@
 use apollo_compiler::response::ExecutionResponse;
 pub use apollo_compiler::{
     Schema,
+    ast::Value as ScalarLiteral,
     response::{GraphQLError, JsonMap, JsonValue},
     validation::Valid,
 };
@@ -41,6 +42,21 @@ mod execution;
 mod input;
 
 pub use execution::{Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options};
+
+/// A custom scalar conversion failure.
+pub type ScalarError = ResolverError;
+
+/// Converts values between GraphQL inputs, an application-owned scalar, and JSON output.
+pub trait Scalar: Sized {
+    /// Converts a borrowed GraphQL literal while preserving its literal kind.
+    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError>;
+
+    /// Converts a borrowed variable input value.
+    fn parse_value(value: &JsonValue) -> Result<Self, ScalarError>;
+
+    /// Converts this scalar to a GraphQL response value.
+    fn serialize(&self) -> Result<JsonValue, ScalarError>;
+}
 
 /// A resolved Object value that dispatches fields against its parent instance.
 pub trait ResolvedObject<C>: Send + Sync {

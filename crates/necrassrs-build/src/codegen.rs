@@ -1229,6 +1229,24 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+pub(crate) fn pending_custom_scalar_scaffold(schema: &Schema) -> Option<CodegenError> {
+    schema.types.values().find_map(|definition| {
+        let ExtendedType::Scalar(scalar) = definition else {
+            return None;
+        };
+        (!scalar.is_built_in()).then(|| {
+            CodegenError::new(
+                format!(
+                    "Cargo integration does not yet generate the custom scalar scaffold for '{}'",
+                    scalar.name
+                ),
+                schema,
+                scalar.location(),
+            )
+        })
+    })
+}
+
 fn output_type(schema: &Schema, ty: &Type, types_path: &TokenStream) -> Option<TokenStream> {
     match ty {
         Type::NonNullNamed(name) => named_type(schema, name, types_path),
@@ -1435,6 +1453,14 @@ fn named_input_value(
                 })
             }
 
+            ExtendedType::Scalar(scalar) if !scalar.is_built_in() => {
+                let scalar = custom_scalar_type(type_name);
+
+                Some(quote! {
+                    <#scalar as ::necrassrs::Scalar>::parse_value(#value)?
+                })
+            }
+
             _ => None,
         },
     }
@@ -1485,6 +1511,16 @@ fn named_output_value(
                 Some(quote! {
                     match #value {
                         #(#arms)*
+                    }
+                })
+            }
+            ExtendedType::Scalar(scalar) if !scalar.is_built_in() => {
+                let scalar = custom_scalar_type(type_name);
+
+                Some(quote! {
+                    match <#scalar as ::necrassrs::Scalar>::serialize(&#value) {
+                        Ok(value) => ::necrassrs::ResolvedValue::Json(value),
+                        Err(error) => ::necrassrs::ResolvedValue::Error(error),
                     }
                 })
             }
@@ -1570,9 +1606,17 @@ fn named_type(schema: &Schema, name: &NamedType, types_path: &TokenStream) -> Op
                 let name = format_ident!("r#{}", rust_name(name.as_str()));
                 Some(quote! { #types_path::#name })
             }
+            Some(ExtendedType::Scalar(scalar)) if !scalar.is_built_in() => {
+                Some(custom_scalar_type(name))
+            }
             _ => None,
         },
     }
+}
+
+fn custom_scalar_type(name: &NamedType) -> TokenStream {
+    let name = format_ident!("r#{}", rust_name(name.as_str()));
+    quote! { crate::resolvers::#name }
 }
 
 fn output_value(
@@ -1926,7 +1970,7 @@ mod test {
         )
         .unwrap();
         let generated = super::generate(&schema).expect("custom scalars must be supported");
-        assert_consumer_compiles(
+        assert_consumer(
             &format!("mod generated {{ {generated} }}"),
             r#"
                 mod resolvers {
@@ -1992,67 +2036,52 @@ mod test {
                     }
                 }
 
-                fn main() {}
+                fn main() {
+                    let _ = generated::SDL;
+                    let _ = generated::dispatch::SchemaDispatcher::new(Query);
+                }
             "#,
+            true,
         );
     }
 
     #[test]
-    fn codegen_error_preserves_argument_type_source_and_span() {
-        let source = "# Source: café\nextend type Query { lookup(at: Timestamp!): String! }";
+    fn pending_custom_scalar_scaffold_error_preserves_source_and_span() {
+        let source = "# Source: café\nscalar Timestamp";
         let schema = Schema::builder()
-            .parse(
-                "scalar Timestamp type Query { hello: String! }",
-                "schema.graphql",
-            )
-            .parse(source, "lookup.graphql")
+            .parse("type Query { hello: String! }", "schema.graphql")
+            .parse(source, "scalar.graphql")
             .build()
             .expect("the test schema must build")
             .validate()
             .expect("the test schema must be valid");
 
-        let error = super::generate(&schema).expect_err("the fixture requires a codegen rejection");
-        assert!(error.to_string().contains("Query.lookup(at)"));
+        let error = super::pending_custom_scalar_scaffold(&schema)
+            .expect("Cargo integration must reject an incomplete scalar scaffold");
+        assert!(error.to_string().contains("Timestamp"));
         let labels: Vec<_> = error
             .labels()
             .expect("the error must have labels")
             .collect();
         assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].offset(), source.find("Timestamp!").unwrap());
-        assert_eq!(labels[0].len(), "Timestamp!".len());
+        assert_eq!(labels[0].offset(), source.find("scalar Timestamp").unwrap());
+        assert_eq!(labels[0].len(), "scalar Timestamp".len());
         let contents = error
             .source_code()
             .expect("the error must retain its source")
             .read_span(&(0, source.len()).into(), 0, 0)
             .expect("the original source must be readable");
-        assert_eq!(contents.name(), Some("lookup.graphql"));
+        assert_eq!(contents.name(), Some("scalar.graphql"));
         assert_eq!(contents.data(), source.as_bytes());
     }
 
     #[test]
-    fn codegen_error_without_type_location_has_no_fabricated_source_or_span() {
-        let mut schema = Schema::parse(
-            "scalar Timestamp type Query { lookup(at: Timestamp!): String! }",
-            "schema.graphql",
-        )
-        .expect("the test schema must parse");
-        let apollo_compiler::schema::ExtendedType::Object(query) =
-            schema.types.get_mut("Query").unwrap()
-        else {
-            panic!("the query root must be an object");
-        };
-        let field = query
-            .make_mut()
-            .fields
-            .get_mut("lookup")
-            .unwrap()
-            .make_mut();
-        field.arguments[0].make_mut().ty =
-            apollo_compiler::Node::new(apollo_compiler::ty!(Timestamp!));
-        let schema = schema.validate().expect("the test schema must be valid");
+    fn codegen_error_without_location_has_no_fabricated_source_or_span() {
+        let schema = Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let error = super::CodegenError::new("test error", &schema, None);
 
-        let error = super::generate(&schema).expect_err("the fixture requires a codegen rejection");
-        assert!(error.to_string().contains("Query.lookup(at)"));
+        assert_eq!(error.to_string(), "test error");
         assert!(error.source_code().is_none());
         assert_eq!(error.labels().into_iter().flatten().count(), 0);
     }

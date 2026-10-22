@@ -14,6 +14,10 @@ use syn::{
 use crate::{BuildError, codegen};
 
 pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), BuildError> {
+    if let Some(error) = codegen::pending_custom_scalar_scaffold(schema) {
+        return Err(BuildError::Codegen(error));
+    }
+
     let source_error = |source| BuildError::ResolverSource {
         path: path.to_owned(),
         source,
@@ -3589,7 +3593,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
     }
 
     #[test]
-    fn rejects_unsupported_return_type_before_creating_source() {
+    fn rejects_custom_scalars_before_creating_incomplete_source() {
         let file = ResolverFile::new();
         let error = file
             .synchronize("scalar Timestamp\ntype Query { count: Timestamp! }")

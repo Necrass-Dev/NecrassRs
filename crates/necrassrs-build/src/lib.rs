@@ -401,11 +401,14 @@ mod tests {
             "schema.graphql",
         )
         .unwrap();
-        let codegen_error = BuildError::Codegen(codegen::generate(&valid).unwrap_err());
+        let codegen_error = BuildError::Codegen(
+            codegen::pending_custom_scalar_scaffold(&valid)
+                .expect("Cargo integration must reject an incomplete scalar scaffold"),
+        );
         assert!(
             codegen_error
                 .to_string()
-                .contains("Unsupported return type")
+                .contains("does not yet generate the custom scalar scaffold")
         );
         assert!(codegen_error.source().is_some());
     }
