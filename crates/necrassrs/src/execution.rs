@@ -12,7 +12,7 @@ use apollo_compiler::{
 use futures_util::future::join_all;
 
 use crate::{
-    Request, ResolvedObject, ResolvedValue, ResolverError, Response,
+    Request, ResolvedObject, ResolvedValue, ResolverError, Response, ScalarLiteralMap,
     input::literal_to_json as input_literal_to_json,
     request::{PreparedRequest, prepare_request},
 };
@@ -45,6 +45,17 @@ pub trait Dispatcher<C> {
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
     ) -> impl Future<Output = Result<ResolvedValue<C>, ResolverError>> + Send + 'a;
+
+    /// Resolves a field while retaining the original kinds of literal arguments.
+    fn resolve_with_literals<'a>(
+        &'a self,
+        context: &'a C,
+        coordinate: FieldCoordinate<'a>,
+        arguments: &'a JsonMap,
+        _argument_literals: &'a ScalarLiteralMap,
+    ) -> impl Future<Output = Result<ResolvedValue<C>, ResolverError>> + Send + 'a {
+        self.resolve(context, coordinate, arguments)
+    }
 }
 
 /// Server-controlled execution settings.
@@ -322,13 +333,14 @@ where
         ),
         _ => match coerce_argument_values(schema, prepared, &path, field, definition) {
             Ok(arguments) => match dispatcher
-                .resolve(
+                .resolve_with_literals(
                     context,
                     FieldCoordinate {
                         parent_type: object_type.name.as_str(),
                         field: field.name.as_str(),
                     },
-                    &arguments,
+                    &arguments.values,
+                    &arguments.literals,
                 )
                 .await
             {
@@ -472,17 +484,22 @@ fn does_fragment_type_apply(
     }
 }
 
+#[derive(Debug, Default)]
+struct CoercedArguments {
+    values: JsonMap,
+    literals: ScalarLiteralMap,
+}
+
 fn coerce_argument_values(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
     path: &[ResponseDataPathSegment],
     field: &Field,
     field_definition: &FieldDefinition,
-) -> Result<JsonMap, Box<GraphQLError>> {
-    field_definition
-        .arguments
-        .iter()
-        .try_fold(JsonMap::new(), |mut coerced_values, definition| {
+) -> Result<CoercedArguments, Box<GraphQLError>> {
+    field_definition.arguments.iter().try_fold(
+        CoercedArguments::default(),
+        |mut coerced, definition| {
             let argument_value = field
                 .specified_argument_by_name(definition.name.as_str())
                 .or(definition.default_value.as_ref());
@@ -496,10 +513,10 @@ fn coerce_argument_values(
                     ));
                 }
 
-                return Ok(coerced_values);
+                return Ok(coerced);
             };
 
-            let value = if let Some(variable_name) = argument_value.as_variable() {
+            let (value, literal) = if let Some(variable_name) = argument_value.as_variable() {
                 match prepared.variables.get(variable_name.as_str()) {
                     Some(variable_value)
                         if variable_value.is_null() && definition.ty.is_non_null() =>
@@ -511,15 +528,20 @@ fn coerce_argument_values(
                             argument_value.location(),
                         ));
                     }
-                    Some(variable_value) => variable_value.clone(),
+                    Some(variable_value) => {
+                        (variable_value.clone(), argument_value.as_ref().clone())
+                    }
                     None => match definition.default_value.as_ref() {
-                        Some(default_value) => coerce_input_value(
-                            schema,
-                            prepared,
-                            path,
-                            &definition.ty,
-                            default_value,
-                        )?,
+                        Some(default_value) => (
+                            coerce_input_value(
+                                schema,
+                                prepared,
+                                path,
+                                &definition.ty,
+                                default_value,
+                            )?,
+                            default_value.as_ref().clone(),
+                        ),
                         None if definition.ty.is_non_null() => {
                             return Err(new_execution_error(
                                 prepared,
@@ -531,16 +553,23 @@ fn coerce_argument_values(
                                 argument_value.location(),
                             ));
                         }
-                        None => return Ok(coerced_values),
+                        None => return Ok(coerced),
                     },
                 }
             } else {
-                coerce_input_value(schema, prepared, path, &definition.ty, argument_value)?
+                (
+                    coerce_input_value(schema, prepared, path, &definition.ty, argument_value)?,
+                    argument_value.as_ref().clone(),
+                )
             };
 
-            coerced_values.insert(definition.name.as_str(), value);
-            Ok(coerced_values)
-        })
+            coerced.values.insert(definition.name.as_str(), value);
+            coerced
+                .literals
+                .insert(definition.name.as_str().to_owned(), literal);
+            Ok(coerced)
+        },
+    )
 }
 
 fn coerce_input_value(
@@ -1046,13 +1075,14 @@ where
     };
 
     match object
-        .resolve(
+        .resolve_with_literals(
             context,
             FieldCoordinate {
                 parent_type: object_type.name.as_str(),
                 field: field.name.as_str(),
             },
-            &arguments,
+            &arguments.values,
+            &arguments.literals,
         )
         .await
     {
@@ -1547,7 +1577,9 @@ mod tests {
             .next()
             .unwrap()[0];
 
-        super::coerce_argument_values(&schema, &prepared, &[], field, &field.definition).unwrap()
+        super::coerce_argument_values(&schema, &prepared, &[], field, &field.definition)
+            .unwrap()
+            .values
     }
 
     async fn execute_value(field_type: &str, value: JsonValue) -> JsonValue {
@@ -1972,7 +2004,7 @@ mod tests {
             super::coerce_argument_values(&schema, &prepared, &[], field, &field.definition)
                 .unwrap();
 
-        assert_eq!(arguments.get("name"), Some(&json!("Sheri")));
+        assert_eq!(arguments.values.get("name"), Some(&json!("Sheri")));
     }
 
     #[test]

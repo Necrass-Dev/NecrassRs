@@ -46,6 +46,9 @@ pub use execution::{Dispatcher, ExecutionOptions, FieldCoordinate, execute, exec
 /// A custom scalar conversion failure.
 pub type ScalarError = ResolverError;
 
+/// GraphQL literal arguments retained for generated custom scalar conversion.
+pub type ScalarLiteralMap = std::collections::HashMap<String, ScalarLiteral>;
+
 /// Converts values between GraphQL inputs, an application-owned scalar, and JSON output.
 pub trait Scalar: Sized {
     /// Converts a borrowed GraphQL literal while preserving its literal kind.
@@ -78,6 +81,23 @@ pub trait ResolvedObject<C>: Send + Sync {
                 + 'a,
         >,
     >;
+
+    /// Resolves a field while retaining the original kinds of literal arguments.
+    fn resolve_with_literals<'a>(
+        &'a self,
+        context: &'a C,
+        coordinate: FieldCoordinate<'a>,
+        arguments: &'a JsonMap,
+        _argument_literals: &'a ScalarLiteralMap,
+    ) -> ::core::pin::Pin<
+        Box<
+            dyn ::core::future::Future<Output = Result<ResolvedValue<C>, ResolverError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        self.resolve(context, coordinate, arguments)
+    }
 }
 
 /// A resolved value tree retaining Object parents and conversion errors.

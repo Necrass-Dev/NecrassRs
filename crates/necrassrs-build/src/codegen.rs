@@ -347,7 +347,14 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             nullable_input(&lookup, &quote! { ::std::boxed::Box::new(#value) })
                         })
                     } else {
-                        input_position_value(schema, &ty, &lookup, &coordinate, &quote! { self })
+                        input_position_value(
+                            schema,
+                            &ty,
+                            &lookup,
+                            &quote! { None },
+                            &coordinate,
+                            &quote! { self },
+                        )
                     }
                     .ok_or_else(|| {
                         CodegenError::new(
@@ -920,7 +927,6 @@ fn generate_object_dispatcher(
         let variant = object_variant_ident(name);
         quote! { Self::#variant(_) => #name }
     });
-
     let generated = quote! {
         #[allow(dead_code, non_camel_case_types)]
         enum ObjectValue<#(#object_types),*> {
@@ -944,6 +950,31 @@ fn generate_object_dispatcher(
                 context: &'a C,
                 coordinate: ::necrassrs::FieldCoordinate<'a>,
                 _arguments: &'a ::necrassrs::JsonMap,
+            ) -> ::core::pin::Pin<Box<
+                dyn ::core::future::Future<
+                    Output = ::core::result::Result<
+                        ::necrassrs::ResolvedValue<C>,
+                        ::necrassrs::ResolverError,
+                    >,
+                > + ::core::marker::Send + 'a,
+            >> {
+                Box::pin(async move {
+                    let argument_literals = ::necrassrs::ScalarLiteralMap::new();
+                    self.resolve_with_literals(
+                        context,
+                        coordinate,
+                        _arguments,
+                        &argument_literals,
+                    ).await
+                })
+            }
+
+            fn resolve_with_literals<'a>(
+                &'a self,
+                context: &'a C,
+                coordinate: ::necrassrs::FieldCoordinate<'a>,
+                _arguments: &'a ::necrassrs::JsonMap,
+                _argument_literals: &'a ::necrassrs::ScalarLiteralMap,
             ) -> ::core::pin::Pin<Box<
                 dyn ::core::future::Future<
                     Output = ::core::result::Result<
@@ -1120,7 +1151,6 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
         .copied()
         .chain(object_types.iter())
         .collect::<Vec<_>>();
-
     Ok(quote! {
         pub mod dispatch {
             #object_dispatcher
@@ -1147,6 +1177,25 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                     context: &'a C,
                     coordinate: ::necrassrs::FieldCoordinate<'a>,
                     _arguments: &'a ::necrassrs::JsonMap,
+                ) -> ::core::result::Result<
+                    ::necrassrs::ResolvedValue<C>,
+                    ::necrassrs::ResolverError,
+                > {
+                    let argument_literals = ::necrassrs::ScalarLiteralMap::new();
+                    self.resolve_with_literals(
+                        context,
+                        coordinate,
+                        _arguments,
+                        &argument_literals,
+                    ).await
+                }
+
+                async fn resolve_with_literals<'a>(
+                    &'a self,
+                    context: &'a C,
+                    coordinate: ::necrassrs::FieldCoordinate<'a>,
+                    _arguments: &'a ::necrassrs::JsonMap,
+                    _argument_literals: &'a ::necrassrs::ScalarLiteralMap,
                 ) -> ::core::result::Result<
                     ::necrassrs::ResolvedValue<C>,
                     ::necrassrs::ResolverError,
@@ -1319,8 +1368,11 @@ fn argument_value(
     let lookup = quote! {
         _arguments.get(#name)
     };
+    let literal = quote! {
+        _argument_literals.get(#name)
+    };
 
-    input_position_value(schema, ty, &lookup, coordinate, types_path)
+    input_position_value(schema, ty, &lookup, &literal, coordinate, types_path)
 }
 
 fn list_value(
@@ -1354,11 +1406,23 @@ fn list_item_value(
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
     match ty {
-        Type::NonNullNamed(type_name) => {
-            named_input_value(schema, type_name, value, coordinate, types_path)
-        }
+        Type::NonNullNamed(type_name) => named_input_value(
+            schema,
+            type_name,
+            value,
+            &quote! { None },
+            coordinate,
+            types_path,
+        ),
         Type::Named(type_name) => {
-            let inner = named_input_value(schema, type_name, value, coordinate, types_path)?;
+            let inner = named_input_value(
+                schema,
+                type_name,
+                value,
+                &quote! { None },
+                coordinate,
+                types_path,
+            )?;
             Some(quote! {
                 if (#value).is_null() {
                     None
@@ -1385,6 +1449,7 @@ fn named_input_value(
     schema: &Schema,
     type_name: &NamedType,
     value: &TokenStream,
+    literal: &TokenStream,
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
@@ -1457,7 +1522,14 @@ fn named_input_value(
                 let scalar = custom_scalar_type(type_name);
 
                 Some(quote! {
-                    <#scalar as ::necrassrs::Scalar>::parse_value(#value)?
+                    match #literal {
+                        Some(::necrassrs::ScalarLiteral::Variable(_)) | None => {
+                            <#scalar as ::necrassrs::Scalar>::parse_value(#value)?
+                        }
+                        Some(literal) => {
+                            <#scalar as ::necrassrs::Scalar>::parse_literal(literal)?
+                        }
+                    }
                 })
             }
 
@@ -1533,6 +1605,7 @@ fn input_position_value(
     schema: &Schema,
     ty: &Type,
     lookup: &TokenStream,
+    literal: &TokenStream,
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
@@ -1547,12 +1620,18 @@ fn input_position_value(
                     })?
             };
 
-            named_input_value(schema, type_name, &value, coordinate, types_path)
+            named_input_value(schema, type_name, &value, literal, coordinate, types_path)
         }
 
         Type::Named(type_name) => {
-            let value =
-                named_input_value(schema, type_name, &quote! { value }, coordinate, types_path)?;
+            let value = named_input_value(
+                schema,
+                type_name,
+                &quote! { value },
+                literal,
+                coordinate,
+                types_path,
+            )?;
 
             Some(nullable_input(lookup, &value))
         }
