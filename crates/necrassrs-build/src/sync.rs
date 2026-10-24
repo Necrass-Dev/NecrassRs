@@ -3593,13 +3593,29 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
     }
 
     #[test]
-    fn rejects_custom_scalars_before_creating_incomplete_source() {
+    fn creates_string_backed_custom_scalar_scaffold() {
         let file = ResolverFile::new();
-        let error = file
-            .synchronize("scalar Timestamp\ntype Query { count: Timestamp! }")
-            .unwrap_err();
-        assert!(matches!(error, BuildError::Codegen(_)));
-        assert!(!file.path.exists());
+        file.synchronize("scalar DateTime\ntype Query { now: DateTime! }")
+            .unwrap();
+
+        let entry = file.read();
+        assert!(entry.contains("mod scalars;"));
+        assert!(entry.contains("pub use self::scalars::DateTime;"));
+
+        let scalars = fs::read_to_string(file.directory.join("resolvers/scalars.rs")).unwrap();
+        syn::parse_file(&scalars).unwrap();
+        for expected in [
+            "pub struct DateTime(String);",
+            "fn parse_literal(",
+            "ScalarLiteral::String",
+            "fn parse_value(",
+            "value.as_str()",
+            "fn serialize(",
+            "self.0.as_str()",
+        ] {
+            assert!(scalars.contains(expected), "missing `{expected}`");
+        }
+        assert!(!scalars.contains("unimplemented!"));
     }
 
     #[cfg(unix)]
