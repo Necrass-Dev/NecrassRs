@@ -283,6 +283,21 @@ fn removing_custom_scalar_deletes_untouched_scaffold_and_reexport() {
 }
 
 #[test]
+fn removing_last_custom_scalar_cleans_untouched_module() {
+    let consumer = Consumer::new("scalar Timestamp type Query { now: Timestamp! }");
+    consumer.bootstrap();
+    let scalar_path = consumer.directory.join("src/resolvers/scalars.rs");
+    assert!(scalar_path.is_file());
+    consumer.schema("type Query { now: String! }");
+
+    assert_success(&consumer.build());
+    assert!(!scalar_path.exists());
+    let entry = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(!entry.contains("mod scalars;"));
+    assert!(!entry.contains("pub use self::scalars::Timestamp;"));
+}
+
+#[test]
 fn filling_generated_body_survives_regeneration_and_executes_without_sdl() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     consumer.bootstrap();
