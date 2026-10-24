@@ -241,6 +241,25 @@ impl necrassrs::Scalar for Timestamp {
 }
 
 #[test]
+fn adding_custom_scalar_preserves_edited_existing_scaffold() {
+    let consumer = Consumer::new("scalar Timestamp type Query { now: Timestamp! }");
+    consumer.bootstrap();
+    let scalar_path = consumer.directory.join("src/resolvers/scalars.rs");
+    let edited = fs::read_to_string(&scalar_path)
+        .unwrap()
+        .replace("expected a string literal", "custom literal error");
+    fs::write(&scalar_path, &edited).unwrap();
+    consumer
+        .schema("scalar Timestamp scalar DateTime type Query { now: Timestamp! later: DateTime! }");
+
+    assert_success(&consumer.build());
+    let updated = fs::read_to_string(scalar_path).unwrap();
+    assert!(updated.starts_with(&edited));
+    assert!(updated.contains("pub struct DateTime(String);"));
+    assert_eq!(updated.matches("pub struct Timestamp").count(), 1);
+}
+
+#[test]
 fn filling_generated_body_survives_regeneration_and_executes_without_sdl() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     consumer.bootstrap();
