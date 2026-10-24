@@ -2272,6 +2272,148 @@ mod test {
     }
 
     #[test]
+    fn generated_custom_scalar_result_errors_preserve_path_and_nullability() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar Epoch
+                type Query {
+                    epoch(value: Int!): Epoch!
+                    optionalEpoch(value: Int!): Epoch
+                    sibling: String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct Epoch(i64);
+
+                impl Epoch {
+                    pub fn new(value: i32) -> Self {
+                        Self(i64::from(value))
+                    }
+                }
+
+                impl Scalar for Epoch {
+                    fn parse_literal(_: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("not used"))
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("not used"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        if self.0 < 0 {
+                            Err(ScalarError::new("negative epoch"))
+                        } else {
+                            Ok(self.0.into())
+                        }
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::epoch, ()> for Query {
+                type Output = resolvers::Epoch;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::epoch::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(resolvers::Epoch::new(args.value))
+                }
+            }
+
+            impl necrassrs::Resolver<generated::fields::Query::optionalEpoch, ()> for Query {
+                type Output = Option<resolvers::Epoch>;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::optionalEpoch::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(resolvers::Epoch::new(args.value)))
+                }
+            }
+
+            impl necrassrs::Resolver<generated::fields::Query::sibling, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    _: generated::types::Query::sibling::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok("ok".to_owned())
+                }
+            }
+
+            fn execute(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+                document: &str,
+            ) -> serde_json::Value {
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &necrassrs::Request::new(document),
+                    dispatcher,
+                    &(),
+                ))).unwrap()
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+
+                assert_eq!(
+                    execute(&schema, &dispatcher, "{ epoch(value: 7) }"),
+                    serde_json::json!({ "data": { "epoch": 7 } }),
+                );
+
+                let nullable = execute(
+                    &schema,
+                    &dispatcher,
+                    "{ optionalEpoch(value: -1) sibling }",
+                );
+                assert_eq!(
+                    nullable["data"],
+                    serde_json::json!({ "optionalEpoch": null, "sibling": "ok" }),
+                );
+                assert_eq!(nullable["errors"][0]["message"], "negative epoch");
+                assert_eq!(
+                    nullable["errors"][0]["path"],
+                    serde_json::json!(["optionalEpoch"]),
+                );
+
+                let non_null = execute(
+                    &schema,
+                    &dispatcher,
+                    "{ epoch(value: -1) sibling }",
+                );
+                assert!(non_null["data"].is_null());
+                assert_eq!(non_null["errors"][0]["message"], "negative epoch");
+                assert_eq!(
+                    non_null["errors"][0]["path"],
+                    serde_json::json!(["epoch"]),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
     fn generated_custom_scalar_input_preserves_literal_kinds() {
         let schema = Schema::parse_and_validate(
             "scalar StringOnly type Query { echo(value: StringOnly!): String! }",

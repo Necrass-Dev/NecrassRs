@@ -3191,6 +3191,35 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn introspection_exposes_custom_scalar_specified_by_url() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar DateTime @specifiedBy(url: "https://example.com/date-time")
+                type Query { now: DateTime }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new(r#"{ __type(name: "DateTime") { kind name specifiedByURL } }"#);
+        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+
+        assert_eq!(
+            response,
+            json!({
+                "data": {
+                    "__type": {
+                        "kind": "SCALAR",
+                        "name": "DateTime",
+                        "specifiedByURL": "https://example.com/date-time",
+                    }
+                }
+            }),
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn type_lookup_honors_aliases_fragments_and_unknown_names() {
         let schema =
             Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();

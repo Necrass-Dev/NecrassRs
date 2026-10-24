@@ -201,6 +201,28 @@ fn first_build_compiles_generated_custom_scalar_scaffold() {
 }
 
 #[test]
+fn custom_scalar_scaffolds_compile_injective_rust_names() {
+    let consumer = Consumer::new(
+        "scalar DateTime scalar Datetime scalar type scalar self scalar _self \
+         type Query { first: DateTime! second: Datetime! keyword: type! receiver: self! underscored: _self! }",
+    );
+    consumer.bootstrap();
+
+    let scalars = fs::read_to_string(consumer.directory.join("src/resolvers/scalars.rs")).unwrap();
+    let entry = fs::read_to_string(consumer.resolvers()).unwrap();
+    for expected in ["DateTime", "Datetime", "r#type", "_self", "__self"] {
+        assert!(
+            scalars.contains(&format!("pub struct {expected}(String);")),
+            "missing scalar `{expected}`",
+        );
+        assert!(
+            entry.contains(&format!("pub use self::scalars::{expected};")),
+            "missing re-export `{expected}`",
+        );
+    }
+}
+
+#[test]
 fn edited_custom_scalar_scaffold_survives_regeneration_and_removal() {
     let consumer = Consumer::new("scalar Timestamp type Query { now: Timestamp! }");
     consumer.bootstrap();
