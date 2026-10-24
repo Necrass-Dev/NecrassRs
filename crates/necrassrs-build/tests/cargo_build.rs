@@ -201,6 +201,46 @@ fn first_build_compiles_generated_custom_scalar_scaffold() {
 }
 
 #[test]
+fn edited_custom_scalar_scaffold_survives_regeneration() {
+    let consumer = Consumer::new("scalar Timestamp type Query { now: Timestamp! }");
+    consumer.bootstrap();
+    let scalar_path = consumer.directory.join("src/resolvers/scalars.rs");
+    let edited = r#"pub struct Timestamp(i64);
+
+impl necrassrs::Scalar for Timestamp {
+    fn parse_literal(
+        value: &necrassrs::ScalarLiteral,
+    ) -> Result<Self, necrassrs::ScalarError> {
+        match value {
+            necrassrs::ScalarLiteral::String(value) => value
+                .parse()
+                .map(Self)
+                .map_err(|_| necrassrs::ScalarError::new("expected an integer string")),
+            _ => Err(necrassrs::ScalarError::new("expected a string literal")),
+        }
+    }
+
+    fn parse_value(
+        value: &necrassrs::JsonValue,
+    ) -> Result<Self, necrassrs::ScalarError> {
+        value
+            .as_i64()
+            .map(Self)
+            .ok_or_else(|| necrassrs::ScalarError::new("expected an integer value"))
+    }
+
+    fn serialize(&self) -> Result<necrassrs::JsonValue, necrassrs::ScalarError> {
+        Ok(self.0.into())
+    }
+}
+"#;
+    fs::write(&scalar_path, edited).unwrap();
+
+    assert_success(&consumer.build());
+    assert_eq!(fs::read_to_string(scalar_path).unwrap(), edited);
+}
+
+#[test]
 fn filling_generated_body_survives_regeneration_and_executes_without_sdl() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     consumer.bootstrap();
