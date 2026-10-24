@@ -201,7 +201,7 @@ fn first_build_compiles_generated_custom_scalar_scaffold() {
 }
 
 #[test]
-fn edited_custom_scalar_scaffold_survives_regeneration() {
+fn edited_custom_scalar_scaffold_survives_regeneration_and_removal() {
     let consumer = Consumer::new("scalar Timestamp type Query { now: Timestamp! }");
     consumer.bootstrap();
     let scalar_path = consumer.directory.join("src/resolvers/scalars.rs");
@@ -237,7 +237,16 @@ impl necrassrs::Scalar for Timestamp {
     fs::write(&scalar_path, edited).unwrap();
 
     assert_success(&consumer.build());
-    assert_eq!(fs::read_to_string(scalar_path).unwrap(), edited);
+    assert_eq!(fs::read_to_string(&scalar_path).unwrap(), edited);
+
+    consumer.schema("type Query { now: String! }");
+    assert_success(&consumer.build());
+    assert_eq!(fs::read_to_string(&scalar_path).unwrap(), edited);
+    assert!(
+        fs::read_to_string(consumer.resolvers())
+            .unwrap()
+            .contains("pub use self::scalars::Timestamp;")
+    );
 }
 
 #[test]

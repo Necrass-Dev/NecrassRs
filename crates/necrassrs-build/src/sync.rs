@@ -42,6 +42,9 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         .difference(&desired_scalar_names)
         .cloned()
         .collect::<BTreeSet<_>>();
+    let scalar_module_is_generated = existing
+        .as_deref()
+        .is_some_and(|source| source.lines().any(|line| line == "mod scalars;"));
     let query = schema
         .schema_definition
         .query
@@ -131,8 +134,8 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
     let mut watched_paths = BTreeSet::from([path.to_owned()]);
     let mut scalar_directory = None;
     let mut removed_scalars = BTreeSet::new();
-    // shortcut: retain the final scalar module until empty-module cleanup is implemented.
-    if !custom_scalars.is_empty() {
+    let mut scalar_file_removed = false;
+    if !custom_scalars.is_empty() || (!stale_scalars.is_empty() && scalar_module_is_generated) {
         let directory = if path.ends_with("mod.rs") {
             path.parent().unwrap_or(Path::new("")).to_owned()
         } else {
@@ -153,11 +156,17 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                     source,
                 })?;
         removed_scalars = removed;
-        syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
-            path: scalar_path.clone(),
-            source,
-        })?;
-        if scalar_existing.as_deref() != Some(updated.as_str()) {
+        let updated = if custom_scalars.is_empty() && updated.trim().is_empty() {
+            scalar_file_removed = scalar_existing.is_some();
+            None
+        } else {
+            syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
+                path: scalar_path.clone(),
+                source,
+            })?;
+            Some(updated)
+        };
+        if scalar_existing != updated {
             writes.push(PlannedWrite {
                 path: scalar_path.clone(),
                 original: scalar_existing,
@@ -241,14 +250,19 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             .map_err(source_error)?
         }
     };
-    let updated = reconcile_scalar_entry_items(&updated, &custom_scalars, &removed_scalars);
+    let updated = reconcile_scalar_entry_items(
+        &updated,
+        &custom_scalars,
+        &removed_scalars,
+        scalar_file_removed,
+    );
     syn::parse_file(&updated).map_err(source_error)?;
 
     if existing.as_deref() != Some(updated.as_str()) {
         writes.push(PlannedWrite {
             path: path.to_owned(),
             original: existing,
-            updated,
+            updated: Some(updated),
         });
     }
     if let Some(directory) = &scalar_directory {
@@ -306,17 +320,18 @@ fn reconcile_scalar_entry_items(
     source: &str,
     scalars: &[(String, syn::Ident)],
     removed_scalars: &BTreeSet<String>,
+    scalar_file_removed: bool,
 ) -> String {
     let mut updated = source.to_owned();
     let mut offset = 0;
     let mut removals = Vec::new();
     for line in source.split_inclusive('\n') {
         let declaration = line.strip_suffix('\n').unwrap_or(line);
-        if declaration
+        let removed_reexport = declaration
             .strip_prefix("pub use self::scalars::")
             .and_then(|name| name.strip_suffix(';'))
-            .is_some_and(|name| removed_scalars.contains(name))
-        {
+            .is_some_and(|name| removed_scalars.contains(name));
+        if removed_reexport || (scalar_file_removed && declaration == "mod scalars;") {
             removals.push(offset..offset + line.len());
         }
         offset += line.len();
@@ -442,7 +457,7 @@ struct ExternalReconciliation {
 struct PlannedWrite {
     path: PathBuf,
     original: Option<String>,
-    updated: String,
+    updated: Option<String>,
 }
 
 fn commit_writes(writes: Vec<PlannedWrite>) -> Result<(), BuildError> {
@@ -520,7 +535,10 @@ fn commit_writes_with(
             Ok(current) if current != write.original => Some(std::io::Error::other(
                 "Resolver source changed during synchronization",
             )),
-            Ok(_) => write_file(&write.path, &write.updated).err(),
+            Ok(_) => match &write.updated {
+                Some(updated) => write_file(&write.path, updated).err(),
+                None => remove_file(&write.path).err(),
+            },
             Err(error) => Some(std::io::Error::other(error.to_string())),
         };
         let Some(source) = failure else {
@@ -547,7 +565,7 @@ fn rollback_writes(
     let mut rollback_failure = None;
     for write in writes.iter().rev() {
         let result = match read_existing(&write.path) {
-            Ok(Some(current)) if current == write.updated => match &write.original {
+            Ok(current) if current == write.updated => match &write.original {
                 Some(original) => write_file(&write.path, original),
                 None => match remove_file(&write.path) {
                     Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -834,7 +852,7 @@ fn reconcile_external_children_in(
             writes.push(PlannedWrite {
                 path,
                 original: Some(source),
-                updated,
+                updated: Some(updated),
             });
         }
     }
@@ -3121,17 +3139,17 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             PlannedWrite {
                 path: first.clone(),
                 original: Some("first original".to_owned()),
-                updated: "first updated".to_owned(),
+                updated: Some("first updated".to_owned()),
             },
             PlannedWrite {
                 path: created.clone(),
                 original: None,
-                updated: "created".to_owned(),
+                updated: Some("created".to_owned()),
             },
             PlannedWrite {
                 path: third.clone(),
                 original: Some("third original".to_owned()),
-                updated: "third updated".to_owned(),
+                updated: Some("third updated".to_owned()),
             },
         ];
         let mut attempts = 0;
@@ -3157,6 +3175,46 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
     }
 
     #[test]
+    fn rolls_back_deleted_file_when_later_commit_fails() {
+        let file = ResolverFile::new();
+        let deleted = file.directory.join("deleted.rs");
+        let failing = file.directory.join("failing.rs");
+        fs::write(&deleted, "deleted original").unwrap();
+        fs::write(&failing, "failing original").unwrap();
+        let writes = vec![
+            PlannedWrite {
+                path: deleted.clone(),
+                original: Some("deleted original".to_owned()),
+                updated: None,
+            },
+            PlannedWrite {
+                path: failing.clone(),
+                original: Some("failing original".to_owned()),
+                updated: Some("failing updated".to_owned()),
+            },
+        ];
+        let mut attempts = 0;
+
+        let error = commit_writes_with(
+            writes,
+            |path, source| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(std::io::Error::other("injected commit failure"))
+                } else {
+                    fs::write(path, source)
+                }
+            },
+            |path| fs::remove_file(path),
+        )
+        .expect_err("injected commit failure unexpectedly succeeded");
+
+        assert!(error.to_string().contains("injected commit failure"));
+        assert_eq!(fs::read_to_string(deleted).unwrap(), "deleted original");
+        assert_eq!(fs::read_to_string(failing).unwrap(), "failing original");
+    }
+
+    #[test]
     fn detects_source_changes_before_each_replacement() {
         let file = ResolverFile::new();
         let first = file.directory.join("first.rs");
@@ -3167,12 +3225,12 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             PlannedWrite {
                 path: first.clone(),
                 original: Some("first original".to_owned()),
-                updated: "first updated".to_owned(),
+                updated: Some("first updated".to_owned()),
             },
             PlannedWrite {
                 path: second.clone(),
                 original: Some("second original".to_owned()),
-                updated: "second updated".to_owned(),
+                updated: Some("second updated".to_owned()),
             },
         ];
         let mut attempts = 0;
@@ -3213,12 +3271,12 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             PlannedWrite {
                 path: first.clone(),
                 original: Some("first original".to_owned()),
-                updated: "first updated".to_owned(),
+                updated: Some("first updated".to_owned()),
             },
             PlannedWrite {
                 path: second.clone(),
                 original: Some("second original".to_owned()),
-                updated: "second updated".to_owned(),
+                updated: Some("second updated".to_owned()),
             },
         ];
         let mut attempts = 0;
@@ -3290,17 +3348,17 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
             PlannedWrite {
                 path: first.clone(),
                 original: Some("first original".to_owned()),
-                updated: "first updated".to_owned(),
+                updated: Some("first updated".to_owned()),
             },
             PlannedWrite {
                 path: second.clone(),
                 original: Some("second original".to_owned()),
-                updated: "second updated".to_owned(),
+                updated: Some("second updated".to_owned()),
             },
             PlannedWrite {
                 path: third.clone(),
                 original: Some("third original".to_owned()),
-                updated: "third updated".to_owned(),
+                updated: Some("third updated".to_owned()),
             },
         ];
         let mut attempts = 0;
