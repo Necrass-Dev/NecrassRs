@@ -260,6 +260,29 @@ fn adding_custom_scalar_preserves_edited_existing_scaffold() {
 }
 
 #[test]
+fn removing_custom_scalar_deletes_untouched_scaffold_and_reexport() {
+    let consumer =
+        Consumer::new("scalar Timestamp scalar Unused type Query { now: Timestamp! old: Unused! }");
+    consumer.bootstrap();
+    let scalar_path = consumer.directory.join("src/resolvers/scalars.rs");
+    let edited = fs::read_to_string(&scalar_path).unwrap().replacen(
+        "expected a string value",
+        "custom timestamp value error",
+        1,
+    );
+    fs::write(&scalar_path, edited).unwrap();
+    consumer.schema("scalar Timestamp type Query { now: Timestamp! }");
+
+    assert_success(&consumer.build());
+    let scalars = fs::read_to_string(scalar_path).unwrap();
+    assert!(scalars.contains("custom timestamp value error"));
+    assert!(!scalars.contains("Unused"));
+    let entry = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(entry.contains("pub use self::scalars::Timestamp;"));
+    assert!(!entry.contains("pub use self::scalars::Unused;"));
+}
+
+#[test]
 fn filling_generated_body_survives_regeneration_and_executes_without_sdl() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     consumer.bootstrap();
