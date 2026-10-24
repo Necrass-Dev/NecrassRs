@@ -133,19 +133,49 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             scalar_directory = Some(directory);
             None
         };
-        let scalar_source = render_scalar_scaffolds(&custom_scalars);
-        syn::parse_file(&scalar_source).map_err(|source| BuildError::ResolverSource {
-            path: scalar_path.clone(),
-            source,
-        })?;
-        match scalar_existing {
-            // shortcut: preserve nonempty scalar modules as a unit until per-scalar synchronization is required.
-            Some(ref source) if !source.trim().is_empty() => {}
-            original => writes.push(PlannedWrite {
+        let missing_scalars = match scalar_existing
+            .as_deref()
+            .filter(|source| !source.trim().is_empty())
+        {
+            Some(source) => {
+                let ast = syn::parse_file(source).map_err(|source| BuildError::ResolverSource {
+                    path: scalar_path.clone(),
+                    source,
+                })?;
+                let existing = ast
+                    .items
+                    .iter()
+                    .filter_map(item_type_name)
+                    .collect::<BTreeSet<_>>();
+                // shortcut: retain stale scalar items until generated scaffold removal is implemented.
+                custom_scalars
+                    .iter()
+                    .filter(|(_, scalar)| !existing.contains(&scalar.unraw().to_string()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            }
+            None => custom_scalars.clone(),
+        };
+        if !missing_scalars.is_empty() {
+            let addition = render_scalar_scaffolds(&missing_scalars);
+            let updated = match scalar_existing.as_deref() {
+                Some(source) if !source.trim().is_empty() => {
+                    format!(
+                        "{source}{}{addition}",
+                        if source.ends_with('\n') { "\n" } else { "\n\n" }
+                    )
+                }
+                _ => addition,
+            };
+            syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
                 path: scalar_path.clone(),
-                original,
-                updated: scalar_source,
-            }),
+                source,
+            })?;
+            writes.push(PlannedWrite {
+                path: scalar_path.clone(),
+                original: scalar_existing,
+                updated,
+            });
         }
         watched_paths.insert(scalar_path);
     }
