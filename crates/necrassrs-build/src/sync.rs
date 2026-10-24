@@ -31,6 +31,17 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         })
         .collect::<Vec<_>>();
     custom_scalars.sort_by(|left, right| left.0.cmp(&right.0));
+    let desired_scalar_names = custom_scalars
+        .iter()
+        .map(|(_, scalar)| scalar.to_string())
+        .collect::<BTreeSet<_>>();
+    let stale_scalars = existing
+        .as_deref()
+        .map(scalar_entry_names)
+        .unwrap_or_default()
+        .difference(&desired_scalar_names)
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let query = schema
         .schema_definition
         .query
@@ -119,6 +130,8 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
     let mut writes = Vec::new();
     let mut watched_paths = BTreeSet::from([path.to_owned()]);
     let mut scalar_directory = None;
+    let mut removed_scalars = BTreeSet::new();
+    // shortcut: retain the final scalar module until empty-module cleanup is implemented.
     if !custom_scalars.is_empty() {
         let directory = if path.ends_with("mod.rs") {
             path.parent().unwrap_or(Path::new("")).to_owned()
@@ -133,44 +146,18 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             scalar_directory = Some(directory);
             None
         };
-        let missing_scalars = match scalar_existing
-            .as_deref()
-            .filter(|source| !source.trim().is_empty())
-        {
-            Some(source) => {
-                let ast = syn::parse_file(source).map_err(|source| BuildError::ResolverSource {
+        let (updated, removed) =
+            reconcile_scalar_scaffolds(scalar_existing.as_deref(), &custom_scalars, &stale_scalars)
+                .map_err(|source| BuildError::ResolverSource {
                     path: scalar_path.clone(),
                     source,
                 })?;
-                let existing = ast
-                    .items
-                    .iter()
-                    .filter_map(item_type_name)
-                    .collect::<BTreeSet<_>>();
-                // shortcut: retain stale scalar items until generated scaffold removal is implemented.
-                custom_scalars
-                    .iter()
-                    .filter(|(_, scalar)| !existing.contains(&scalar.unraw().to_string()))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            }
-            None => custom_scalars.clone(),
-        };
-        if !missing_scalars.is_empty() {
-            let addition = render_scalar_scaffolds(&missing_scalars);
-            let updated = match scalar_existing.as_deref() {
-                Some(source) if !source.trim().is_empty() => {
-                    format!(
-                        "{source}{}{addition}",
-                        if source.ends_with('\n') { "\n" } else { "\n\n" }
-                    )
-                }
-                _ => addition,
-            };
-            syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
-                path: scalar_path.clone(),
-                source,
-            })?;
+        removed_scalars = removed;
+        syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
+            path: scalar_path.clone(),
+            source,
+        })?;
+        if scalar_existing.as_deref() != Some(updated.as_str()) {
             writes.push(PlannedWrite {
                 path: scalar_path.clone(),
                 original: scalar_existing,
@@ -254,7 +241,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             .map_err(source_error)?
         }
     };
-    let updated = add_scalar_entry_items(&updated, &custom_scalars);
+    let updated = reconcile_scalar_entry_items(&updated, &custom_scalars, &removed_scalars);
     syn::parse_file(&updated).map_err(source_error)?;
 
     if existing.as_deref() != Some(updated.as_str()) {
@@ -304,26 +291,113 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
     Ok(())
 }
 
-fn add_scalar_entry_items(source: &str, scalars: &[(String, syn::Ident)]) -> String {
-    if scalars.is_empty() {
-        return source.to_owned();
+fn scalar_entry_names(source: &str) -> BTreeSet<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("pub use self::scalars::")?
+                .strip_suffix(';')
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn reconcile_scalar_entry_items(
+    source: &str,
+    scalars: &[(String, syn::Ident)],
+    removed_scalars: &BTreeSet<String>,
+) -> String {
+    let mut updated = source.to_owned();
+    let mut offset = 0;
+    let mut removals = Vec::new();
+    for line in source.split_inclusive('\n') {
+        let declaration = line.strip_suffix('\n').unwrap_or(line);
+        if declaration
+            .strip_prefix("pub use self::scalars::")
+            .and_then(|name| name.strip_suffix(';'))
+            .is_some_and(|name| removed_scalars.contains(name))
+        {
+            removals.push(offset..offset + line.len());
+        }
+        offset += line.len();
+    }
+    for range in removals.into_iter().rev() {
+        updated.replace_range(range, "");
     }
 
     let mut additions = Vec::new();
-    if !source.lines().any(|line| line.trim() == "mod scalars;") {
+    if !scalars.is_empty() && !updated.lines().any(|line| line.trim() == "mod scalars;") {
         additions.push("mod scalars;".to_owned());
     }
     for (_, scalar) in scalars {
         let declaration = format!("pub use self::scalars::{scalar};");
-        if !source.lines().any(|line| line.trim() == declaration) {
+        if !updated.lines().any(|line| line.trim() == declaration) {
             additions.push(declaration);
         }
     }
     if additions.is_empty() {
-        source.to_owned()
+        updated
     } else {
-        format!("{}\n\n{source}", additions.join("\n"))
+        format!("{}\n\n{updated}", additions.join("\n"))
     }
+}
+
+fn reconcile_scalar_scaffolds(
+    source: Option<&str>,
+    scalars: &[(String, syn::Ident)],
+    stale_scalars: &BTreeSet<String>,
+) -> syn::Result<(String, BTreeSet<String>)> {
+    let Some(source) = source.filter(|source| !source.trim().is_empty()) else {
+        return Ok((render_scalar_scaffolds(scalars), BTreeSet::new()));
+    };
+    let ast = syn::parse_file(source)?;
+    let existing = ast
+        .items
+        .iter()
+        .filter_map(item_type_name)
+        .collect::<BTreeSet<_>>();
+    let mut updated = source.to_owned();
+    let mut removals = Vec::new();
+    let mut removed_scalars = BTreeSet::new();
+    for item in &ast.items {
+        let Some(ident) =
+            item_type_ident(item).filter(|ident| stale_scalars.contains(&ident.to_string()))
+        else {
+            continue;
+        };
+        let generated = render_scalar_scaffolds(&[(String::new(), ident.clone())]);
+        let start = item.span().byte_range().start;
+        let range = start..start + generated.len();
+        if source.get(range.clone()) == Some(generated.as_str()) {
+            removals.push(range);
+            removed_scalars.insert(ident.to_string());
+        }
+    }
+    for range in removals.into_iter().rev() {
+        updated.replace_range(range, "");
+    }
+
+    let missing = scalars
+        .iter()
+        .filter(|(_, scalar)| !existing.contains(&scalar.unraw().to_string()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        let addition = render_scalar_scaffolds(&missing);
+        updated = if updated.trim().is_empty() {
+            addition
+        } else {
+            format!(
+                "{updated}{}{addition}",
+                if updated.ends_with('\n') {
+                    "\n"
+                } else {
+                    "\n\n"
+                }
+            )
+        };
+    }
+    Ok((updated, removed_scalars))
 }
 
 fn render_scalar_scaffolds(scalars: &[(String, syn::Ident)]) -> String {
@@ -2199,14 +2273,17 @@ fn field_resolver_coordinate(implementation: &syn::ItemImpl) -> Option<(String, 
 
 fn item_type_name(item: &Item) -> Option<String> {
     // shortcut: imported and cross-file object types are discovered by the #38 module AST work.
-    let ident = match item {
+    Some(item_type_ident(item)?.unraw().to_string())
+}
+
+fn item_type_ident(item: &Item) -> Option<&syn::Ident> {
+    Some(match item {
         Item::Enum(item) => &item.ident,
         Item::Struct(item) => &item.ident,
         Item::Type(item) => &item.ident,
         Item::Union(item) => &item.ident,
         _ => return None,
-    };
-    Some(ident.unraw().to_string())
+    })
 }
 
 struct Edit {
