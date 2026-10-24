@@ -631,16 +631,16 @@ fn coerce_argument_values(
                         (variable_value.clone(), argument_value.as_ref().clone())
                     }
                     None => match definition.default_value.as_ref() {
-                        Some(default_value) => (
-                            coerce_input_value(
+                        Some(default_value) => {
+                            let (value, literal) = coerce_input_value(
                                 schema,
                                 prepared,
                                 path,
                                 &definition.ty,
                                 default_value,
-                            )?,
-                            default_value.as_ref().clone(),
-                        ),
+                            )?;
+                            (value, literal.as_ref().clone())
+                        }
                         None if definition.ty.is_non_null() => {
                             return Err(new_execution_error(
                                 prepared,
@@ -656,10 +656,9 @@ fn coerce_argument_values(
                     },
                 }
             } else {
-                (
-                    coerce_input_value(schema, prepared, path, &definition.ty, argument_value)?,
-                    argument_value.as_ref().clone(),
-                )
+                let (value, literal) =
+                    coerce_input_value(schema, prepared, path, &definition.ty, argument_value)?;
+                (value, literal.as_ref().clone())
             };
 
             coerced.values.insert(definition.name.as_str(), value);
@@ -677,7 +676,7 @@ fn coerce_input_value(
     path: &[ResponseDataPathSegment],
     ty: &Type,
     value: &Node<Value>,
-) -> Result<JsonValue, Box<GraphQLError>> {
+) -> Result<(JsonValue, Node<Value>), Box<GraphQLError>> {
     if let Some(variable_name) = value.as_variable() {
         return match prepared.variables.get(variable_name.as_str()) {
             Some(variable_value) if variable_value.is_null() && ty.is_non_null() => {
@@ -688,14 +687,14 @@ fn coerce_input_value(
                     value.location(),
                 ))
             }
-            Some(variable_value) => Ok(variable_value.clone()),
+            Some(variable_value) => Ok((variable_value.clone(), value.clone())),
             None if ty.is_non_null() => Err(new_execution_error(
                 prepared,
                 path,
                 format!("missing variable '${variable_name}' for non-null type '{ty}'"),
                 value.location(),
             )),
-            None => Ok(JsonValue::Null),
+            None => Ok((JsonValue::Null, value.clone())),
         };
     }
 
@@ -708,19 +707,21 @@ fn coerce_input_value(
                 value.location(),
             ))
         } else {
-            Ok(JsonValue::Null)
+            Ok((JsonValue::Null, value.clone()))
         };
     }
 
     let type_name = match ty {
         Type::List(inner) | Type::NonNullList(inner) => {
-            return value
+            let coerced = value
                 .as_list()
                 .unwrap_or(std::slice::from_ref(value))
                 .iter()
                 .map(|value| coerce_input_value(schema, prepared, path, inner, value))
-                .collect::<Result<Vec<_>, _>>()
-                .map(Into::into);
+                .collect::<Result<Vec<_>, _>>()?;
+            let (values, literals): (Vec<_>, Vec<_>) = coerced.into_iter().unzip();
+
+            return Ok((values.into(), Node::new(Value::List(literals))));
         }
         Type::Named(name) | Type::NonNullNamed(name) => name,
     };
@@ -728,7 +729,7 @@ fn coerce_input_value(
     if type_name.as_str() == "ID"
         && let Value::Int(integer) = value.as_ref()
     {
-        return Ok(JsonValue::from(integer.as_str()));
+        return Ok((JsonValue::from(integer.as_str()), value.clone()));
     }
 
     if let Some(ExtendedType::InputObject(input)) = schema.types.get(type_name) {
@@ -741,10 +742,9 @@ fn coerce_input_value(
             )
         })?;
 
-        return input
-            .fields
-            .iter()
-            .try_fold(JsonMap::new(), |mut coerced, (name, definition)| {
+        let (values, literals) = input.fields.iter().try_fold(
+            (JsonMap::new(), Vec::new()),
+            |(mut coerced, mut literals), (name, definition)| {
                 let specified = object
                     .iter()
                     .find(|(field_name, _)| field_name == name)
@@ -763,10 +763,10 @@ fn coerce_input_value(
 
                 match value {
                     Some(value) => {
-                        let result =
-                            coerce_input_value(schema, prepared, path, &definition.ty, value);
-
-                        coerced.insert(name.as_str(), result?);
+                        let (value, literal) =
+                            coerce_input_value(schema, prepared, path, &definition.ty, value)?;
+                        coerced.insert(name.as_str(), value);
+                        literals.push((name.clone(), literal));
                     }
                     None if definition.ty.is_non_null() => {
                         return Err(new_execution_error(
@@ -779,13 +779,16 @@ fn coerce_input_value(
                     None => {}
                 }
 
-                Ok(coerced)
-            })
-            .map(Into::into);
+                Ok((coerced, literals))
+            },
+        )?;
+
+        return Ok((values.into(), Node::new(Value::Object(literals))));
     }
 
     input_literal_to_json(value)
         .map_err(|error| new_execution_error(prepared, path, error.message, error.location))
+        .map(|coerced| (coerced, value.clone()))
 }
 
 fn new_execution_error(
