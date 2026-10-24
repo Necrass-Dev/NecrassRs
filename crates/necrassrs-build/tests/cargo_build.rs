@@ -186,6 +186,21 @@ fn first_build_creates_query_and_explicit_unimplemented_methods_from_sdl() {
 }
 
 #[test]
+fn first_build_compiles_generated_custom_scalar_scaffold() {
+    let consumer = Consumer::new("scalar DateTime type Query { now: DateTime! }");
+    consumer.bootstrap();
+    let resolvers = fs::read(consumer.resolvers()).unwrap();
+    let scalars = fs::read(consumer.directory.join("src/resolvers/scalars.rs")).unwrap();
+
+    assert_success(&consumer.build());
+    assert_eq!(fs::read(consumer.resolvers()).unwrap(), resolvers);
+    assert_eq!(
+        fs::read(consumer.directory.join("src/resolvers/scalars.rs")).unwrap(),
+        scalars,
+    );
+}
+
+#[test]
 fn filling_generated_body_survives_regeneration_and_executes_without_sdl() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     consumer.bootstrap();

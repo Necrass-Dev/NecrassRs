@@ -191,8 +191,8 @@ fn check_generated_consumer(framework: &str) {
     let invalid = build();
     assert!(!invalid.status.success());
     let stderr = String::from_utf8_lossy(&invalid.stderr);
-    assert!(stderr.contains("schema/schema.graphql"), "{stderr}");
-    assert!(stderr.contains("Timestamp!"), "{stderr}");
+    assert!(stderr.contains("Timestamp"), "{stderr}");
+    assert!(stderr.contains("Display"), "{stderr}");
     assert!(
         !stderr.contains("\u{1b}["),
         "diagnostics must remain readable without color"

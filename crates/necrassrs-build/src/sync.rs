@@ -14,15 +14,23 @@ use syn::{
 use crate::{BuildError, codegen};
 
 pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), BuildError> {
-    if let Some(error) = codegen::pending_custom_scalar_scaffold(schema) {
-        return Err(BuildError::Codegen(error));
-    }
-
     let source_error = |source| BuildError::ResolverSource {
         path: path.to_owned(),
         source,
     };
     let existing = read_existing(path)?;
+    let mut custom_scalars = schema
+        .types
+        .values()
+        .filter_map(|definition| match definition {
+            ExtendedType::Scalar(scalar) if !scalar.is_built_in() => Some((
+                scalar.name.as_str().to_owned(),
+                rust_ident(scalar.name.as_str()),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    custom_scalars.sort_by(|left, right| left.0.cmp(&right.0));
     let query = schema
         .schema_definition
         .query
@@ -110,6 +118,46 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
 
     let mut writes = Vec::new();
     let mut watched_paths = BTreeSet::from([path.to_owned()]);
+    let mut scalar_directory = None;
+    if !custom_scalars.is_empty() {
+        let directory = if path.ends_with("mod.rs") {
+            path.parent().unwrap_or(Path::new("")).to_owned()
+        } else {
+            path.with_extension("")
+        };
+        let scalar_path = directory.join("scalars.rs");
+        let directory_exists = source_exists(&directory)?;
+        let scalar_existing = if directory_exists {
+            read_existing(&scalar_path)?
+        } else {
+            scalar_directory = Some(directory);
+            None
+        };
+        let scalar_source = render_scalar_scaffolds(&custom_scalars);
+        syn::parse_file(&scalar_source).map_err(|source| BuildError::ResolverSource {
+            path: scalar_path.clone(),
+            source,
+        })?;
+        match scalar_existing {
+            Some(ref source) if !source.trim().is_empty() && source != &scalar_source => {
+                // shortcut: edited scalar scaffolds stop safely until preservation is implemented.
+                return Err(BuildError::ResolverSource {
+                    path: scalar_path,
+                    source: syn::Error::new(
+                        proc_macro2::Span::call_site(),
+                        "Existing custom scalar scaffold synchronization is not yet supported",
+                    ),
+                });
+            }
+            Some(ref source) if source == &scalar_source => {}
+            original => writes.push(PlannedWrite {
+                path: scalar_path.clone(),
+                original,
+                updated: scalar_source,
+            }),
+        }
+        watched_paths.insert(scalar_path);
+    }
     let updated = match existing
         .as_deref()
         .filter(|source| !source.trim().is_empty())
@@ -185,6 +233,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             .map_err(source_error)?
         }
     };
+    let updated = add_scalar_entry_items(&updated, &custom_scalars);
     syn::parse_file(&updated).map_err(source_error)?;
 
     if existing.as_deref() != Some(updated.as_str()) {
@@ -194,22 +243,99 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             updated,
         });
     }
-    for write in &writes {
-        if read_existing(&write.path)? != write.original {
-            return Err(BuildError::ResolverSource {
-                path: write.path.clone(),
-                source: syn::Error::new(
-                    proc_macro2::Span::call_site(),
-                    "Resolver source changed during synchronization",
-                ),
+    if let Some(directory) = &scalar_directory {
+        fs::create_dir(directory).map_err(|source| BuildError::Io {
+            path: directory.clone(),
+            source,
+        })?;
+    }
+    let commit = (|| {
+        for write in &writes {
+            if read_existing(&write.path)? != write.original {
+                return Err(BuildError::ResolverSource {
+                    path: write.path.clone(),
+                    source: syn::Error::new(
+                        proc_macro2::Span::call_site(),
+                        "Resolver source changed during synchronization",
+                    ),
+                });
+            }
+        }
+        commit_writes(writes)
+    })();
+    if let Err(error) = commit {
+        if let Some(directory) = scalar_directory
+            && let Err(cleanup) = fs::remove_dir(&directory)
+            && cleanup.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(BuildError::Io {
+                path: directory,
+                source: std::io::Error::other(format!(
+                    "{error}; could not remove scalar module directory: {cleanup}"
+                )),
             });
         }
+        return Err(error);
     }
-    commit_writes(writes)?;
     for path in watched_paths {
         println!("cargo::rerun-if-changed={}", path.display());
     }
     Ok(())
+}
+
+fn add_scalar_entry_items(source: &str, scalars: &[(String, syn::Ident)]) -> String {
+    if scalars.is_empty() {
+        return source.to_owned();
+    }
+
+    let mut additions = Vec::new();
+    if !source.lines().any(|line| line.trim() == "mod scalars;") {
+        additions.push("mod scalars;".to_owned());
+    }
+    for (_, scalar) in scalars {
+        let declaration = format!("pub use self::scalars::{scalar};");
+        if !source.lines().any(|line| line.trim() == declaration) {
+            additions.push(declaration);
+        }
+    }
+    if additions.is_empty() {
+        source.to_owned()
+    } else {
+        format!("{}\n\n{source}", additions.join("\n"))
+    }
+}
+
+fn render_scalar_scaffolds(scalars: &[(String, syn::Ident)]) -> String {
+    scalars
+        .iter()
+        .map(|(_, scalar)| {
+            format!(
+                "pub struct {scalar}(String);\n\n\
+                 impl necrassrs::Scalar for {scalar} {{\n\
+                     fn parse_literal(\n\
+                         value: &necrassrs::ScalarLiteral,\n\
+                     ) -> Result<Self, necrassrs::ScalarError> {{\n\
+                         match value {{\n\
+                             necrassrs::ScalarLiteral::String(value) => Ok(Self(value.to_owned())),\n\
+                             _ => Err(necrassrs::ScalarError::new(\"expected a string literal\")),\n\
+                         }}\n\
+                     }}\n\n\
+                     fn parse_value(\n\
+                         value: &necrassrs::JsonValue,\n\
+                     ) -> Result<Self, necrassrs::ScalarError> {{\n\
+                         value.as_str()\n\
+                             .map(|value| Self(value.to_owned()))\n\
+                             .ok_or_else(|| necrassrs::ScalarError::new(\"expected a string value\"))\n\
+                     }}\n\n\
+                     fn serialize(&self) -> Result<necrassrs::JsonValue, necrassrs::ScalarError> {{\n\
+                         Ok(self.0.as_str().into())\n\
+                     }}\n\
+                 }}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        + "\n"
 }
 
 struct ExternalReconciliation {

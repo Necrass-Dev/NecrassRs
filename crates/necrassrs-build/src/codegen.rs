@@ -1353,24 +1353,6 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
-pub(crate) fn pending_custom_scalar_scaffold(schema: &Schema) -> Option<CodegenError> {
-    schema.types.values().find_map(|definition| {
-        let ExtendedType::Scalar(scalar) = definition else {
-            return None;
-        };
-        (!scalar.is_built_in()).then(|| {
-            CodegenError::new(
-                format!(
-                    "Cargo integration does not yet generate the custom scalar scaffold for '{}'",
-                    scalar.name
-                ),
-                schema,
-                scalar.location(),
-            )
-        })
-    })
-}
-
 fn output_type(schema: &Schema, ty: &Type, types_path: &TokenStream) -> Option<TokenStream> {
     match ty {
         Type::NonNullNamed(name) => named_type(schema, name, types_path),
@@ -2722,36 +2704,6 @@ mod test {
         "#;
 
         assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
-    }
-
-    #[test]
-    fn pending_custom_scalar_scaffold_error_preserves_source_and_span() {
-        let source = "# Source: café\nscalar Timestamp";
-        let schema = Schema::builder()
-            .parse("type Query { hello: String! }", "schema.graphql")
-            .parse(source, "scalar.graphql")
-            .build()
-            .expect("the test schema must build")
-            .validate()
-            .expect("the test schema must be valid");
-
-        let error = super::pending_custom_scalar_scaffold(&schema)
-            .expect("Cargo integration must reject an incomplete scalar scaffold");
-        assert!(error.to_string().contains("Timestamp"));
-        let labels: Vec<_> = error
-            .labels()
-            .expect("the error must have labels")
-            .collect();
-        assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].offset(), source.find("scalar Timestamp").unwrap());
-        assert_eq!(labels[0].len(), "scalar Timestamp".len());
-        let contents = error
-            .source_code()
-            .expect("the error must retain its source")
-            .read_span(&(0, source.len()).into(), 0, 0)
-            .expect("the original source must be readable");
-        assert_eq!(contents.name(), Some("scalar.graphql"));
-        assert_eq!(contents.data(), source.as_bytes());
     }
 
     #[test]
