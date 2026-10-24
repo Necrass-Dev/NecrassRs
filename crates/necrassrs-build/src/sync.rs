@@ -139,17 +139,8 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             source,
         })?;
         match scalar_existing {
-            Some(ref source) if !source.trim().is_empty() && source != &scalar_source => {
-                // shortcut: edited scalar scaffolds stop safely until preservation is implemented.
-                return Err(BuildError::ResolverSource {
-                    path: scalar_path,
-                    source: syn::Error::new(
-                        proc_macro2::Span::call_site(),
-                        "Existing custom scalar scaffold synchronization is not yet supported",
-                    ),
-                });
-            }
-            Some(ref source) if source == &scalar_source => {}
+            // shortcut: preserve nonempty scalar modules as a unit until per-scalar synchronization is required.
+            Some(ref source) if !source.trim().is_empty() => {}
             original => writes.push(PlannedWrite {
                 path: scalar_path.clone(),
                 original,
