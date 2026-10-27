@@ -46,10 +46,10 @@ developers to write the business logic in ordinary Rust resolver bodies.
   independent of the HTTP framework.
 
 :::caution[Under active development]
-The generated API supports built-in scalar and enum results, ordinary and OneOf
-input objects, owned Object results, Interface and Union results, nullable and
-list forms, recursive input and Object relationships, and generated query and
-mutation routing. Custom scalars, borrowed Object results, and generated
+The generated API supports built-in and application-owned custom scalars, enum
+results, ordinary and OneOf input objects, owned Object results, Interface and
+Union results, nullable and list forms, recursive input and Object relationships,
+and generated query and mutation routing. Borrowed Object results and generated
 subscription routing remain unsupported. These pages describe this source
 checkout, not an older resolved Git dependency.
 :::
@@ -70,3 +70,5 @@ Special thanks to [XiNiHa](https://xiniha.dev/#about) for his contributions to N
   Interface, and Union results to a working server.
 - [Types](/docs/types/): Rust type mappings, input presence, defaults, and
   generated input types.
+- [Custom Scalars](/docs/custom-scalars/): define scalar storage, input
+  coercion, output serialization, and regeneration behavior.

@@ -245,6 +245,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             schema,
                             &payload_type,
                             &quote! { value },
+                            &quote! { literal },
                             &coordinate,
                             &quote! { self },
                         )
@@ -285,6 +286,13 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                         pub(super) fn _from_graphql_value(
                             value: &::necrassrs::JsonValue,
                         ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                            Self::_from_graphql_value_with_literal(value, None)
+                        }
+
+                        pub(super) fn _from_graphql_value_with_literal(
+                            value: &::necrassrs::JsonValue,
+                            literal: ::core::option::Option<&::necrassrs::ScalarLiteral>,
+                        ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
                             let object = value
                                 .as_object()
                                 .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?;
@@ -297,6 +305,15 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             if value.is_null() {
                                 return Err(::necrassrs::ResolverError::new(#selection_message));
                             }
+                            let literal = match literal {
+                                Some(::necrassrs::ScalarLiteral::Variable(_)) => literal,
+                                Some(::necrassrs::ScalarLiteral::Object(fields)) => fields
+                                    .iter()
+                                    .find(|(name, _)| name.as_str() == field.as_str())
+                                    .map(|(_, value)| value.as_ref()),
+                                _ => None,
+                            };
+                            let _ = literal;
                             match field.as_str() {
                                 #(#conversions)*
                                 _ => Err(::necrassrs::ResolverError::new(#unknown_message)),
@@ -332,6 +349,16 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                         })?;
                     let coordinate = format!("{type_name}.{field_name}");
                     let lookup = quote! { object.get(#graphql_name) };
+                    let literal = quote! {
+                        match literal {
+                            Some(::necrassrs::ScalarLiteral::Variable(_)) => literal,
+                            Some(::necrassrs::ScalarLiteral::Object(fields)) => fields
+                                .iter()
+                                .find(|(name, _)| name.as_str() == #graphql_name)
+                                .map(|(_, value)| value.as_ref()),
+                            _ => None,
+                        }
+                    };
                     let field_value = if boxed {
                         field_type = quote! {
                             ::necrassrs::GraphQLInput<::std::boxed::Box<#field_type>>
@@ -340,6 +367,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             schema,
                             &ty,
                             &quote! { value },
+                            &literal,
                             &coordinate,
                             &quote! { self },
                         )
@@ -347,7 +375,14 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                             nullable_input(&lookup, &quote! { ::std::boxed::Box::new(#value) })
                         })
                     } else {
-                        input_position_value(schema, &ty, &lookup, &coordinate, &quote! { self })
+                        input_position_value(
+                            schema,
+                            &ty,
+                            &lookup,
+                            &literal,
+                            &coordinate,
+                            &quote! { self },
+                        )
                     }
                     .ok_or_else(|| {
                         CodegenError::new(
@@ -376,6 +411,14 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                     pub(super) fn _from_graphql_value(
                         value: &::necrassrs::JsonValue,
                     ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                        Self::_from_graphql_value_with_literal(value, None)
+                    }
+
+                    pub(super) fn _from_graphql_value_with_literal(
+                        value: &::necrassrs::JsonValue,
+                        literal: ::core::option::Option<&::necrassrs::ScalarLiteral>,
+                    ) -> ::core::result::Result<Self, ::necrassrs::ResolverError> {
+                        let _ = literal;
                         let object = value
                             .as_object()
                             .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?;
@@ -920,7 +963,6 @@ fn generate_object_dispatcher(
         let variant = object_variant_ident(name);
         quote! { Self::#variant(_) => #name }
     });
-
     let generated = quote! {
         #[allow(dead_code, non_camel_case_types)]
         enum ObjectValue<#(#object_types),*> {
@@ -944,6 +986,31 @@ fn generate_object_dispatcher(
                 context: &'a C,
                 coordinate: ::necrassrs::FieldCoordinate<'a>,
                 _arguments: &'a ::necrassrs::JsonMap,
+            ) -> ::core::pin::Pin<Box<
+                dyn ::core::future::Future<
+                    Output = ::core::result::Result<
+                        ::necrassrs::ResolvedValue<C>,
+                        ::necrassrs::ResolverError,
+                    >,
+                > + ::core::marker::Send + 'a,
+            >> {
+                Box::pin(async move {
+                    let argument_literals = ::necrassrs::ScalarLiteralMap::new();
+                    self.resolve_with_literals(
+                        context,
+                        coordinate,
+                        _arguments,
+                        &argument_literals,
+                    ).await
+                })
+            }
+
+            fn resolve_with_literals<'a>(
+                &'a self,
+                context: &'a C,
+                coordinate: ::necrassrs::FieldCoordinate<'a>,
+                _arguments: &'a ::necrassrs::JsonMap,
+                _argument_literals: &'a ::necrassrs::ScalarLiteralMap,
             ) -> ::core::pin::Pin<Box<
                 dyn ::core::future::Future<
                     Output = ::core::result::Result<
@@ -1120,7 +1187,66 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
         .copied()
         .chain(object_types.iter())
         .collect::<Vec<_>>();
+    let scalar_variable_branches = schema
+        .types
+        .iter()
+        .filter_map(|(name, definition)| {
+            let ExtendedType::Scalar(scalar) = definition else {
+                return None;
+            };
+            if scalar.is_built_in() {
+                return None;
+            }
 
+            let scalar_name = name.as_str();
+            let scalar_type = custom_scalar_type(name);
+            Some(quote! {
+                #scalar_name => {
+                    <#scalar_type as ::necrassrs::Scalar>::parse_value(value).map(|_| ())
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let scalar_variable_validation = if scalar_variable_branches.is_empty() {
+        quote! { Ok(()) }
+    } else {
+        quote! {
+            match scalar_name {
+                #(#scalar_variable_branches,)*
+                _ => Ok(()),
+            }
+        }
+    };
+    let scalar_literal_branches = schema
+        .types
+        .iter()
+        .filter_map(|(name, definition)| {
+            let ExtendedType::Scalar(scalar) = definition else {
+                return None;
+            };
+            if scalar.is_built_in() {
+                return None;
+            }
+
+            let scalar_name = name.as_str();
+            let scalar_type = custom_scalar_type(name);
+            Some(quote! {
+                #scalar_name => {
+                    <#scalar_type as ::necrassrs::Scalar>::parse_literal(value).map(|_| ())
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let scalar_literal_validation = if scalar_literal_branches.is_empty() {
+        quote! { Ok(()) }
+    } else {
+        quote! {
+            match scalar_name {
+                #(#scalar_literal_branches,)*
+                _ => Ok(()),
+            }
+        }
+    };
     Ok(quote! {
         pub mod dispatch {
             #object_dispatcher
@@ -1142,11 +1268,48 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                 #(#root_sync_bounds,)*
                 #(#dispatcher_bounds,)*
             {
+                fn validate_custom_scalar_variable(
+                    &self,
+                    scalar_name: &str,
+                    value: &::necrassrs::JsonValue,
+                ) -> ::core::result::Result<(), ::necrassrs::ScalarError> {
+                    let _ = (scalar_name, value);
+                    #scalar_variable_validation
+                }
+
+                fn validate_custom_scalar_literal(
+                    &self,
+                    scalar_name: &str,
+                    value: &::necrassrs::ScalarLiteral,
+                ) -> ::core::result::Result<(), ::necrassrs::ScalarError> {
+                    let _ = (scalar_name, value);
+                    #scalar_literal_validation
+                }
+
                 async fn resolve<'a>(
                     &'a self,
                     context: &'a C,
                     coordinate: ::necrassrs::FieldCoordinate<'a>,
                     _arguments: &'a ::necrassrs::JsonMap,
+                ) -> ::core::result::Result<
+                    ::necrassrs::ResolvedValue<C>,
+                    ::necrassrs::ResolverError,
+                > {
+                    let argument_literals = ::necrassrs::ScalarLiteralMap::new();
+                    self.resolve_with_literals(
+                        context,
+                        coordinate,
+                        _arguments,
+                        &argument_literals,
+                    ).await
+                }
+
+                async fn resolve_with_literals<'a>(
+                    &'a self,
+                    context: &'a C,
+                    coordinate: ::necrassrs::FieldCoordinate<'a>,
+                    _arguments: &'a ::necrassrs::JsonMap,
+                    _argument_literals: &'a ::necrassrs::ScalarLiteralMap,
                 ) -> ::core::result::Result<
                     ::necrassrs::ResolvedValue<C>,
                     ::necrassrs::ResolverError,
@@ -1301,24 +1464,45 @@ fn argument_value(
     let lookup = quote! {
         _arguments.get(#name)
     };
+    let literal = quote! {
+        _argument_literals.get(#name)
+    };
 
-    input_position_value(schema, ty, &lookup, coordinate, types_path)
+    input_position_value(schema, ty, &lookup, &literal, coordinate, types_path)
 }
 
 fn list_value(
     schema: &Schema,
     item: &Type,
     value: &TokenStream,
+    literal: &TokenStream,
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
-    let item = list_item_value(schema, item, &quote! { item }, coordinate, types_path)?;
+    let item = list_item_value(
+        schema,
+        item,
+        &quote! { item },
+        &quote! { literal },
+        coordinate,
+        types_path,
+    )?;
     let message = format!("Expected a List argument at {coordinate}");
     Some(quote! {
         (#value).as_array()
             .ok_or_else(|| ::necrassrs::ResolverError::new(#message))?
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(index, item)| {
+                let literal = match #literal {
+                    Some(::necrassrs::ScalarLiteral::Variable(_)) => #literal,
+                    Some(::necrassrs::ScalarLiteral::List(items)) => {
+                        items.get(index).map(|value| value.as_ref())
+                    }
+                    Some(literal) => Some(literal),
+                    None => None,
+                };
+                let _ = literal;
                 Ok(#item)
             })
             .collect::<::core::result::Result<
@@ -1332,15 +1516,17 @@ fn list_item_value(
     schema: &Schema,
     ty: &Type,
     value: &TokenStream,
+    literal: &TokenStream,
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
     match ty {
         Type::NonNullNamed(type_name) => {
-            named_input_value(schema, type_name, value, coordinate, types_path)
+            named_input_value(schema, type_name, value, literal, coordinate, types_path)
         }
         Type::Named(type_name) => {
-            let inner = named_input_value(schema, type_name, value, coordinate, types_path)?;
+            let inner =
+                named_input_value(schema, type_name, value, literal, coordinate, types_path)?;
             Some(quote! {
                 if (#value).is_null() {
                     None
@@ -1349,9 +1535,9 @@ fn list_item_value(
                 }
             })
         }
-        Type::NonNullList(item) => list_value(schema, item, value, coordinate, types_path),
+        Type::NonNullList(item) => list_value(schema, item, value, literal, coordinate, types_path),
         Type::List(item) => {
-            let inner = list_value(schema, item, value, coordinate, types_path)?;
+            let inner = list_value(schema, item, value, literal, coordinate, types_path)?;
             Some(quote! {
                 if (#value).is_null() {
                     None
@@ -1367,6 +1553,7 @@ fn named_input_value(
     schema: &Schema,
     type_name: &NamedType,
     value: &TokenStream,
+    literal: &TokenStream,
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
@@ -1431,7 +1618,22 @@ fn named_input_value(
                 let name = format_ident!("r#{}", rust_name(type_name.as_str()));
 
                 Some(quote! {
-                    #types_path::#name::_from_graphql_value(#value)?
+                    #types_path::#name::_from_graphql_value_with_literal(#value, #literal)?
+                })
+            }
+
+            ExtendedType::Scalar(scalar) if !scalar.is_built_in() => {
+                let scalar = custom_scalar_type(type_name);
+
+                Some(quote! {
+                    match #literal {
+                        Some(::necrassrs::ScalarLiteral::Variable(_)) | None => {
+                            <#scalar as ::necrassrs::Scalar>::parse_value(#value)?
+                        }
+                        Some(literal) => {
+                            <#scalar as ::necrassrs::Scalar>::parse_literal(literal)?
+                        }
+                    }
                 })
             }
 
@@ -1488,6 +1690,16 @@ fn named_output_value(
                     }
                 })
             }
+            ExtendedType::Scalar(scalar) if !scalar.is_built_in() => {
+                let scalar = custom_scalar_type(type_name);
+
+                Some(quote! {
+                    match <#scalar as ::necrassrs::Scalar>::serialize(&#value) {
+                        Ok(value) => ::necrassrs::ResolvedValue::Json(value),
+                        Err(error) => ::necrassrs::ResolvedValue::Error(error),
+                    }
+                })
+            }
             _ => None,
         },
     }
@@ -1497,6 +1709,7 @@ fn input_position_value(
     schema: &Schema,
     ty: &Type,
     lookup: &TokenStream,
+    literal: &TokenStream,
     coordinate: &str,
     types_path: &TokenStream,
 ) -> Option<TokenStream> {
@@ -1511,12 +1724,18 @@ fn input_position_value(
                     })?
             };
 
-            named_input_value(schema, type_name, &value, coordinate, types_path)
+            named_input_value(schema, type_name, &value, literal, coordinate, types_path)
         }
 
         Type::Named(type_name) => {
-            let value =
-                named_input_value(schema, type_name, &quote! { value }, coordinate, types_path)?;
+            let value = named_input_value(
+                schema,
+                type_name,
+                &quote! { value },
+                literal,
+                coordinate,
+                types_path,
+            )?;
 
             Some(nullable_input(lookup, &value))
         }
@@ -1531,11 +1750,18 @@ fn input_position_value(
                     })?
             };
 
-            list_value(schema, item, &value, coordinate, types_path)
+            list_value(schema, item, &value, literal, coordinate, types_path)
         }
 
         Type::List(item) => {
-            let value = list_value(schema, item, &quote! { value }, coordinate, types_path)?;
+            let value = list_value(
+                schema,
+                item,
+                &quote! { value },
+                literal,
+                coordinate,
+                types_path,
+            )?;
 
             Some(nullable_input(lookup, &value))
         }
@@ -1570,9 +1796,17 @@ fn named_type(schema: &Schema, name: &NamedType, types_path: &TokenStream) -> Op
                 let name = format_ident!("r#{}", rust_name(name.as_str()));
                 Some(quote! { #types_path::#name })
             }
+            Some(ExtendedType::Scalar(scalar)) if !scalar.is_built_in() => {
+                Some(custom_scalar_type(name))
+            }
             _ => None,
         },
     }
+}
+
+fn custom_scalar_type(name: &NamedType) -> TokenStream {
+    let name = format_ident!("r#{}", rust_name(name.as_str()));
+    quote! { crate::resolvers::#name }
 }
 
 fn output_value(
@@ -1911,61 +2145,856 @@ mod test {
     }
 
     #[test]
-    fn codegen_error_preserves_argument_type_source_and_span() {
-        let source = "# Source: café\nextend type Query { lookup(at: Timestamp!): String! }";
-        let schema = Schema::builder()
-            .parse(
-                "scalar Timestamp type Query { hello: String! }",
-                "schema.graphql",
-            )
-            .parse(source, "lookup.graphql")
-            .build()
-            .expect("the test schema must build")
-            .validate()
-            .expect("the test schema must be valid");
+    fn generated_consumer_compiles_user_owned_custom_scalar_contracts() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar DateTime
+                scalar Epoch
 
-        let error = super::generate(&schema).expect_err("the fixture requires a codegen rejection");
-        assert!(error.to_string().contains("Query.lookup(at)"));
-        let labels: Vec<_> = error
-            .labels()
-            .expect("the error must have labels")
-            .collect();
-        assert_eq!(labels.len(), 1);
-        assert_eq!(labels[0].offset(), source.find("Timestamp!").unwrap());
-        assert_eq!(labels[0].len(), "Timestamp!".len());
-        let contents = error
-            .source_code()
-            .expect("the error must retain its source")
-            .read_span(&(0, source.len()).into(), 0, 0)
-            .expect("the original source must be readable");
-        assert_eq!(contents.name(), Some("lookup.graphql"));
-        assert_eq!(contents.data(), source.as_bytes());
+                type Query {
+                    date(value: DateTime!): DateTime!
+                    epoch(value: Epoch!): Epoch!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalars must be supported");
+        assert_consumer(
+            &format!("mod generated {{ {generated} }}"),
+            r#"
+                mod resolvers {
+                    use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                    pub struct DateTime(String);
+
+                    impl Scalar for DateTime {
+                        fn parse_literal(_: &ScalarLiteral) -> Result<Self, ScalarError> {
+                            Err(ScalarError::new("not executed"))
+                        }
+
+                        fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                            Err(ScalarError::new("not executed"))
+                        }
+
+                        fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                            Ok(self.0.as_str().into())
+                        }
+                    }
+
+                    pub struct Epoch(i64);
+
+                    impl Scalar for Epoch {
+                        fn parse_literal(_: &ScalarLiteral) -> Result<Self, ScalarError> {
+                            Err(ScalarError::new("not executed"))
+                        }
+
+                        fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                            Err(ScalarError::new("not executed"))
+                        }
+
+                        fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                            Ok(self.0.into())
+                        }
+                    }
+                }
+
+                struct Query;
+                impl generated::resolvers::QueryResolver<()> for Query {}
+
+                impl necrassrs::Resolver<generated::fields::Query::date, ()> for Query {
+                    type Output = resolvers::DateTime;
+
+                    async fn resolve(
+                        &self,
+                        _: &(),
+                        args: generated::types::Query::date::Args,
+                    ) -> Result<Self::Output, necrassrs::ResolverError> {
+                        Ok(args.value)
+                    }
+                }
+
+                impl necrassrs::Resolver<generated::fields::Query::epoch, ()> for Query {
+                    type Output = resolvers::Epoch;
+
+                    async fn resolve(
+                        &self,
+                        _: &(),
+                        args: generated::types::Query::epoch::Args,
+                    ) -> Result<Self::Output, necrassrs::ResolverError> {
+                        Ok(args.value)
+                    }
+                }
+
+                fn main() {
+                    let _ = generated::SDL;
+                    let _ = generated::dispatch::SchemaDispatcher::new(Query);
+                }
+            "#,
+            true,
+        );
     }
 
     #[test]
-    fn codegen_error_without_type_location_has_no_fabricated_source_or_span() {
-        let mut schema = Schema::parse(
-            "scalar Timestamp type Query { lookup(at: Timestamp!): String! }",
+    fn generated_custom_scalar_result_uses_application_serialization() {
+        let schema = Schema::parse_and_validate(
+            "scalar DateTime type Query { now: DateTime! }",
             "schema.graphql",
         )
-        .expect("the test schema must parse");
-        let apollo_compiler::schema::ExtendedType::Object(query) =
-            schema.types.get_mut("Query").unwrap()
-        else {
-            panic!("the query root must be an object");
-        };
-        let field = query
-            .make_mut()
-            .fields
-            .get_mut("lookup")
-            .unwrap()
-            .make_mut();
-        field.arguments[0].make_mut().ty =
-            apollo_compiler::Node::new(apollo_compiler::ty!(Timestamp!));
-        let schema = schema.validate().expect("the test schema must be valid");
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
 
-        let error = super::generate(&schema).expect_err("the fixture requires a codegen rejection");
-        assert!(error.to_string().contains("Query.lookup(at)"));
+                pub struct DateTime(String);
+
+                impl DateTime {
+                    pub fn new(value: &str) -> Self {
+                        Self(value.to_owned())
+                    }
+                }
+
+                impl Scalar for DateTime {
+                    fn parse_literal(_: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("not used"))
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("not used"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::now, ()> for Query {
+                type Output = resolvers::DateTime;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    _: generated::types::Query::now::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(resolvers::DateTime::new("2026-10-22T00:00:00Z"))
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let response = futures::executor::block_on(necrassrs::execute(
+                    &schema,
+                    &necrassrs::Request::new("{ now }"),
+                    &dispatcher,
+                    &(),
+                ));
+
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({
+                        "data": { "now": "2026-10-22T00:00:00Z" }
+                    }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_custom_scalar_result_errors_preserve_path_and_nullability() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar Epoch
+                type Query {
+                    epoch(value: Int!): Epoch!
+                    optionalEpoch(value: Int!): Epoch
+                    sibling: String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct Epoch(i64);
+
+                impl Epoch {
+                    pub fn new(value: i32) -> Self {
+                        Self(i64::from(value))
+                    }
+                }
+
+                impl Scalar for Epoch {
+                    fn parse_literal(_: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("not used"))
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("not used"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        if self.0 < 0 {
+                            Err(ScalarError::new("negative epoch"))
+                        } else {
+                            Ok(self.0.into())
+                        }
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::epoch, ()> for Query {
+                type Output = resolvers::Epoch;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::epoch::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(resolvers::Epoch::new(args.value))
+                }
+            }
+
+            impl necrassrs::Resolver<generated::fields::Query::optionalEpoch, ()> for Query {
+                type Output = Option<resolvers::Epoch>;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::optionalEpoch::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(Some(resolvers::Epoch::new(args.value)))
+                }
+            }
+
+            impl necrassrs::Resolver<generated::fields::Query::sibling, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    _: generated::types::Query::sibling::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok("ok".to_owned())
+                }
+            }
+
+            fn execute(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+                document: &str,
+            ) -> serde_json::Value {
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &necrassrs::Request::new(document),
+                    dispatcher,
+                    &(),
+                ))).unwrap()
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+
+                assert_eq!(
+                    execute(&schema, &dispatcher, "{ epoch(value: 7) }"),
+                    serde_json::json!({ "data": { "epoch": 7 } }),
+                );
+
+                let nullable = execute(
+                    &schema,
+                    &dispatcher,
+                    "{ optionalEpoch(value: -1) sibling }",
+                );
+                assert_eq!(
+                    nullable["data"],
+                    serde_json::json!({ "optionalEpoch": null, "sibling": "ok" }),
+                );
+                assert_eq!(nullable["errors"][0]["message"], "negative epoch");
+                assert_eq!(
+                    nullable["errors"][0]["path"],
+                    serde_json::json!(["optionalEpoch"]),
+                );
+
+                let non_null = execute(
+                    &schema,
+                    &dispatcher,
+                    "{ epoch(value: -1) sibling }",
+                );
+                assert!(non_null["data"].is_null());
+                assert_eq!(non_null["errors"][0]["message"], "negative epoch");
+                assert_eq!(
+                    non_null["errors"][0]["path"],
+                    serde_json::json!(["epoch"]),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_custom_scalar_input_preserves_literal_kinds() {
+        let schema = Schema::parse_and_validate(
+            "scalar StringOnly type Query { echo(value: StringOnly!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r##"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct StringOnly(String);
+
+                impl StringOnly {
+                    pub fn into_inner(self) -> String {
+                        self.0
+                    }
+                }
+
+                impl Scalar for StringOnly {
+                    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        match value {
+                            ScalarLiteral::String(value) => Ok(Self(value.to_owned())),
+                            _ => Err(ScalarError::new("expected a string literal")),
+                        }
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("variable coercion is not expected"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::echo, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::echo::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(args.value.into_inner())
+                }
+            }
+
+            fn execute(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+                document: &str,
+            ) -> serde_json::Value {
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &necrassrs::Request::new(document),
+                    dispatcher,
+                    &(),
+                ))).unwrap()
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+
+                assert_eq!(
+                    execute(&schema, &dispatcher, r#"{ echo(value: "literal") }"#),
+                    serde_json::json!({ "data": { "echo": "literal" } }),
+                );
+
+                let rejected = execute(&schema, &dispatcher, "{ echo(value: ENUM_LITERAL) }");
+                assert_eq!(rejected["data"], serde_json::Value::Null);
+                assert_eq!(rejected["errors"][0]["message"], "expected a string literal");
+                assert_eq!(
+                    rejected["errors"][0]["path"],
+                    serde_json::json!(["echo"]),
+                );
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_custom_scalar_input_preserves_nested_literal_kinds() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar StringOnly
+                input Payload { value: StringOnly! }
+                type Query {
+                    echo(values: [StringOnly!]!, payload: Payload!): String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r##"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct StringOnly(String);
+
+                impl StringOnly {
+                    pub fn into_inner(self) -> String {
+                        self.0
+                    }
+                }
+
+                impl Scalar for StringOnly {
+                    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        match value {
+                            ScalarLiteral::String(value) => Ok(Self(value.to_owned())),
+                            _ => Err(ScalarError::new("expected a string literal")),
+                        }
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("variable coercion is not expected"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::echo, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::echo::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(format!(
+                        "{},{}",
+                        args.values.into_iter().next().unwrap().into_inner(),
+                        args.payload.value.into_inner(),
+                    ))
+                }
+            }
+
+            fn execute(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+                document: &str,
+            ) -> serde_json::Value {
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &necrassrs::Request::new(document),
+                    dispatcher,
+                    &(),
+                ))).unwrap()
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+
+                assert_eq!(
+                    execute(
+                        &schema,
+                        &dispatcher,
+                        r#"{ echo(values: ["list"], payload: { value: "object" }) }"#,
+                    ),
+                    serde_json::json!({ "data": { "echo": "list,object" } }),
+                );
+
+                for document in [
+                    r#"{ echo(values: [ENUM_LITERAL], payload: { value: "object" }) }"#,
+                    r#"{ echo(values: ["list"], payload: { value: ENUM_LITERAL }) }"#,
+                ] {
+                    let rejected = execute(&schema, &dispatcher, document);
+                    assert_eq!(rejected["data"], serde_json::Value::Null);
+                    assert_eq!(
+                        rejected["errors"][0]["message"],
+                        "expected a string literal",
+                    );
+                    assert_eq!(
+                        rejected["errors"][0]["path"],
+                        serde_json::json!(["echo"]),
+                    );
+                }
+            }
+        "##;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_custom_scalar_input_defaults_preserve_literal_kinds() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar EnumOnly
+                input Payload { value: EnumOnly! = DEFAULT_VALUE }
+                type Query { echo(payload: Payload! = {}): String! }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct EnumOnly(String);
+
+                impl EnumOnly {
+                    pub fn into_inner(self) -> String {
+                        self.0
+                    }
+                }
+
+                impl Scalar for EnumOnly {
+                    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        match value {
+                            ScalarLiteral::Enum(value) => Ok(Self(value.as_str().to_owned())),
+                            _ => Err(ScalarError::new("expected an enum literal")),
+                        }
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("variable coercion is not expected"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::echo, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::echo::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(args.payload.value.into_inner())
+                }
+            }
+
+            fn execute(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+                document: &str,
+            ) -> serde_json::Value {
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &necrassrs::Request::new(document),
+                    dispatcher,
+                    &(),
+                ))).unwrap()
+            }
+
+            fn execute_with_payload(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+            ) -> serde_json::Value {
+                let variables = serde_json::from_value(serde_json::json!({
+                    "payload": {},
+                })).unwrap();
+                let request = necrassrs::Request::new(
+                    "query($payload: Payload!) { echo(payload: $payload) }",
+                ).with_variables(variables);
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &request,
+                    dispatcher,
+                    &(),
+                ))).unwrap()
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+
+                for document in [
+                    "{ echo }",
+                    "{ echo(payload: {}) }",
+                    "query($payload: Payload! = {}) { echo(payload: $payload) }",
+                ] {
+                    assert_eq!(
+                        execute(&schema, &dispatcher, document),
+                        serde_json::json!({ "data": { "echo": "DEFAULT_VALUE" } }),
+                        "{document}",
+                    );
+                }
+                assert_eq!(
+                    execute_with_payload(&schema, &dispatcher),
+                    serde_json::json!({ "data": { "echo": "DEFAULT_VALUE" } }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_custom_scalar_accepts_integer_literals_outside_json_range() {
+        let schema = Schema::parse_and_validate(
+            "scalar BigInt type Query { echo(value: BigInt!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct BigInt(String);
+
+                impl BigInt {
+                    pub fn into_inner(self) -> String { self.0 }
+                }
+
+                impl Scalar for BigInt {
+                    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        match value {
+                            ScalarLiteral::Int(value) => Ok(Self(value.as_str().to_owned())),
+                            _ => Err(ScalarError::new("expected an integer literal")),
+                        }
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("variable coercion is not expected"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::echo, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::echo::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(args.value.into_inner())
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let integer = "9".repeat(400);
+                let request = necrassrs::Request::new(format!("{{ echo(value: {integer}) }}"));
+                let response = futures::executor::block_on(necrassrs::execute(
+                    &schema,
+                    &request,
+                    &dispatcher,
+                    &(),
+                ));
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "echo": integer } }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_custom_scalar_variables_are_coerced_before_resolvers() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar StringOnly
+                type Query {
+                    ping: String!
+                    echo(value: StringOnly!): String!
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct StringOnly(String);
+
+                impl StringOnly {
+                    pub fn into_inner(self) -> String {
+                        self.0
+                    }
+                }
+
+                impl Scalar for StringOnly {
+                    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        match value {
+                            ScalarLiteral::String(value) => Ok(Self(value.to_owned())),
+                            _ => Err(ScalarError::new("expected a string literal")),
+                        }
+                    }
+
+                    fn parse_value(value: &JsonValue) -> Result<Self, ScalarError> {
+                        value
+                            .as_str()
+                            .map(|value| Self(value.to_owned()))
+                            .ok_or_else(|| ScalarError::new("expected a string value"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<AtomicUsize> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::ping, AtomicUsize> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    calls: &AtomicUsize,
+                    _: generated::types::Query::ping::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    Ok("pong".to_owned())
+                }
+            }
+
+            impl necrassrs::Resolver<generated::fields::Query::echo, AtomicUsize> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    calls: &AtomicUsize,
+                    args: generated::types::Query::echo::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(args.value.into_inner())
+                }
+            }
+
+            fn execute(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+                calls: &AtomicUsize,
+                value: serde_json::Value,
+            ) -> serde_json::Value {
+                let variables = serde_json::from_value(serde_json::json!({
+                    "value": value,
+                })).unwrap();
+                let request = necrassrs::Request::new(
+                    "query($value: StringOnly!) { ping echo(value: $value) }",
+                ).with_variables(variables);
+
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &request,
+                    dispatcher,
+                    calls,
+                ))).unwrap()
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let calls = AtomicUsize::new(0);
+
+                assert_eq!(
+                    execute(
+                        &schema,
+                        &dispatcher,
+                        &calls,
+                        serde_json::json!("variable"),
+                    ),
+                    serde_json::json!({
+                        "data": { "ping": "pong", "echo": "variable" },
+                    }),
+                );
+                assert_eq!(calls.swap(0, Ordering::Relaxed), 2);
+
+                let rejected = execute(
+                    &schema,
+                    &dispatcher,
+                    &calls,
+                    serde_json::json!(3),
+                );
+                assert!(rejected.get("data").is_none());
+                assert!(
+                    rejected["errors"][0]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("expected a string value"),
+                );
+                assert!(rejected["errors"][0].get("path").is_none());
+                assert_eq!(calls.load(Ordering::Relaxed), 0);
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn codegen_error_without_location_has_no_fabricated_source_or_span() {
+        let schema = Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql")
+            .expect("the test schema must be valid");
+        let error = super::CodegenError::new("test error", &schema, None);
+
+        assert_eq!(error.to_string(), "test error");
         assert!(error.source_code().is_none());
         assert_eq!(error.labels().into_iter().flatten().count(), 0);
     }

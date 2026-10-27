@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_and_codegen_errors_leave_existing_source_untouched() {
+    fn validation_errors_leave_existing_source_untouched() {
         let directory = BuildDir::new();
         std::fs::create_dir(directory.0.join("schema")).unwrap();
         std::fs::create_dir(directory.0.join("out")).unwrap();
@@ -322,24 +322,10 @@ mod tests {
         let sdl = directory.0.join("schema/query.graphql");
         let resolver = directory.0.join("src/resolvers.rs");
         std::fs::write(&resolver, "user code").unwrap();
-        for (input, expected) in [
-            ("type Query { hello(: String!): String! }", "schema"),
-            (
-                "scalar Timestamp\ntype Query { count: Timestamp! }",
-                "codegen",
-            ),
-        ] {
-            std::fs::write(&sdl, input).unwrap();
-            let error = directory.build().unwrap_err();
-            assert!(
-                matches!(
-                    (&error, expected),
-                    (BuildError::Schema(_), "schema") | (BuildError::Codegen(_), "codegen")
-                ),
-                "{error}"
-            );
-            assert_eq!(std::fs::read_to_string(&resolver).unwrap(), "user code");
-        }
+        std::fs::write(&sdl, "type Query { hello(: String!): String! }").unwrap();
+
+        assert!(matches!(directory.build(), Err(BuildError::Schema(_))));
+        assert_eq!(std::fs::read_to_string(&resolver).unwrap(), "user code");
     }
 
     #[test]
@@ -397,7 +383,9 @@ mod tests {
         assert!(schema_error.source().is_none());
 
         let valid = Schema::parse_and_validate(
-            "scalar Timestamp\ntype Query { count: Timestamp! }",
+            "schema { query: Query subscription: Subscription } \
+             type Query { value: String! } \
+             type Subscription { value: String! }",
             "schema.graphql",
         )
         .unwrap();
@@ -405,7 +393,7 @@ mod tests {
         assert!(
             codegen_error
                 .to_string()
-                .contains("Unsupported return type")
+                .contains("does not support subscription roots")
         );
         assert!(codegen_error.source().is_some());
     }

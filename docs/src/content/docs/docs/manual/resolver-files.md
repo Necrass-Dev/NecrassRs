@@ -62,6 +62,23 @@ mixture of them. Adjust `super::` paths as you would in any Rust module. New
 resolver stubs are still appended to `src/resolvers.rs`; move them into your
 chosen module after generation.
 
+## Custom scalar modules
+
+Custom scalars are application-owned types, so their editable implementations
+live in the same resolver source tree. By default, the first custom scalar adds
+`mod scalars;` and a public re-export to `src/resolvers.rs`, while its scaffold is
+written to `src/resolvers/scalars.rs`. Generated contracts refer to the stable
+`crate::resolvers::<Scalar>` path.
+
+Synchronization appends new scalar scaffolds without rewriting edited scalar
+representations or conversion bodies. It removes a stale scaffold and re-export
+only when they remain untouched generated declarations. If an SDL scalar name
+would collide with the internal `scalars` module, NecrassRs chooses a different
+private module name without changing the public path.
+
+See [Custom Scalars](/docs/custom-scalars/) for the generated scaffold and the
+input and output conversion contract.
+
 ## Use conventional Rust modules
 
 Resolver discovery recursively follows ordinary `mod <NAME>;` declarations and

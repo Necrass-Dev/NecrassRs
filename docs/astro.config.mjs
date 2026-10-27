@@ -33,7 +33,13 @@ export default defineConfig({
         },
         {
           label: "Manual",
-          items: ["docs/types", "docs/resolver-files", "docs/graphiql", "docs/integration"],
+          items: [
+            "docs/types",
+            "docs/custom-scalars",
+            "docs/resolver-files",
+            "docs/graphiql",
+            "docs/integration",
+          ],
         },
       ],
     }),
