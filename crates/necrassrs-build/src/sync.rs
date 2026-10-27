@@ -19,37 +19,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         source,
     };
     let existing = read_existing(path)?;
-    let mut custom_scalars = schema
-        .types
-        .values()
-        .filter_map(|definition| match definition {
-            ExtendedType::Scalar(scalar) if !scalar.is_built_in() => Some((
-                scalar.name.as_str().to_owned(),
-                rust_ident(scalar.name.as_str()),
-            )),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    custom_scalars.sort_by(|left, right| left.0.cmp(&right.0));
-    let desired_scalar_names = custom_scalars
-        .iter()
-        .map(|(_, scalar)| scalar.to_string())
-        .collect::<BTreeSet<_>>();
-    let previous_scalar_module = existing.as_deref().and_then(scalar_module_from_entry);
-    let scalar_module = previous_scalar_module
-        .as_ref()
-        .filter(|module| !desired_scalar_names.contains(*module))
-        .cloned()
-        .unwrap_or_else(|| scalar_module_name(&desired_scalar_names));
-    let entry_scalar_module = previous_scalar_module.as_deref().unwrap_or(&scalar_module);
-    let stale_scalars = existing
-        .as_deref()
-        .map(|source| scalar_entry_names(source, entry_scalar_module))
-        .unwrap_or_default()
-        .difference(&desired_scalar_names)
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let scalar_module_is_generated = previous_scalar_module.is_some();
+    let scalar_plan = scalar_sync_plan(schema, existing.as_deref());
     let query = schema
         .schema_definition
         .query
@@ -137,37 +107,10 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
 
     let mut writes = Vec::new();
     let mut watched_paths = BTreeSet::from([path.to_owned()]);
-    let mut scalar_directory = None;
-    let mut scalar_source = None;
-    if !custom_scalars.is_empty() || (!stale_scalars.is_empty() && scalar_module_is_generated) {
-        let directory = if path.ends_with("mod.rs") {
-            path.parent().unwrap_or(Path::new("")).to_owned()
-        } else {
-            path.with_extension("")
-        };
-        let source_module = previous_scalar_module.as_deref().unwrap_or(&scalar_module);
-        let source_path = directory.join(format!("{source_module}.rs"));
-        let scalar_path = directory.join(format!("{scalar_module}.rs"));
-        let directory_exists = source_exists(&directory)?;
-        let scalar_existing = if directory_exists {
-            read_existing(&source_path)?
-        } else {
-            scalar_directory = Some(directory);
-            None
-        };
-        if source_path != scalar_path && read_existing(&scalar_path)?.is_some() {
-            return Err(BuildError::ResolverSource {
-                path: scalar_path,
-                source: syn::Error::new(
-                    proc_macro2::Span::call_site(),
-                    "Custom scalar module destination already exists",
-                ),
-            });
-        }
-        watched_paths.insert(source_path.clone());
-        watched_paths.insert(scalar_path.clone());
-        scalar_source = Some((source_path, scalar_path, scalar_existing));
-    }
+    let ScalarSourcePlan {
+        directory: scalar_directory,
+        file: scalar_source,
+    } = scalar_source_plan(path, &scalar_plan, &mut watched_paths)?;
     let updated = match existing
         .as_deref()
         .filter(|source| !source.trim().is_empty())
@@ -178,7 +121,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 objects
                     .iter()
                     .chain(&root_objects)
-                    .chain(custom_scalars.iter().map(|(_, scalar)| scalar))
+                    .chain(scalar_plan.scalars.iter().map(|(_, scalar)| scalar))
                     .map(|name| name.unraw().to_string()),
             );
             let sync = scope.standard("Sync");
@@ -240,65 +183,18 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 &objects,
                 &field_resolvers,
                 &external.fields,
-                &desired_scalar_names,
+                &scalar_plan.names,
             )
             .map_err(source_error)?
         }
     };
-    let mut removed_scalars = BTreeSet::new();
-    let mut scalar_file_removed = false;
-    if let Some((source_path, scalar_path, scalar_existing)) = scalar_source {
-        let external = writes
-            .iter()
-            .find(|write| write.path == source_path)
-            .and_then(|write| write.updated.as_deref());
-        let base = external.or(scalar_existing.as_deref());
-        let (updated, removed) = reconcile_scalar_scaffolds(base, &custom_scalars, &stale_scalars)
-            .map_err(|source| BuildError::ResolverSource {
-                path: scalar_path.clone(),
-                source,
-            })?;
-        removed_scalars = removed;
-        let updated = if custom_scalars.is_empty() && updated.trim().is_empty() {
-            scalar_file_removed = scalar_existing.is_some();
-            None
-        } else {
-            syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
-                path: scalar_path.clone(),
-                source,
-            })?;
-            Some(updated)
-        };
-        if source_path != scalar_path {
-            if let Some(write) = writes.iter_mut().find(|write| write.path == source_path) {
-                write.updated = None;
-            } else if scalar_existing.is_some() {
-                writes.push(PlannedWrite {
-                    path: source_path,
-                    original: scalar_existing,
-                    updated: None,
-                });
-            }
-            writes.push(PlannedWrite {
-                path: scalar_path,
-                original: None,
-                updated,
-            });
-        } else if let Some(write) = writes.iter_mut().find(|write| write.path == scalar_path) {
-            write.updated = updated;
-        } else if scalar_existing != updated {
-            writes.push(PlannedWrite {
-                path: scalar_path,
-                original: scalar_existing,
-                updated,
-            });
-        }
-    }
+    let (removed_scalars, scalar_file_removed) =
+        reconcile_scalar_source(scalar_source, &scalar_plan, &mut writes)?;
     let updated = reconcile_scalar_entry_items(
         &updated,
-        &scalar_module,
-        previous_scalar_module.as_deref(),
-        &custom_scalars,
+        &scalar_plan.module,
+        scalar_plan.previous_module.as_deref(),
+        &scalar_plan.scalars,
         &removed_scalars,
         scalar_file_removed,
     );
@@ -311,6 +207,183 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             updated: Some(updated),
         });
     }
+    commit_synchronization(writes, scalar_directory)?;
+    for path in watched_paths {
+        println!("cargo::rerun-if-changed={}", path.display());
+    }
+    Ok(())
+}
+
+struct ScalarSyncPlan {
+    scalars: Vec<(String, syn::Ident)>,
+    names: BTreeSet<String>,
+    previous_module: Option<String>,
+    module: String,
+    stale: BTreeSet<String>,
+}
+
+fn scalar_sync_plan(schema: &Valid<Schema>, existing: Option<&str>) -> ScalarSyncPlan {
+    let mut scalars = schema
+        .types
+        .values()
+        .filter_map(|definition| match definition {
+            ExtendedType::Scalar(scalar) if !scalar.is_built_in() => Some((
+                scalar.name.as_str().to_owned(),
+                rust_ident(scalar.name.as_str()),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    scalars.sort_by(|left, right| left.0.cmp(&right.0));
+    let names = scalars
+        .iter()
+        .map(|(_, scalar)| scalar.to_string())
+        .collect::<BTreeSet<_>>();
+    let previous_module = existing.and_then(scalar_module_from_entry);
+    let module = previous_module
+        .as_ref()
+        .filter(|module| !names.contains(*module))
+        .cloned()
+        .unwrap_or_else(|| scalar_module_name(&names));
+    let entry_module = previous_module.as_deref().unwrap_or(&module);
+    let stale = existing
+        .map(|source| scalar_entry_names(source, entry_module))
+        .unwrap_or_default()
+        .difference(&names)
+        .cloned()
+        .collect();
+    ScalarSyncPlan {
+        scalars,
+        names,
+        previous_module,
+        module,
+        stale,
+    }
+}
+
+#[derive(Default)]
+struct ScalarSourcePlan {
+    directory: Option<PathBuf>,
+    file: Option<ScalarSourceFile>,
+}
+
+struct ScalarSourceFile {
+    source_path: PathBuf,
+    target_path: PathBuf,
+    existing: Option<String>,
+}
+
+fn scalar_source_plan(
+    path: &Path,
+    scalars: &ScalarSyncPlan,
+    watched_paths: &mut BTreeSet<PathBuf>,
+) -> Result<ScalarSourcePlan, BuildError> {
+    if scalars.scalars.is_empty() && (scalars.stale.is_empty() || scalars.previous_module.is_none())
+    {
+        return Ok(ScalarSourcePlan::default());
+    }
+    let directory = if path.ends_with("mod.rs") {
+        path.parent().unwrap_or(Path::new("")).to_owned()
+    } else {
+        path.with_extension("")
+    };
+    let source_module = scalars
+        .previous_module
+        .as_deref()
+        .unwrap_or(&scalars.module);
+    let source_path = directory.join(format!("{source_module}.rs"));
+    let target_path = directory.join(format!("{}.rs", scalars.module));
+    let directory_exists = source_exists(&directory)?;
+    let existing = directory_exists
+        .then(|| read_existing(&source_path))
+        .transpose()?
+        .flatten();
+    if source_path != target_path && read_existing(&target_path)?.is_some() {
+        return Err(BuildError::ResolverSource {
+            path: target_path,
+            source: syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "Custom scalar module destination already exists",
+            ),
+        });
+    }
+    watched_paths.insert(source_path.clone());
+    watched_paths.insert(target_path.clone());
+    Ok(ScalarSourcePlan {
+        directory: (!directory_exists).then_some(directory),
+        file: Some(ScalarSourceFile {
+            source_path,
+            target_path,
+            existing,
+        }),
+    })
+}
+
+fn reconcile_scalar_source(
+    source: Option<ScalarSourceFile>,
+    scalars: &ScalarSyncPlan,
+    writes: &mut Vec<PlannedWrite>,
+) -> Result<(BTreeSet<String>, bool), BuildError> {
+    let Some(ScalarSourceFile {
+        source_path,
+        target_path,
+        existing,
+    }) = source
+    else {
+        return Ok((BTreeSet::new(), false));
+    };
+    let external = writes
+        .iter()
+        .find(|write| write.path == source_path)
+        .and_then(|write| write.updated.as_deref());
+    let base = external.or(existing.as_deref());
+    let (updated, removed) = reconcile_scalar_scaffolds(base, &scalars.scalars, &scalars.stale)
+        .map_err(|source| BuildError::ResolverSource {
+            path: target_path.clone(),
+            source,
+        })?;
+    let file_removed = scalars.scalars.is_empty() && updated.trim().is_empty();
+    let scalar_existed = existing.is_some();
+    let updated = if file_removed {
+        None
+    } else {
+        syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
+            path: target_path.clone(),
+            source,
+        })?;
+        Some(updated)
+    };
+    if source_path != target_path {
+        if let Some(write) = writes.iter_mut().find(|write| write.path == source_path) {
+            write.updated = None;
+        } else if scalar_existed {
+            writes.push(PlannedWrite {
+                path: source_path,
+                original: existing,
+                updated: None,
+            });
+        }
+        writes.push(PlannedWrite {
+            path: target_path,
+            original: None,
+            updated,
+        });
+    } else if let Some(write) = writes.iter_mut().find(|write| write.path == target_path) {
+        write.updated = updated;
+    } else if existing != updated {
+        writes.push(PlannedWrite {
+            path: target_path,
+            original: existing,
+            updated,
+        });
+    }
+    Ok((removed, file_removed && scalar_existed))
+}
+
+fn commit_synchronization(
+    writes: Vec<PlannedWrite>,
+    scalar_directory: Option<PathBuf>,
+) -> Result<(), BuildError> {
     if let Some(directory) = &scalar_directory {
         fs::create_dir(directory).map_err(|source| BuildError::Io {
             path: directory.clone(),
@@ -344,9 +417,6 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
             });
         }
         return Err(error);
-    }
-    for path in watched_paths {
-        println!("cargo::rerun-if-changed={}", path.display());
     }
     Ok(())
 }
