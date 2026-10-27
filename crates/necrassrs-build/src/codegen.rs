@@ -1217,6 +1217,36 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             }
         }
     };
+    let scalar_literal_branches = schema
+        .types
+        .iter()
+        .filter_map(|(name, definition)| {
+            let ExtendedType::Scalar(scalar) = definition else {
+                return None;
+            };
+            if scalar.is_built_in() {
+                return None;
+            }
+
+            let scalar_name = name.as_str();
+            let scalar_type = custom_scalar_type(name);
+            Some(quote! {
+                #scalar_name => {
+                    <#scalar_type as ::necrassrs::Scalar>::parse_literal(value).map(|_| ())
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let scalar_literal_validation = if scalar_literal_branches.is_empty() {
+        quote! { Ok(()) }
+    } else {
+        quote! {
+            match scalar_name {
+                #(#scalar_literal_branches,)*
+                _ => Ok(()),
+            }
+        }
+    };
     Ok(quote! {
         pub mod dispatch {
             #object_dispatcher
@@ -1245,6 +1275,15 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                 ) -> ::core::result::Result<(), ::necrassrs::ScalarError> {
                     let _ = (scalar_name, value);
                     #scalar_variable_validation
+                }
+
+                fn validate_custom_scalar_literal(
+                    &self,
+                    scalar_name: &str,
+                    value: &::necrassrs::ScalarLiteral,
+                ) -> ::core::result::Result<(), ::necrassrs::ScalarError> {
+                    let _ = (scalar_name, value);
+                    #scalar_literal_validation
                 }
 
                 async fn resolve<'a>(
@@ -2687,6 +2726,24 @@ mod test {
                 ))).unwrap()
             }
 
+            fn execute_with_payload(
+                schema: &necrassrs::Valid<necrassrs::Schema>,
+                dispatcher: &generated::dispatch::SchemaDispatcher<Query>,
+            ) -> serde_json::Value {
+                let variables = serde_json::from_value(serde_json::json!({
+                    "payload": {},
+                })).unwrap();
+                let request = necrassrs::Request::new(
+                    "query($payload: Payload!) { echo(payload: $payload) }",
+                ).with_variables(variables);
+                serde_json::to_value(futures::executor::block_on(necrassrs::execute(
+                    schema,
+                    &request,
+                    dispatcher,
+                    &(),
+                ))).unwrap()
+            }
+
             fn main() {
                 let schema = necrassrs::Schema::parse_and_validate(
                     generated::SDL,
@@ -2694,13 +2751,96 @@ mod test {
                 ).unwrap();
                 let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
 
-                for document in ["{ echo }", "{ echo(payload: {}) }"] {
+                for document in [
+                    "{ echo }",
+                    "{ echo(payload: {}) }",
+                    "query($payload: Payload! = {}) { echo(payload: $payload) }",
+                ] {
                     assert_eq!(
                         execute(&schema, &dispatcher, document),
                         serde_json::json!({ "data": { "echo": "DEFAULT_VALUE" } }),
                         "{document}",
                     );
                 }
+                assert_eq!(
+                    execute_with_payload(&schema, &dispatcher),
+                    serde_json::json!({ "data": { "echo": "DEFAULT_VALUE" } }),
+                );
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_custom_scalar_accepts_integer_literals_outside_json_range() {
+        let schema = Schema::parse_and_validate(
+            "scalar BigInt type Query { echo(value: BigInt!): String! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).expect("custom scalar contracts must generate");
+        let consumer = r#"
+            mod resolvers {
+                use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+                pub struct BigInt(String);
+
+                impl BigInt {
+                    pub fn into_inner(self) -> String { self.0 }
+                }
+
+                impl Scalar for BigInt {
+                    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+                        match value {
+                            ScalarLiteral::Int(value) => Ok(Self(value.as_str().to_owned())),
+                            _ => Err(ScalarError::new("expected an integer literal")),
+                        }
+                    }
+
+                    fn parse_value(_: &JsonValue) -> Result<Self, ScalarError> {
+                        Err(ScalarError::new("variable coercion is not expected"))
+                    }
+
+                    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+                        Ok(self.0.as_str().into())
+                    }
+                }
+            }
+
+            struct Query;
+            impl generated::resolvers::QueryResolver<()> for Query {}
+
+            impl necrassrs::Resolver<generated::fields::Query::echo, ()> for Query {
+                type Output = String;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    args: generated::types::Query::echo::Args,
+                ) -> Result<Self::Output, necrassrs::ResolverError> {
+                    Ok(args.value.into_inner())
+                }
+            }
+
+            fn main() {
+                let schema = necrassrs::Schema::parse_and_validate(
+                    generated::SDL,
+                    "schema.graphql",
+                ).unwrap();
+                let dispatcher = generated::dispatch::SchemaDispatcher::new(Query);
+                let integer = "9".repeat(400);
+                let request = necrassrs::Request::new(format!("{{ echo(value: {integer}) }}"));
+                let response = futures::executor::block_on(necrassrs::execute(
+                    &schema,
+                    &request,
+                    &dispatcher,
+                    &(),
+                ));
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    serde_json::json!({ "data": { "echo": integer } }),
+                );
             }
         "#;
 

@@ -58,6 +58,7 @@ impl Request {
 pub(crate) struct PreparedRequest {
     pub(crate) document: Valid<ExecutableDocument>,
     pub(crate) operation: Node<Operation>,
+    pub(crate) provided_variables: JsonMap,
     pub(crate) variables: Valid<JsonMap>,
 }
 
@@ -111,6 +112,7 @@ pub(crate) fn prepare_request(
     Ok(PreparedRequest {
         document,
         operation,
+        provided_variables: request.variables.clone(),
         variables,
     })
 }

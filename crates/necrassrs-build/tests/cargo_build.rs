@@ -202,17 +202,16 @@ fn first_build_compiles_generated_custom_scalar_scaffold() {
 
 #[test]
 fn custom_scalar_scaffolds_compile_injective_rust_names() {
-    let consumer = Consumer::new(
-        "scalar DateTime scalar Datetime scalar type scalar self scalar _self \
-         type Query { first: DateTime! second: Datetime! keyword: type! receiver: self! underscored: _self! }",
-    );
+    let schema = "scalar DateTime scalar Datetime scalar type scalar self scalar _self \
+         type Query { first: DateTime! second: Datetime! keyword: type! receiver: self! underscored: _self! }";
+    let consumer = Consumer::new(schema);
     consumer.bootstrap();
 
     let scalars = fs::read_to_string(consumer.directory.join("src/resolvers/scalars.rs")).unwrap();
     let entry = fs::read_to_string(consumer.resolvers()).unwrap();
     for expected in ["DateTime", "Datetime", "r#type", "_self", "__self"] {
         assert!(
-            scalars.contains(&format!("pub struct {expected}(String);")),
+            scalars.contains(&format!("pub struct {expected}(::std::string::String);")),
             "missing scalar `{expected}`",
         );
         assert!(
@@ -220,6 +219,95 @@ fn custom_scalar_scaffolds_compile_injective_rust_names() {
             "missing re-export `{expected}`",
         );
     }
+    consumer.schema(&format!("{schema} "));
+    assert_success(&consumer.build());
+}
+
+#[test]
+fn custom_scalar_scaffolds_compile_type_and_module_name_collisions() {
+    let consumer = Consumer::new(
+        "scalar Result scalar Sync scalar Ok scalar Err scalar necrassrs scalar std scalar core \
+         scalar scalars type Query { result: Result! synchronized: Sync! ok: Ok! err: Err! \
+         framework: necrassrs! standard: std! primitive: core! module: scalars! }",
+    );
+    consumer.bootstrap();
+
+    let entry = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(entry.contains("mod _scalars;"));
+    assert!(entry.contains("pub use self::_scalars::scalars;"));
+    assert!(
+        consumer
+            .directory
+            .join("src/resolvers/_scalars.rs")
+            .is_file()
+    );
+
+    let evolved = Consumer::new("scalar Token type Query { token: Token! }");
+    evolved.bootstrap();
+    evolved.schema("scalar Token scalar scalars type Query { token: Token! module: scalars! }");
+    assert_success(&evolved.build());
+    assert!(!evolved.directory.join("src/resolvers/scalars.rs").exists());
+    assert!(
+        evolved
+            .directory
+            .join("src/resolvers/_scalars.rs")
+            .is_file()
+    );
+}
+
+#[test]
+fn scalar_entry_reconciliation_preserves_inner_attributes_and_grouped_reexports() {
+    let consumer = Consumer::new("scalar Token type Query { token: Token! }");
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers()).unwrap().replace(
+        "pub use self::scalars::Token;",
+        "pub use self::scalars::{Token};",
+    );
+    fs::write(
+        consumer.resolvers(),
+        format!("#![allow(dead_code)]\n//! Resolver implementations.\n{source}"),
+    )
+    .unwrap();
+    consumer.schema("scalar Token scalar Added type Query { token: Token! added: Added! }");
+
+    assert_success(&consumer.build());
+    let updated = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(updated.starts_with("#![allow(dead_code)]\n//! Resolver implementations.\n"));
+    assert_eq!(updated.matches("self::scalars::{Token}").count(), 1);
+    assert!(!updated.contains("self::scalars::Token;"));
+
+    consumer.schema("type Query { token: String! added: String! }");
+    assert_success(&consumer.build());
+    let updated = fs::read_to_string(consumer.resolvers()).unwrap();
+    assert!(!updated.contains("mod scalars;"));
+    assert!(!updated.contains("self::scalars"));
+}
+
+#[test]
+fn scalar_and_resolver_changes_in_the_same_file_are_committed_together() {
+    let consumer = Consumer::new("scalar Token type Query { value: String! token: Token! }");
+    consumer.bootstrap();
+    let source = fs::read_to_string(consumer.resolvers()).unwrap();
+    let ast = consumer.ast();
+    let range = field_resolver_ref(&ast, "Query", "value")
+        .span()
+        .byte_range();
+    let implementation = source[range.clone()].replace("for self::Query", "for super::Query");
+    let mut entry = source;
+    entry.replace_range(range, "");
+    fs::write(consumer.resolvers(), entry).unwrap();
+    let scalar_path = consumer.directory.join("src/resolvers/scalars.rs");
+    let scalars = fs::read_to_string(&scalar_path).unwrap();
+    fs::write(&scalar_path, format!("{scalars}\n{implementation}\n")).unwrap();
+    consumer.schema(
+        "scalar Token scalar Added \
+         type Query { value: Int! token: Token! added: Added! }",
+    );
+
+    assert_success(&consumer.build());
+    let scalars = fs::read_to_string(scalar_path).unwrap();
+    assert!(scalars.contains("type Output = i32;"));
+    assert!(scalars.contains("pub struct Added(::std::string::String);"));
 }
 
 #[test]
@@ -286,7 +374,7 @@ fn adding_custom_scalar_preserves_edited_existing_scaffold() {
     assert_success(&consumer.build());
     let updated = fs::read_to_string(scalar_path).unwrap();
     assert!(updated.starts_with(&edited));
-    assert!(updated.contains("pub struct DateTime(String);"));
+    assert!(updated.contains("pub struct DateTime(::std::string::String);"));
     assert_eq!(updated.matches("pub struct Timestamp").count(), 1);
 }
 

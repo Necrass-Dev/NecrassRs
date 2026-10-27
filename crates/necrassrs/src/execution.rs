@@ -43,6 +43,15 @@ pub trait Dispatcher<C> {
         Ok(())
     }
 
+    /// Validates one custom scalar literal applied through a default value.
+    fn validate_custom_scalar_literal(
+        &self,
+        _scalar_name: &str,
+        _value: &Value,
+    ) -> Result<(), ScalarError> {
+        Ok(())
+    }
+
     /// Resolves a selected field using coerced arguments and request Context.
     ///
     /// Argument keys are original SDL names. The returned `Send` future may
@@ -310,7 +319,16 @@ where
             continue;
         };
 
-        validate_custom_scalar_value::<C, D>(schema, &definition.ty, value, dispatcher).map_err(
+        let literal = variable_literal(schema, prepared, definition, value, &[])?;
+
+        validate_custom_scalar_value::<C, D>(
+            schema,
+            &definition.ty,
+            value,
+            Some(&literal),
+            dispatcher,
+        )
+        .map_err(
             |ResolverError {
                  message,
                  extensions,
@@ -330,6 +348,7 @@ fn validate_custom_scalar_value<C, D>(
     schema: &Valid<Schema>,
     ty: &Type,
     value: &JsonValue,
+    literal: Option<&Value>,
     dispatcher: &D,
 ) -> Result<(), ScalarError>
 where
@@ -342,9 +361,18 @@ where
     let type_name = match ty {
         Type::List(item_type) | Type::NonNullList(item_type) => {
             if let Some(items) = value.as_array() {
-                for item_value in items {
+                for (index, item_value) in items.iter().enumerate() {
+                    let item_literal = match literal {
+                        Some(Value::Variable(_)) => literal,
+                        Some(Value::List(items)) => items.get(index).map(Node::as_ref),
+                        _ => None,
+                    };
                     validate_custom_scalar_value::<C, D>(
-                        schema, item_type, item_value, dispatcher,
+                        schema,
+                        item_type,
+                        item_value,
+                        item_literal,
+                        dispatcher,
                     )?;
                 }
             }
@@ -354,21 +382,37 @@ where
     };
 
     match schema.types.get(type_name) {
-        Some(ExtendedType::Scalar(scalar)) if !scalar.is_built_in() => {
-            <D as Dispatcher<C>>::validate_custom_scalar_variable(
+        Some(ExtendedType::Scalar(scalar)) if !scalar.is_built_in() => match literal {
+            Some(Value::Variable(_)) | None => {
+                <D as Dispatcher<C>>::validate_custom_scalar_variable(
+                    dispatcher,
+                    type_name.as_str(),
+                    value,
+                )
+            }
+            Some(literal) => <D as Dispatcher<C>>::validate_custom_scalar_literal(
                 dispatcher,
                 type_name.as_str(),
-                value,
-            )
-        }
+                literal,
+            ),
+        },
         Some(ExtendedType::InputObject(input)) => {
             if let Some(object) = value.as_object() {
                 for (name, definition) in &input.fields {
                     if let Some(value) = object.get(name.as_str()) {
+                        let field_literal = match literal {
+                            Some(Value::Variable(_)) => literal,
+                            Some(Value::Object(fields)) => fields
+                                .iter()
+                                .find(|(field_name, _)| field_name == name)
+                                .map(|(_, value)| value.as_ref()),
+                            _ => None,
+                        };
                         validate_custom_scalar_value::<C, D>(
                             schema,
                             &definition.ty,
                             value,
+                            field_literal,
                             dispatcher,
                         )?;
                     }
@@ -628,7 +672,15 @@ fn coerce_argument_values(
                         ));
                     }
                     Some(variable_value) => {
-                        (variable_value.clone(), argument_value.as_ref().clone())
+                        let definition = prepared
+                            .operation
+                            .variables
+                            .iter()
+                            .find(|definition| definition.name.as_str() == variable_name.as_str())
+                            .expect("validated variable reference must have a definition");
+                        let literal =
+                            variable_literal(schema, prepared, definition, variable_value, path)?;
+                        (variable_value.clone(), literal.as_ref().clone())
                     }
                     None => match definition.default_value.as_ref() {
                         Some(default_value) => {
@@ -786,9 +838,129 @@ fn coerce_input_value(
         return Ok((values.into(), Node::new(Value::Object(literals))));
     }
 
+    if schema.types.get(type_name).is_some_and(
+        |definition| matches!(definition, ExtendedType::Scalar(scalar) if !scalar.is_built_in()),
+    ) {
+        let coerced = match value.as_ref() {
+            Value::String(value) => value.clone(),
+            Value::Enum(value) => value.as_str().to_owned(),
+            value => value.to_string(),
+        };
+        return Ok((JsonValue::from(coerced), value.clone()));
+    }
+
     input_literal_to_json(value)
         .map_err(|error| new_execution_error(prepared, path, error.message, error.location))
         .map(|coerced| (coerced, value.clone()))
+}
+
+fn variable_literal(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    definition: &apollo_compiler::ast::VariableDefinition,
+    value: &JsonValue,
+    path: &[ResponseDataPathSegment],
+) -> Result<Node<Value>, Box<GraphQLError>> {
+    match prepared.provided_variables.get(definition.name.as_str()) {
+        Some(provided) => variable_value_literal(
+            schema,
+            prepared,
+            path,
+            &definition.ty,
+            provided,
+            value,
+            &definition.name,
+        ),
+        None => match definition.default_value.as_ref() {
+            Some(default) => {
+                coerce_input_value(schema, prepared, path, &definition.ty, default).map(|(_, v)| v)
+            }
+            None => Ok(Node::new(Value::Variable(definition.name.clone()))),
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn variable_value_literal(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    path: &[ResponseDataPathSegment],
+    ty: &Type,
+    provided: &JsonValue,
+    coerced: &JsonValue,
+    variable_name: &Name,
+) -> Result<Node<Value>, Box<GraphQLError>> {
+    let marker = || Node::new(Value::Variable(variable_name.clone()));
+    if provided.is_null() || coerced.is_null() {
+        return Ok(marker());
+    }
+
+    let type_name = match ty {
+        Type::List(inner) | Type::NonNullList(inner) => {
+            let Some(items) = coerced.as_array() else {
+                return Ok(marker());
+            };
+            let literals = items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let provided = provided
+                        .as_array()
+                        .and_then(|items| items.get(index))
+                        .unwrap_or(provided);
+                    variable_value_literal(
+                        schema,
+                        prepared,
+                        path,
+                        inner,
+                        provided,
+                        item,
+                        variable_name,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(Node::new(Value::List(literals)));
+        }
+        Type::Named(name) | Type::NonNullNamed(name) => name,
+    };
+
+    let Some(ExtendedType::InputObject(input)) = schema.types.get(type_name) else {
+        return Ok(marker());
+    };
+    let Some(object) = coerced.as_object() else {
+        return Ok(marker());
+    };
+    let provided = provided.as_object();
+    let fields = input
+        .fields
+        .iter()
+        .filter_map(|(name, field)| {
+            let coerced = object.get(name.as_str())?;
+            Some(
+                match provided.and_then(|object| object.get(name.as_str())) {
+                    Some(provided) => variable_value_literal(
+                        schema,
+                        prepared,
+                        path,
+                        &field.ty,
+                        provided,
+                        coerced,
+                        variable_name,
+                    ),
+                    None => field
+                        .default_value
+                        .as_ref()
+                        .map(|default| {
+                            coerce_input_value(schema, prepared, path, &field.ty, default)
+                                .map(|(_, literal)| literal)
+                        })
+                        .unwrap_or_else(|| Ok(marker())),
+                }
+                .map(|literal| (name.clone(), literal)),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Node::new(Value::Object(fields)))
 }
 
 fn new_execution_error(

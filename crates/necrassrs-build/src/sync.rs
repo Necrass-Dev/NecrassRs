@@ -35,16 +35,21 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
         .iter()
         .map(|(_, scalar)| scalar.to_string())
         .collect::<BTreeSet<_>>();
+    let previous_scalar_module = existing.as_deref().and_then(scalar_module_from_entry);
+    let scalar_module = previous_scalar_module
+        .as_ref()
+        .filter(|module| !desired_scalar_names.contains(*module))
+        .cloned()
+        .unwrap_or_else(|| scalar_module_name(&desired_scalar_names));
+    let entry_scalar_module = previous_scalar_module.as_deref().unwrap_or(&scalar_module);
     let stale_scalars = existing
         .as_deref()
-        .map(scalar_entry_names)
+        .map(|source| scalar_entry_names(source, entry_scalar_module))
         .unwrap_or_default()
         .difference(&desired_scalar_names)
         .cloned()
         .collect::<BTreeSet<_>>();
-    let scalar_module_is_generated = existing
-        .as_deref()
-        .is_some_and(|source| source.lines().any(|line| line == "mod scalars;"));
+    let scalar_module_is_generated = previous_scalar_module.is_some();
     let query = schema
         .schema_definition
         .query
@@ -133,47 +138,35 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
     let mut writes = Vec::new();
     let mut watched_paths = BTreeSet::from([path.to_owned()]);
     let mut scalar_directory = None;
-    let mut removed_scalars = BTreeSet::new();
-    let mut scalar_file_removed = false;
+    let mut scalar_source = None;
     if !custom_scalars.is_empty() || (!stale_scalars.is_empty() && scalar_module_is_generated) {
         let directory = if path.ends_with("mod.rs") {
             path.parent().unwrap_or(Path::new("")).to_owned()
         } else {
             path.with_extension("")
         };
-        let scalar_path = directory.join("scalars.rs");
+        let source_module = previous_scalar_module.as_deref().unwrap_or(&scalar_module);
+        let source_path = directory.join(format!("{source_module}.rs"));
+        let scalar_path = directory.join(format!("{scalar_module}.rs"));
         let directory_exists = source_exists(&directory)?;
         let scalar_existing = if directory_exists {
-            read_existing(&scalar_path)?
+            read_existing(&source_path)?
         } else {
             scalar_directory = Some(directory);
             None
         };
-        let (updated, removed) =
-            reconcile_scalar_scaffolds(scalar_existing.as_deref(), &custom_scalars, &stale_scalars)
-                .map_err(|source| BuildError::ResolverSource {
-                    path: scalar_path.clone(),
-                    source,
-                })?;
-        removed_scalars = removed;
-        let updated = if custom_scalars.is_empty() && updated.trim().is_empty() {
-            scalar_file_removed = scalar_existing.is_some();
-            None
-        } else {
-            syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
-                path: scalar_path.clone(),
-                source,
-            })?;
-            Some(updated)
-        };
-        if scalar_existing != updated {
-            writes.push(PlannedWrite {
-                path: scalar_path.clone(),
-                original: scalar_existing,
-                updated,
+        if source_path != scalar_path && read_existing(&scalar_path)?.is_some() {
+            return Err(BuildError::ResolverSource {
+                path: scalar_path,
+                source: syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "Custom scalar module destination already exists",
+                ),
             });
         }
-        watched_paths.insert(scalar_path);
+        watched_paths.insert(source_path.clone());
+        watched_paths.insert(scalar_path.clone());
+        scalar_source = Some((source_path, scalar_path, scalar_existing));
     }
     let updated = match existing
         .as_deref()
@@ -185,6 +178,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 objects
                     .iter()
                     .chain(&root_objects)
+                    .chain(custom_scalars.iter().map(|(_, scalar)| scalar))
                     .map(|name| name.unraw().to_string()),
             );
             let sync = scope.standard("Sync");
@@ -246,12 +240,64 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 &objects,
                 &field_resolvers,
                 &external.fields,
+                &desired_scalar_names,
             )
             .map_err(source_error)?
         }
     };
+    let mut removed_scalars = BTreeSet::new();
+    let mut scalar_file_removed = false;
+    if let Some((source_path, scalar_path, scalar_existing)) = scalar_source {
+        let external = writes
+            .iter()
+            .find(|write| write.path == source_path)
+            .and_then(|write| write.updated.as_deref());
+        let base = external.or(scalar_existing.as_deref());
+        let (updated, removed) = reconcile_scalar_scaffolds(base, &custom_scalars, &stale_scalars)
+            .map_err(|source| BuildError::ResolverSource {
+                path: scalar_path.clone(),
+                source,
+            })?;
+        removed_scalars = removed;
+        let updated = if custom_scalars.is_empty() && updated.trim().is_empty() {
+            scalar_file_removed = scalar_existing.is_some();
+            None
+        } else {
+            syn::parse_file(&updated).map_err(|source| BuildError::ResolverSource {
+                path: scalar_path.clone(),
+                source,
+            })?;
+            Some(updated)
+        };
+        if source_path != scalar_path {
+            if let Some(write) = writes.iter_mut().find(|write| write.path == source_path) {
+                write.updated = None;
+            } else if scalar_existing.is_some() {
+                writes.push(PlannedWrite {
+                    path: source_path,
+                    original: scalar_existing,
+                    updated: None,
+                });
+            }
+            writes.push(PlannedWrite {
+                path: scalar_path,
+                original: None,
+                updated,
+            });
+        } else if let Some(write) = writes.iter_mut().find(|write| write.path == scalar_path) {
+            write.updated = updated;
+        } else if scalar_existing != updated {
+            writes.push(PlannedWrite {
+                path: scalar_path,
+                original: scalar_existing,
+                updated,
+            });
+        }
+    }
     let updated = reconcile_scalar_entry_items(
         &updated,
+        &scalar_module,
+        previous_scalar_module.as_deref(),
         &custom_scalars,
         &removed_scalars,
         scalar_file_removed,
@@ -305,56 +351,276 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
     Ok(())
 }
 
-fn scalar_entry_names(source: &str) -> BTreeSet<String> {
-    source
-        .lines()
-        .filter_map(|line| {
-            line.strip_prefix("pub use self::scalars::")?
-                .strip_suffix(';')
-                .map(str::to_owned)
+fn scalar_module_name(scalars: &BTreeSet<String>) -> String {
+    let mut name = "scalars".to_owned();
+    while scalars.contains(&name) {
+        name.insert(0, '_');
+    }
+    name
+}
+
+fn has_module(source: &str, module_name: &str) -> bool {
+    syn::parse_file(source).is_ok_and(|file| {
+        file.items
+            .iter()
+            .any(|item| matches!(item, Item::Mod(module) if module.ident.unraw() == module_name))
+    })
+}
+
+fn scalar_module_from_entry(source: &str) -> Option<String> {
+    let file = syn::parse_file(source).ok()?;
+    let modules = file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module)
+                if module.ident.unraw().to_string().trim_start_matches('_') == "scalars" =>
+            {
+                Some(module.ident.unraw().to_string())
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Use(item) if matches!(item.vis, syn::Visibility::Public(_)) => Some(&item.tree),
+            _ => None,
+        })
+        .flat_map(use_paths)
+        .find_map(|path| match path.as_slice() {
+            [root, module, _] if root == "self" && modules.contains(module) => Some(module.clone()),
+            _ => None,
+        })
+}
+
+fn scalar_entry_names(source: &str, module_name: &str) -> BTreeSet<String> {
+    let Ok(file) = syn::parse_file(source) else {
+        return BTreeSet::new();
+    };
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Use(item) if matches!(item.vis, syn::Visibility::Public(_)) => Some(&item.tree),
+            _ => None,
+        })
+        .flat_map(use_paths)
+        .filter_map(|path| match path.as_slice() {
+            [root, module, name] if root == "self" && module == module_name => Some(name.clone()),
+            _ => None,
         })
         .collect()
 }
 
 fn reconcile_scalar_entry_items(
     source: &str,
+    module_name: &str,
+    previous_module_name: Option<&str>,
     scalars: &[(String, syn::Ident)],
     removed_scalars: &BTreeSet<String>,
     scalar_file_removed: bool,
 ) -> String {
     let mut updated = source.to_owned();
-    let mut offset = 0;
-    let mut removals = Vec::new();
-    for line in source.split_inclusive('\n') {
-        let declaration = line.strip_suffix('\n').unwrap_or(line);
-        let removed_reexport = declaration
-            .strip_prefix("pub use self::scalars::")
-            .and_then(|name| name.strip_suffix(';'))
-            .is_some_and(|name| removed_scalars.contains(name));
-        if removed_reexport || (scalar_file_removed && declaration == "mod scalars;") {
-            removals.push(offset..offset + line.len());
+    if let Ok(file) = syn::parse_file(source) {
+        let source_offset = if source.starts_with('\u{feff}') { 3 } else { 0 }
+            + file.shebang.as_ref().map_or(0, String::len);
+        let previous_module = previous_module_name.filter(|previous| *previous != module_name);
+        let mut edits = Vec::new();
+        for item in &file.items {
+            match item {
+                Item::Mod(module)
+                    if (scalar_file_removed && module.ident.unraw() == module_name)
+                        || previous_module.is_some_and(|name| module.ident.unraw() == name) =>
+                {
+                    edits.push((item.span().byte_range(), String::new()));
+                }
+                Item::Use(item_use) if matches!(item_use.vis, syn::Visibility::Public(_)) => {
+                    let (tree, changed) = filter_scalar_use_tree(
+                        &item_use.tree,
+                        &mut Vec::new(),
+                        module_name,
+                        previous_module,
+                        removed_scalars,
+                        scalar_file_removed,
+                    );
+                    if changed {
+                        let replacement = tree.map_or_else(String::new, |tree| {
+                            let mut item_use = item_use.clone();
+                            item_use.tree = tree;
+                            quote!(#item_use).to_string()
+                        });
+                        edits.push((item.span().byte_range(), replacement));
+                    }
+                }
+                _ => {}
+            }
         }
-        offset += line.len();
-    }
-    for range in removals.into_iter().rev() {
-        updated.replace_range(range, "");
+        for (range, replacement) in edits.into_iter().rev() {
+            updated.replace_range(
+                range.start + source_offset..range.end + source_offset,
+                &replacement,
+            );
+        }
     }
 
     let mut additions = Vec::new();
-    if !scalars.is_empty() && !updated.lines().any(|line| line.trim() == "mod scalars;") {
-        additions.push("mod scalars;".to_owned());
+    if !scalars.is_empty() && !has_module(&updated, module_name) {
+        additions.push(format!("mod {module_name};"));
     }
+    let existing = scalar_entry_names(&updated, module_name);
     for (_, scalar) in scalars {
-        let declaration = format!("pub use self::scalars::{scalar};");
-        if !updated.lines().any(|line| line.trim() == declaration) {
+        let declaration = format!("pub use self::{module_name}::{scalar};");
+        if !existing.contains(&scalar.to_string()) {
             additions.push(declaration);
         }
     }
     if additions.is_empty() {
         updated
     } else {
-        format!("{}\n\n{updated}", additions.join("\n"))
+        let insertion = module_item_insertion_offset(&updated);
+        let separator = if insertion > 0 && !updated[..insertion].ends_with('\n') {
+            "\n"
+        } else {
+            ""
+        };
+        updated.insert_str(
+            insertion,
+            &format!("{separator}{}\n\n", additions.join("\n")),
+        );
+        updated
     }
+}
+
+fn filter_scalar_use_tree(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<String>,
+    module_name: &str,
+    previous_module: Option<&str>,
+    removed_scalars: &BTreeSet<String>,
+    remove_current_module: bool,
+) -> (Option<syn::UseTree>, bool) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            prefix.push(path.ident.to_string());
+            let (tree, changed) = filter_scalar_use_tree(
+                &path.tree,
+                prefix,
+                module_name,
+                previous_module,
+                removed_scalars,
+                remove_current_module,
+            );
+            prefix.pop();
+            let tree = tree.map(|tree| {
+                let mut path = path.clone();
+                path.tree = Box::new(tree);
+                syn::UseTree::Path(path)
+            });
+            (tree, changed)
+        }
+        syn::UseTree::Name(name) => {
+            let remove = match prefix.as_slice() {
+                [root, module] if root == "self" => {
+                    previous_module == Some(module.as_str())
+                        || (module == module_name
+                            && (remove_current_module
+                                || removed_scalars.contains(&name.ident.to_string())))
+                }
+                _ => false,
+            };
+            ((!remove).then(|| tree.clone()), remove)
+        }
+        syn::UseTree::Group(group) => {
+            let mut changed = false;
+            let items = group
+                .items
+                .iter()
+                .filter_map(|tree| {
+                    let (tree, item_changed) = filter_scalar_use_tree(
+                        tree,
+                        prefix,
+                        module_name,
+                        previous_module,
+                        removed_scalars,
+                        remove_current_module,
+                    );
+                    changed |= item_changed;
+                    tree
+                })
+                .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>();
+            let tree = (!items.is_empty()).then(|| {
+                let mut group = group.clone();
+                group.items = items;
+                syn::UseTree::Group(group)
+            });
+            (tree, changed)
+        }
+        syn::UseTree::Rename(rename) => {
+            let remove = match prefix.as_slice() {
+                [root, module] if root == "self" => {
+                    previous_module == Some(module.as_str())
+                        || (module == module_name
+                            && (remove_current_module
+                                || removed_scalars.contains(&rename.ident.to_string())))
+                }
+                _ => false,
+            };
+            ((!remove).then(|| tree.clone()), remove)
+        }
+        syn::UseTree::Glob(_) => {
+            let remove = matches!(prefix.as_slice(), [root, module]
+                if root == "self"
+                    && (previous_module == Some(module.as_str())
+                        || (module == module_name && remove_current_module)));
+            ((!remove).then(|| tree.clone()), remove)
+        }
+    }
+}
+
+fn use_paths(tree: &syn::UseTree) -> Vec<Vec<String>> {
+    fn collect(tree: &syn::UseTree, prefix: &mut Vec<String>, paths: &mut Vec<Vec<String>>) {
+        match tree {
+            syn::UseTree::Path(path) => {
+                prefix.push(path.ident.to_string());
+                collect(&path.tree, prefix, paths);
+                prefix.pop();
+            }
+            syn::UseTree::Name(name) => {
+                let mut path = prefix.clone();
+                path.push(name.ident.to_string());
+                paths.push(path);
+            }
+            syn::UseTree::Group(group) => {
+                for item in &group.items {
+                    collect(item, prefix, paths);
+                }
+            }
+            syn::UseTree::Rename(_) | syn::UseTree::Glob(_) => {}
+        }
+    }
+
+    let mut paths = Vec::new();
+    collect(tree, &mut Vec::new(), &mut paths);
+    paths
+}
+
+fn module_item_insertion_offset(source: &str) -> usize {
+    let Ok(file) = syn::parse_file(source) else {
+        return 0;
+    };
+    let source_offset = if source.starts_with('\u{feff}') { 3 } else { 0 }
+        + file.shebang.as_ref().map_or(0, String::len);
+    file.attrs
+        .iter()
+        .filter(|attribute| matches!(attribute.style, syn::AttrStyle::Inner(_)))
+        .map(|attribute| attribute.span().byte_range().end + source_offset)
+        .max()
+        .map(|end| {
+            source[end..]
+                .find('\n')
+                .map_or(end, |offset| end + offset + 1)
+        })
+        .unwrap_or(source_offset)
 }
 
 fn reconcile_scalar_scaffolds(
@@ -420,25 +686,25 @@ fn render_scalar_scaffolds(scalars: &[(String, syn::Ident)]) -> String {
         .iter()
         .map(|(_, scalar)| {
             format!(
-                "pub struct {scalar}(String);\n\n\
-                 impl necrassrs::Scalar for {scalar} {{\n\
+                "pub struct {scalar}(::std::string::String);\n\n\
+                 impl ::necrassrs::Scalar for {scalar} {{\n\
                      fn parse_literal(\n\
-                         value: &necrassrs::ScalarLiteral,\n\
-                     ) -> Result<Self, necrassrs::ScalarError> {{\n\
+                         value: &::necrassrs::ScalarLiteral,\n\
+                     ) -> ::core::result::Result<Self, ::necrassrs::ScalarError> {{\n\
                          match value {{\n\
-                             necrassrs::ScalarLiteral::String(value) => Ok(Self(value.to_owned())),\n\
-                             _ => Err(necrassrs::ScalarError::new(\"expected a string literal\")),\n\
+                             ::necrassrs::ScalarLiteral::String(value) => ::core::result::Result::Ok(Self(value.to_owned())),\n\
+                             _ => ::core::result::Result::Err(::necrassrs::ScalarError::new(\"expected a string literal\")),\n\
                          }}\n\
                      }}\n\n\
                      fn parse_value(\n\
-                         value: &necrassrs::JsonValue,\n\
-                     ) -> Result<Self, necrassrs::ScalarError> {{\n\
+                         value: &::necrassrs::JsonValue,\n\
+                     ) -> ::core::result::Result<Self, ::necrassrs::ScalarError> {{\n\
                          value.as_str()\n\
                              .map(|value| Self(value.to_owned()))\n\
-                             .ok_or_else(|| necrassrs::ScalarError::new(\"expected a string value\"))\n\
+                             .ok_or_else(|| ::necrassrs::ScalarError::new(\"expected a string value\"))\n\
                      }}\n\n\
-                     fn serialize(&self) -> Result<necrassrs::JsonValue, necrassrs::ScalarError> {{\n\
-                         Ok(self.0.as_str().into())\n\
+                     fn serialize(&self) -> ::core::result::Result<::necrassrs::JsonValue, ::necrassrs::ScalarError> {{\n\
+                         ::core::result::Result::Ok(self.0.as_str().into())\n\
                      }}\n\
                  }}"
             )
@@ -905,6 +1171,7 @@ fn read_existing(path: &Path) -> Result<Option<String>, BuildError> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_existing(
     path: &Path,
     source: &str,
@@ -913,6 +1180,7 @@ fn update_existing(
     objects: &[syn::Ident],
     field_resolvers: &[FieldResolver],
     external_fields: &BTreeMap<(String, String), PathBuf>,
+    reserved_names: &BTreeSet<String>,
 ) -> syn::Result<String> {
     let ast = syn::parse_file(source)?;
     // parse_file removes these prefixes before assigning token byte ranges.
@@ -937,6 +1205,7 @@ fn update_existing(
             .chain(root_objects)
             .map(|name| name.unraw().to_string()),
     );
+    scope.names.extend(reserved_names.iter().cloned());
     let mut edits = Vec::new();
     let desired_root_resolvers = root_resolvers
         .iter()
@@ -3887,7 +4156,7 @@ impl<C: Sync> crate::generated::resolvers::QueryResolver<C> for self::Query {}
         let scalars = fs::read_to_string(file.directory.join("resolvers/scalars.rs")).unwrap();
         syn::parse_file(&scalars).unwrap();
         for expected in [
-            "pub struct DateTime(String);",
+            "pub struct DateTime(::std::string::String);",
             "fn parse_literal(",
             "ScalarLiteral::String",
             "fn parse_value(",
