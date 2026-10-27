@@ -11,10 +11,10 @@ OneOf inputs, recursive input types, and shared in-memory state.
 The completed Axum project is available in
 [`examples/tutorial`](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/tutorial).
 
-The source checkout supports built-in scalar and enum results, ordinary and OneOf
-input objects, owned Object results, Interface and Union results, nullable and
-list forms, recursive input and Object relationships, and generated query and
-mutation routing. Custom scalars, borrowed Object results, and generated
+The source checkout supports built-in and application-owned custom scalars, enum
+results, ordinary and OneOf input objects, owned Object results, Interface and
+Union results, nullable and list forms, recursive input and Object relationships,
+and generated query and mutation routing. Borrowed Object results and generated
 subscription routing remain unsupported. These examples describe this checkout;
 a previously resolved Git dependency must be updated before it contains these
 changes. Use the maintained Apollo source replacement configured in the
@@ -209,7 +209,9 @@ curl http://127.0.0.1:3000/graphql \
 ```
 
 The endpoint returns the same JSON response. See [Types](/docs/types/) for Rust
-type mappings, `GraphQLInput`, defaults, OneOf inputs, and recursive inputs.
+type mappings, `GraphQLInput`, defaults, OneOf inputs, and recursive inputs. See
+[Custom Scalars](/docs/custom-scalars/) when an SDL scalar needs
+application-defined coercion and serialization.
 
 ## 5. Add an in-memory mutation
 

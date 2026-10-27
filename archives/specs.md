@@ -2,7 +2,7 @@
 title: "Specification implementation requirements"
 ---
 
-Updated: 2026-10-02
+Updated: 2026-10-27
 
 This document maps [issue #18](https://github.com/Necrass-Dev/NecrassRs/issues/18) to GraphQL requirements, implementation gaps, and acceptance cases. It is an implementation target, not evidence of completed conformance. Requirement levels come from the cited specification; project scope, Rust representations, and deviations are identified separately.
 
@@ -96,6 +96,15 @@ Examples:
 
 The consumer owns the custom scalar type and its coercion implementation in the existing editable resolver module tree rooted at `src/resolvers.rs`. By default, scalar scaffolds live in `src/resolvers/scalars.rs`; `src/resolvers.rs` declares that child module and re-exports each scalar so generated contracts use the stable `crate::resolvers::<mapped SDL name>` path. This is not a second source-synchronization root: discovery, validation, staging, and rollback reuse the existing traversal of resolver modules. Generated argument/result contracts and conversion wiring remain in `OUT_DIR` and reference the consumer type; users do not edit generated files. Do not infer behavior from the scalar name or specification URL.
 
+The private scalar module name is not part of the consumer contract. If an SDL
+scalar maps to `scalars`, choose a collision-free internal module name and
+migrate untouched generated scalar declarations without changing the public
+`crate::resolvers::<mapped SDL name>` path. Recognize equivalent module
+re-exports through their Rust syntax rather than one generated string spelling.
+Insert new declarations after module inner attributes and inner documentation.
+Merge scalar and resolver edits targeting the same file into one synchronization
+plan and one staged replacement.
+
 New scalar scaffolds default to a transparent string-backed representation:
 
 ```rust
@@ -104,13 +113,13 @@ pub struct DateTime(String);
 
 The generated conversion bodies accept GraphQL string literals and JSON string values and serialize the stored string as JSON. They reject other literal and transport value kinds. This is an editable starting point, not a permanent storage contract or validation of formats implied by names such as `DateTime`. A consumer may change the representation and conversion bodies when its scalar requires validation, another primitive, or another internal type.
 
-Use one shared scalar trait with three conversion operations: `parse_literal` converts a borrowed GraphQL literal to an owned `Self`, `parse_value` converts a borrowed variable input value to an owned `Self`, and `serialize` converts a borrowed `Self` to a response value. The initial contract does not support scalar representations that borrow from request data. Preserve literal kinds until the custom conversion runs; converting every literal to JSON first would erase distinctions such as enum versus string literals.
+Use one shared scalar trait with three conversion operations: `parse_literal` converts a borrowed GraphQL literal to an owned `Self`, `parse_value` converts a borrowed variable input value to an owned `Self`, and `serialize` converts a borrowed `Self` to a response value. The contract does not support scalar representations that borrow from request data. Preserve literal kinds until the custom conversion runs; converting every literal to JSON first would erase distinctions such as enum versus string literals. Inline argument literals, operation variable defaults, and SDL input-field defaults use `parse_literal`; values explicitly supplied by the JSON variables map use `parse_value`. A literal must reach `parse_literal` before any JSON numeric-range restriction, allowing a custom scalar to retain arbitrarily large integer text.
 
 All three operations use one framework-owned scalar conversion error contract. Scalar implementations provide the conversion failure; NecrassRs adds the applicable request-versus-execution classification, source location or response path, and other GraphQL metadata. Conversion operations must be deterministic and side-effect-free, and the public contract does not guarantee how many times they are invoked. Custom scalar variables must still be rejected at the variable-coercion boundary before any field resolver runs, but the initial implementation may convert the retained input again when materializing an owned resolver argument. Do not add a typed request cache, a `Clone` bound, an `Arc` wrapper, or borrowed resolver-argument lifetimes solely to reuse a converted variable value. NecrassRs retains responsibility for omission, nullability, and GraphQL list wrappers.
 
 Generate the editable scalar implementation scaffold in `src/resolvers/scalars.rs` and maintain its declaration and re-exports from `src/resolvers.rs`. Reuse the resolver synchronization rules: preserve retained user-modified representations and conversion bodies, remove only untouched scaffolds for removed scalars, and treat a rename as deletion plus addition. The common trait belongs to the runtime library; only the per-scalar implementation scaffold belongs in consumer source. Disposable conversion call sites and generated contracts remain in `OUT_DIR`.
 
-This binding and conversion design supports G05 but is not prescribed by GraphQL. Exact public value wrappers, Rust type names, and error fields are deferred to implementation; the ownership, error-context, and invocation-count policies above are fixed. Naming a type does not implement its scalar validation. References: [§3.5 Scalars](https://spec.graphql.org/September2025/#sec-Scalars), [§3.13.4 @specifiedBy](https://spec.graphql.org/September2025/#sec--specifiedBy), [Scalar implementation guide](https://scalars.graphql.org/implementation-guide).
+This binding and conversion design supports G05 but is not prescribed by GraphQL. The implemented public contract exposes `ScalarLiteral` and `JsonValue`, aliases `ScalarError` to `ResolverError`, and requires owned `Self` values. Naming a type does not implement its scalar validation. References: [§3.5 Scalars](https://spec.graphql.org/September2025/#sec-Scalars), [§3.13.4 @specifiedBy](https://spec.graphql.org/September2025/#sec--specifiedBy), [Scalar implementation guide](https://scalars.graphql.org/implementation-guide).
 
 ### Input presence
 
@@ -236,7 +245,7 @@ recorded below; it does not establish complete GraphQL or Working Draft conforma
 
 | Clause / scope                                          | Executable evidence                                                                                                                                                               | Coverage and limit                                                                                                                                                                                                                                            |
 | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| G03: built-in scalars; §3.5, §6.4.3                     | `generated_consumer_executes_leaf_boundaries_and_variable_numbers`; finite/non-finite Float consumer tests; `json_variable_numbers_are_normalized_without_changing_literal_kinds` | Int boundaries, scalar inputs/results, ID string preservation and integer serialization, JSON integer-valued numbers versus floating-point literals; custom scalars remain #25.                                                                               |
+| G03: built-in scalars; §3.5, §6.4.3                     | `generated_consumer_executes_leaf_boundaries_and_variable_numbers`; finite/non-finite Float consumer tests; `json_variable_numbers_are_normalized_without_changing_literal_kinds` | Int boundaries, scalar inputs/results, ID string preservation and integer serialization, JSON integer-valued numbers versus floating-point literals. Custom scalar evidence is recorded below.                                                                |
 | G04: enums; §3.9                                        | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; enum result and nested-list consumer tests                                                               | Enum literals, JSON string variables, membership rejection, and enum results. Invalid input does not dispatch.                                                                                                                                                |
 | G06/G11: input presence/defaults; §3.10, §6.1.2, §6.4.1 | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; public Apollo default tests                                                                              | Argument, variable, nested-field defaults, absent variables, explicit null, supplied values, and unknown literal/variable fields reach the expected boundary.                                                                                                 |
 | G07: OneOf; §3.10.1, §5.8.5                             | Generated OneOf consumer tests; `apollo_one_of` integration tests; OneOf schema/document request tests                                                                            | Valid alternatives and invalid empty/multiple/unknown/null selections; undefined second member, schema restrictions, and non-null member-variable compatibility. Draft unbreakable-cycle validation remains #28.                                              |
@@ -251,6 +260,24 @@ with warnings denied passed. The documentation examples ran successfully, and
 patch to the original 1.33.0 source reproduced all eight changed source files
 byte-for-byte. This is local source-checkout evidence, not a published package
 or a protocol conformance result.
+
+### Custom scalar verification for #25
+
+The source checkout implements the G05 application binding through the public
+`Scalar` trait, generated argument/result contracts, runtime coercion and
+completion, and editable source synchronization.
+
+| Scope | Executable evidence | Coverage and limit |
+| ----- | ------------------- | ------------------ |
+| Input coercion | `generated_custom_scalar_input_preserves_literal_kinds`; nested/default/large-integer custom scalar checks; `generated_custom_scalar_variables_are_coerced_before_resolvers` | Inline and nested literals, operation and input-field defaults, explicit JSON variables, pre-dispatch variable rejection, and integer literal text beyond the JSON numeric range. Converted variables may be parsed again while constructing owned arguments. |
+| Result completion and metadata | `generated_custom_scalar_result_uses_application_serialization`; `generated_custom_scalar_result_errors_preserve_path_and_nullability`; `introspection_exposes_custom_scalar_specified_by_url` | Application serialization, response paths, null propagation, and `specifiedByURL`. The URL remains metadata and does not provide validation. |
+| Source synchronization | `first_build_compiles_generated_custom_scalar_scaffold`; custom scalar naming/collision checks; edited/addition/removal scaffold checks | Compiling default scaffolds, injective Rust names, type/module collisions, preservation of edited implementations, safe untouched removal, and stable public re-exports. |
+
+Validation on 2026-10-27: `cargo fmt --all -- --check`,
+`cargo test --workspace --locked -- --test-threads=1`, and
+`cargo clippy --workspace --all-targets --locked -- -D warnings` passed. The
+serial test run avoids an unrelated CLI temporary-directory timestamp collision
+observed in a parallel workspace run.
 
 ### Immutable reference comparison for #23
 
@@ -365,7 +392,7 @@ These observations locate work; they are not a fresh exhaustive conformance audi
 
 | Area                | Current evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Requirement coverage to establish                                        |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Generated contracts | [codegen.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-build/src/codegen.rs) supports built-in scalar/enum results, ordinary/OneOf inputs, owned Object results, Interface/Union results, nullable/list wrappers, recursive input layouts, recursive Object relationships, and query/mutation root routing. Custom scalars, borrowed Object results, and generated subscription routing remain separate work. | G03–G09 and G14–G21 through compiling generated consumers.               |
+| Generated contracts | [codegen.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-build/src/codegen.rs) supports built-in and custom scalar/enum results, ordinary/OneOf inputs, owned Object results, Interface/Union results, nullable/list wrappers, recursive input layouts, recursive Object relationships, and query/mutation root routing. Borrowed Object results and generated subscription routing remain separate work. | G03–G09 and G14–G21 through compiling generated consumers.               |
 | Query/mutation execution | [execution.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/execution.rs) and the generated consumer checks cover field collection and merging, serial top-level mutation completion, request/execution response separation, error metadata, and response field order for supported result types. | G12, G13, G17, and the response-ordering portion of G18 have executable #27 evidence. |
 | Execution           | [execution.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/execution.rs) completes built-in scalar/enum and composite results, preserves Object parents for child-field dispatch, selects abstract runtime types, and retains indexed leaf conversion errors and nullability behavior. Subscription execution remains separate work.       | G03–G05 and G12–G21; reuse existing checks for supported paths.          |
 | Defaults/coercion   | [request.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/request.rs) and [execution.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/execution.rs) now use the local Apollo patch for variable defaults and schema default cycles; [Cargo.toml](https://github.com/Necrass-Dev/NecrassRs/blob/main/Cargo.toml) overrides Apollo Compiler 1.33.0 with the maintained local source. Executor field-argument coercion remains local. | G08/G09/G11 at the dependency boundary and through consumers.            |

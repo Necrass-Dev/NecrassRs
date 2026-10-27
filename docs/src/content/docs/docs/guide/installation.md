@@ -107,6 +107,8 @@ Return `ResolverError` for ordinary application errors.
 - [Personnel Management System](/docs/personnel-management/): add Object, Interface,
   and Union results to a working server.
 - [Types](/docs/types/): Rust type mappings, input presence, defaults, OneOf, and recursion.
+- [Custom Scalars](/docs/custom-scalars/): define scalar storage, coercion, and
+  serialization.
 - [Organizing Resolver Files](/docs/resolver-files/): split implementations across
   Rust modules and understand synchronization safety.
 - [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.

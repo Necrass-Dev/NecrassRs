@@ -1,17 +1,17 @@
 ---
 title: Types
-description: GraphQL-to-Rust type mappings, input presence, defaults, OneOf, and recursive inputs.
+description: GraphQL-to-Rust type mappings, custom scalars, input presence, defaults, OneOf, and recursive inputs.
 ---
 
 NecrassRs generates Rust argument and result types from your GraphQL SDL. This
 page describes those types and the values a resolver receives. For a complete
 web server example, follow the [Tutorial](/docs/tutorial/).
 
-The generated API currently supports built-in scalar and enum results, ordinary
-and OneOf input objects, owned Object results, Interface and Union results,
-nullable and list forms, recursive input and Object relationships, and generated
-query and mutation routing. Custom scalars, borrowed Object results, and
-generated subscription routing remain unsupported.
+The generated API currently supports built-in and custom scalar results, enum
+results, ordinary and OneOf input objects, owned Object results, Interface and
+Union results, nullable and list forms, recursive input and Object relationships,
+and generated query and mutation routing. Borrowed Object results and generated
+subscription routing remain unsupported.
 
 ## Rust mappings
 
@@ -22,6 +22,7 @@ generated subscription routing remain unsupported.
 | `String!`             | `String`                         |
 | `Boolean!`            | `bool`                           |
 | `ID!`                 | `necrassrs::Id`                  |
+| Custom `DateTime!`    | `crate::resolvers::DateTime`     |
 | Nullable input `Int`  | `GraphQLInput<i32>`              |
 | Nullable result `Int` | `Option<i32>`                    |
 | Input `[Int]`         | `GraphQLInput<Vec<Option<i32>>>` |
@@ -48,6 +49,19 @@ bounds. JSON variable numbers with an empty fractional part are treated as
 integers; a GraphQL floating-point literal remains a different literal kind.
 Non-finite Float results produce execution errors; nullable list items preserve
 valid siblings and report the failed item's index.
+
+## Custom scalars
+
+Each SDL custom scalar maps to one application-owned type under
+`crate::resolvers`. NecrassRs generates an editable string-backed scaffold, then
+uses the same type in input and result positions. The `GraphQLInput<T>`,
+`Option<T>`, and `Vec<T>` wrappers shown above compose around that type according
+to the SDL nullability and list shape.
+
+The scalar implementation separately converts GraphQL literals, JSON variable
+values, and resolver results. NecrassRs does not infer validation from a name
+such as `DateTime`. See [Custom Scalars](/docs/custom-scalars/) for the generated
+file, conversion trait, default handling, and synchronization rules.
 
 ## Composite results
 
