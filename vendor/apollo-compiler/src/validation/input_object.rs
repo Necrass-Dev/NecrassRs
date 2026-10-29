@@ -21,26 +21,22 @@ impl FindRecursiveInputValue<'_> {
         &self,
         seen: &mut RecursionGuard<'_>,
         def: &Node<ast::InputValueDefinition>,
+        required_by_one_of: bool,
     ) -> Result<(), CycleError<ast::InputValueDefinition>> {
-        match &*def.ty {
-            // NonNull type followed by Named type is the one that's not allowed
-            // to be cyclical, so this is only case we care about.
-            //
-            // Everything else may be a cyclical input value.
-            ast::Type::NonNullNamed(name) => {
-                if !seen.contains(name) {
-                    if let Some(object_def) = self.schema.get_input_object(name) {
-                        self.input_object_definition(seen.push(name)?, object_def)
-                            .map_err(|err| err.trace(def))?
-                    }
-                } else if seen.first() == Some(name) {
-                    return Err(CycleError::Recursed(vec![def.clone()]));
+        let name = match &*def.ty {
+            ast::Type::NonNullNamed(name) => name,
+            ast::Type::Named(name) if required_by_one_of => name,
+            _ => return Ok(()),
+        };
+        if !seen.contains(name) {
+            if let Some(object_def) = self.schema.get_input_object(name) {
+                self.input_object_definition(seen.push(name)?, object_def)
+                    .map_err(|err| err.trace(def))?
                 }
-
-                Ok(())
-            }
-            _ => Ok(()),
+        } else if seen.first() == Some(name) {
+            return Err(CycleError::Recursed(vec![def.clone()]));
         }
+        Ok(())
     }
 
     fn input_object_definition(
@@ -48,8 +44,10 @@ impl FindRecursiveInputValue<'_> {
         mut seen: RecursionGuard<'_>,
         input_object: &InputObjectType,
     ) -> Result<(), CycleError<ast::InputValueDefinition>> {
+        let required_by_one_of = input_object.directives.has("oneOf")
+            && input_object.fields.len() == 1;
         for input_value in input_object.fields.values() {
-            self.input_value_definition(&mut seen, input_value)?;
+            self.input_value_definition(&mut seen, input_value, required_by_one_of)?;
         }
 
         Ok(())
@@ -97,18 +95,6 @@ pub(crate) fn validate_input_object_definition(
                     DiagnosticData::OneOfFieldDefault {
                         name: input_object.name.clone(),
                         field: field.name.clone(),
-                    },
-                );
-            }
-        }
-        if input_object.fields.len() == 1 {
-            let field = input_object.fields.values().next().unwrap();
-            if matches!(&*field.ty, ast::Type::Named(name) if name == &input_object.name) {
-                diagnostics.push(
-                    input_object.location(),
-                    DiagnosticData::RecursiveInputObjectDefinition {
-                        name: input_object.name.clone(),
-                        trace: vec![field.node.clone()],
                     },
                 );
             }
