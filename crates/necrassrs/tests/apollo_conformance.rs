@@ -350,6 +350,23 @@ fn schema_rejects_incompatible_field_argument_default() {
 }
 
 #[test]
+fn schema_rejects_incompatible_input_field_default() {
+    Schema::parse_and_validate(
+        "input Input { value: Int = 1 } type Query { inspect(input: Input): Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    let schema = Schema::parse(
+        "input Input { value: Int = \"bad\" } type Query { inspect(input: Input): Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    schema
+        .validate()
+        .expect_err("an input field default must be coercible to its declared type");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
