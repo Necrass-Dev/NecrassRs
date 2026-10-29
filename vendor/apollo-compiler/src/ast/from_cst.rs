@@ -673,6 +673,7 @@ impl Convert for cst::Field {
     type Target = ast::Field;
 
     fn convert(&self, file_id: FileId) -> Option<Self::Target> {
+        let selection_set = self.selection_set();
         Some(Self::Target {
             alias: self.alias().convert(file_id)?,
             name: self.name()?.convert(file_id)?,
@@ -680,8 +681,9 @@ impl Convert for cst::Field {
             directives: ast::DirectiveList(collect_opt(file_id, self.directives(), |x| {
                 x.directives()
             })),
+            selection_set_is_explicit: selection_set.is_some(),
             // Use an empty Vec for a field without sub-selections
-            selection_set: self.selection_set().convert(file_id)?.unwrap_or_default(),
+            selection_set: selection_set.convert(file_id)?.unwrap_or_default(),
         })
     }
 }

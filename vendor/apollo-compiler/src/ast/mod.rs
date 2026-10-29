@@ -409,6 +409,7 @@ pub struct Field {
     pub name: Name,
     pub arguments: Vec<Node<Argument>>,
     pub directives: DirectiveList,
+    pub selection_set_is_explicit: bool,
     pub selection_set: Vec<Selection>,
 }
 

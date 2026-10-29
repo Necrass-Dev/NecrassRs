@@ -98,6 +98,7 @@ impl Field {
             name: self.name.clone(),
             arguments: self.arguments.clone(),
             directives: self.directives.clone(),
+            selection_set_is_explicit: self.selection_set_is_explicit,
             selection_set: self.selection_set.to_ast(),
         }
     }

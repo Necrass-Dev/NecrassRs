@@ -223,7 +223,7 @@ pub(crate) fn validate_leaf_field_selection(
     field: &Node<executable::Field>,
     field_type: &ast::Type,
 ) -> Result<(), ()> {
-    let is_leaf = field.selection_set.is_empty();
+    let is_leaf = !field.selection_set_is_explicit;
     let tname = field_type.inner_named_type();
     let fname = &field.name;
 

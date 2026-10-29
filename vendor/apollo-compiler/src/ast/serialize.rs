@@ -667,6 +667,7 @@ impl Field {
             name,
             arguments,
             directives,
+            selection_set_is_explicit,
             selection_set,
         } = self;
         if let Some(alias) = alias {
@@ -676,7 +677,7 @@ impl Field {
         state.write(name)?;
         serialize_arguments(state, arguments)?;
         directives.serialize_impl(state)?;
-        if !selection_set.is_empty() {
+        if *selection_set_is_explicit {
             state.write(" ")?;
             curly_brackets_space_separated(state, selection_set, |state, sel| {
                 sel.serialize_impl(state)
