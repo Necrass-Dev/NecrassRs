@@ -333,6 +333,23 @@ fn introspection_filters_deprecated_directives() {
 }
 
 #[test]
+fn schema_rejects_incompatible_field_argument_default() {
+    Schema::parse_and_validate(
+        "type Query { inspect(value: Int = 1): Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    let schema = Schema::parse(
+        "type Query { inspect(value: Int = \"bad\"): Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    schema
+        .validate()
+        .expect_err("a field argument default must be coercible to its declared type");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
