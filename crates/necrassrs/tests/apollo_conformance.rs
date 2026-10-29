@@ -51,6 +51,19 @@ fn introspection_rejects_null_include_deprecated() {
 }
 
 #[test]
+fn schema_rejects_null_deprecation_reason() {
+    Schema::parse_and_validate("type Query { value: Int @deprecated }", "schema.graphql").unwrap();
+    let schema = Schema::parse(
+        "type Query { value: Int @deprecated(reason: null) }",
+        "schema.graphql",
+    )
+    .unwrap();
+    schema
+        .validate()
+        .expect_err("@deprecated reason has type String! and must reject null");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
