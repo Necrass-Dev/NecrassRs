@@ -198,6 +198,19 @@ pub(crate) fn validate_directive_definition(
         &def.arguments,
         ast::DirectiveLocation::ArgumentDefinition,
     );
+    for argument in &def.arguments {
+        if argument.is_required() {
+            if let Some(deprecated) = argument.directives.get("deprecated") {
+                diagnostics.push(
+                    deprecated.location(),
+                    DiagnosticData::DeprecatedRequiredInputValue {
+                        name: argument.name.clone(),
+                        describe: "directive argument",
+                    },
+                );
+            }
+        }
+    }
 
     let head_location = SourceSpan::recompose(def.location(), def.name.location());
 
