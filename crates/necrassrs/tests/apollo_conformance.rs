@@ -293,6 +293,46 @@ fn introspection_reports_directive_deprecation_metadata() {
 }
 
 #[test]
+fn introspection_filters_deprecated_directives() {
+    let schema = Schema::parse_and_validate("type Query { value: Int }", "schema.graphql").unwrap();
+    introspect(
+        &schema,
+        "{ __schema { directives(includeDeprecated: true) { name } } }",
+    );
+    let schema = Schema::parse_and_validate(
+        "directive @old @deprecated(reason: \"Use @current\") on FIELD directive @current on FIELD type Query { value: Int }", "schema.graphql",
+    ).unwrap();
+    for (argument, expected_old) in [
+        ("", false),
+        ("(includeDeprecated: false)", false),
+        ("(includeDeprecated: true)", true),
+    ] {
+        let query = format!(
+            "{{ __schema {{ directives{argument} {{ name isDeprecated deprecationReason }} }} }}"
+        );
+        let response = introspect(&schema, &query);
+        let directives = response["data"]["__schema"]["directives"]
+            .as_array()
+            .unwrap();
+        let old = directives
+            .iter()
+            .find(|directive| directive["name"] == "old");
+        assert_eq!(old.is_some(), expected_old);
+        if let Some(old) = old {
+            assert_eq!(
+                old,
+                &json!({"name": "old", "isDeprecated": true, "deprecationReason": "Use @current"})
+            );
+        }
+        assert!(
+            directives
+                .iter()
+                .any(|directive| directive["name"] == "current")
+        );
+    }
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
