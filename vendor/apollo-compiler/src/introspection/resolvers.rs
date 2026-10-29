@@ -224,6 +224,12 @@ impl ObjectValue for TypeDefResolver<'_> {
                         .and_then(|arg| arg.as_str()),
                 ))
             }
+            "isOneOf" => {
+                let schema::ExtendedType::InputObject(def) = self.def else {
+                    return Ok(ResolvedValue::null());
+                };
+                Ok(ResolvedValue::leaf(def.directives.get("oneOf").is_some()))
+            }
             _ => Err(self.unknown_field_error(info)),
         }
     }
@@ -261,6 +267,7 @@ impl ObjectValue for TypeResolver<'_> {
             "enumValues" => Ok(ResolvedValue::null()),
             "inputFields" => Ok(ResolvedValue::null()),
             "specifiedByURL" => Ok(ResolvedValue::null()),
+            "isOneOf" => Ok(ResolvedValue::null()),
             _ => Err(self.unknown_field_error(info)),
         }
     }

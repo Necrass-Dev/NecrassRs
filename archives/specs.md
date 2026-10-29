@@ -403,7 +403,7 @@ explicit schema-validation clause.
 
 | Source and clause | Requirement level | Implementation boundary | Executable check | Verified status |
 | --- | --- | --- | --- | --- |
-| Released §4.2.2: Input Object introspection | Required | Built-in schema and introspection resolvers | `introspection_reports_one_of_flags` | RED: assertion failure |
+| Released §4.2.2: Input Object introspection | Required | Built-in schema and introspection resolvers | `introspection_reports_one_of_flags` | GREEN |
 | Pinned §4.2: introspection schema | Required | Built-in schema and document validation | `introspection_rejects_null_include_deprecated` | RED: assertion failure |
 | Released §3.13.3: @deprecated | Required | Built-in schema and directive validation | `schema_rejects_null_deprecation_reason` | RED: assertion failure |
 | Released §3.6: Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_field_argument` | RED: assertion failure |
