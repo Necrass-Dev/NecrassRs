@@ -253,6 +253,23 @@ fn schema_accepts_directive_extensions() {
 }
 
 #[test]
+fn schema_accepts_directive_definition_location() {
+    let schema = Schema::parse_and_validate(
+        "directive @metadata on DIRECTIVE_DEFINITION type Query { value: Int }",
+        "schema.graphql",
+    )
+    .expect("DIRECTIVE_DEFINITION is a valid directive location");
+    let response = introspect(&schema, "{ __schema { directives { name locations } } }");
+    let metadata = response["data"]["__schema"]["directives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|directive| directive["name"] == "metadata")
+        .unwrap();
+    assert_eq!(metadata["locations"], json!(["DIRECTIVE_DEFINITION"]));
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",

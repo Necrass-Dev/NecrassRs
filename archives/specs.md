@@ -417,6 +417,7 @@ explicit schema-validation clause.
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_mutual_cycle` | RED: assertion failure |
 | Pinned §3.13: DirectiveDefinition | Required | Apollo parser, AST and directive validation | `schema_accepts_directives_on_directive_definitions` | RED: assertion failure |
 | Pinned §3.13.6: Directive Extensions | Required | Apollo parser and schema extension integration | `schema_accepts_directive_extensions` | RED: assertion failure |
+| Pinned §3.13: TypeSystemDirectiveLocation | Required | Apollo parser and directive location model | `schema_accepts_directive_definition_location` | RED: assertion failure |
 
 ## Current implementation gaps
 
