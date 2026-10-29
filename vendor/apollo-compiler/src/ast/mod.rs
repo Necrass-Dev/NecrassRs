@@ -339,6 +339,7 @@ pub enum DirectiveLocation {
     EnumValue,
     InputObject,
     InputFieldDefinition,
+    DirectiveDefinition,
 }
 
 /// Executable AST for a [_VariableDefinition_](https://spec.graphql.org/draft/#VariableDefinition)

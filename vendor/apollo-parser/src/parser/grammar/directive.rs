@@ -165,6 +165,10 @@ fn directive_location(p: &mut Parser) {
                 let _g = p.start_node(SyntaxKind::DIRECTIVE_LOCATION);
                 p.bump(SyntaxKind::INPUT_FIELD_DEFINITION_KW);
             }
+            "DIRECTIVE_DEFINITION" => {
+                let _g = p.start_node(SyntaxKind::DIRECTIVE_LOCATION);
+                p.bump(SyntaxKind::IDENT);
+            }
             _ => {
                 p.err("expected valid Directive Location");
             }

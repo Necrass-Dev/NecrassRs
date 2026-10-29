@@ -491,6 +491,9 @@ impl Convert for cst::DirectiveLocation {
 
     fn convert(&self, _file_id: FileId) -> Option<Self::Target> {
         let token = self.syntax().first_token()?;
+        if token.text() == "DIRECTIVE_DEFINITION" {
+            return Some(ast::DirectiveLocation::DirectiveDefinition);
+        }
         match token.kind() {
             S![QUERY] => Some(ast::DirectiveLocation::Query),
             S![MUTATION] => Some(ast::DirectiveLocation::Mutation),
