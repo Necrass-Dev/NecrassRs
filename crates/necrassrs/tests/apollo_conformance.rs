@@ -229,6 +229,30 @@ fn schema_accepts_directives_on_directive_definitions() {
 }
 
 #[test]
+fn schema_accepts_directive_extensions() {
+    let schema = Schema::builder()
+        .parse(
+            "directive @old on FIELD type Query { value: Int }",
+            "base.graphql",
+        )
+        .parse(
+            "extend directive @old @deprecated(reason: \"Retired\")",
+            "extension.graphql",
+        )
+        .build()
+        .expect("directive extensions must be merged with their definitions")
+        .validate()
+        .unwrap();
+    assert!(schema.directive_definitions.contains_key("old"));
+    let serialized = schema.to_string();
+    assert!(
+        serialized.contains(r#"@deprecated(reason: "Retired")"#),
+        "{serialized}"
+    );
+    Schema::parse_and_validate(serialized, "roundtrip.graphql").unwrap();
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
