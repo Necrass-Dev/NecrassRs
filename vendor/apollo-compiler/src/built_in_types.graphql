@@ -92,6 +92,8 @@ type __Directive {
   locations: [__DirectiveLocation!]!
   args(includeDeprecated: Boolean = false): [__InputValue!]!
   isRepeatable: Boolean!
+  isDeprecated: Boolean!
+  deprecationReason: String
 }
 
 "A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies."
