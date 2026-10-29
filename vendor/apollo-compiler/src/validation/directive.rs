@@ -204,6 +204,9 @@ pub(crate) fn validate_directive_definition(
         ast::DirectiveLocation::ArgumentDefinition,
     );
     for argument in &def.arguments {
+        if let Some(default) = &argument.default_value {
+            super::value::value_of_correct_type(diagnostics, schema, &argument.ty, default, &[]);
+        }
         if argument.is_required() {
             if let Some(deprecated) = argument.directives.get("deprecated") {
                 diagnostics.push(
