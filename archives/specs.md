@@ -410,7 +410,7 @@ explicit schema-validation clause.
 | Released §3.10: Input Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_input_field` | GREEN |
 | Released §3.13.3: @deprecated | Required | Input value definition validation | `schema_rejects_deprecated_required_directive_argument` | GREEN |
 | Released §2.3–2.4: Document and Operations | Required | Apollo parser and AST conversion | `document_accepts_operation_descriptions` | GREEN |
-| Released §2.8: Fragments | Required | Apollo parser and AST conversion | `document_accepts_fragment_descriptions` | RED: assertion failure |
+| Released §2.8: Fragments | Required | Apollo parser and AST conversion | `document_accepts_fragment_descriptions` | GREEN |
 | Pinned §2.5: Selection Sets | Required | Apollo parser and executable document validation | `document_accepts_empty_root_selection` | RED: assertion failure |
 | Pinned §5.3.3: Leaf Field Selections | Required | Apollo parser, AST and field validation | `document_distinguishes_empty_and_absent_composite_selections` | RED: assertion failure |
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_self_cycle` | RED: assertion failure |
