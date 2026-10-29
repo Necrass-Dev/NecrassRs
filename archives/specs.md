@@ -408,6 +408,7 @@ explicit schema-validation clause.
 | Released §3.13.3: @deprecated | Required | Built-in schema and directive validation | `schema_rejects_null_deprecation_reason` | RED: assertion failure |
 | Released §3.6: Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_field_argument` | RED: assertion failure |
 | Released §3.10: Input Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_input_field` | RED: assertion failure |
+| Released §3.13.3: @deprecated | Required | Input value definition validation | `schema_rejects_deprecated_required_directive_argument` | RED: assertion failure |
 
 ## Current implementation gaps
 

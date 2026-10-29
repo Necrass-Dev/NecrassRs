@@ -102,6 +102,25 @@ fn schema_rejects_deprecated_required_input_field() {
 }
 
 #[test]
+fn schema_rejects_deprecated_required_directive_argument() {
+    for argument in ["value: Int @deprecated", "value: Int! = 1 @deprecated"] {
+        Schema::parse_and_validate(
+            format!("directive @example({argument}) on FIELD type Query {{ value: Int }}"),
+            "schema.graphql",
+        )
+        .unwrap();
+    }
+    let schema = Schema::parse(
+        "directive @example(value: Int! @deprecated) on FIELD type Query { value: Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    schema
+        .validate()
+        .expect_err("a required directive argument cannot be deprecated");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
