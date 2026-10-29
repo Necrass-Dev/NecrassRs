@@ -64,6 +64,25 @@ fn schema_rejects_null_deprecation_reason() {
 }
 
 #[test]
+fn schema_rejects_deprecated_required_field_argument() {
+    for argument in ["value: Int @deprecated", "value: Int! = 1 @deprecated"] {
+        Schema::parse_and_validate(
+            format!("type Query {{ inspect({argument}): Int }}"),
+            "schema.graphql",
+        )
+        .unwrap();
+    }
+    let schema = Schema::parse(
+        "type Query { inspect(value: Int! @deprecated): Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    schema
+        .validate()
+        .expect_err("a required field argument cannot be deprecated");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
