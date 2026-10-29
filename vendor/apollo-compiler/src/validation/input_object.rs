@@ -103,6 +103,20 @@ pub(crate) fn validate_input_object_definition(
         }
     }
 
+    for field in input_object.fields.values() {
+        if field.is_required() {
+            if let Some(deprecated) = field.directives.get("deprecated") {
+                diagnostics.push(
+                    deprecated.location(),
+                    DiagnosticData::DeprecatedRequiredInputValue {
+                        name: field.name.clone(),
+                        describe: "input field",
+                    },
+                );
+            }
+        }
+    }
+
     match FindRecursiveInputValue::check(schema, input_object) {
         Ok(_) => {}
         Err(CycleError::Recursed(trace)) => diagnostics.push(

@@ -407,7 +407,7 @@ explicit schema-validation clause.
 | Pinned §4.2: introspection schema | Required | Built-in schema and document validation | `introspection_rejects_null_include_deprecated` | GREEN |
 | Released §3.13.3: @deprecated | Required | Built-in schema and directive validation | `schema_rejects_null_deprecation_reason` | GREEN |
 | Released §3.6: Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_field_argument` | GREEN |
-| Released §3.10: Input Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_input_field` | RED: assertion failure |
+| Released §3.10: Input Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_input_field` | GREEN |
 | Released §3.13.3: @deprecated | Required | Input value definition validation | `schema_rejects_deprecated_required_directive_argument` | RED: assertion failure |
 | Released §2.3–2.4: Document and Operations | Required | Apollo parser and AST conversion | `document_accepts_operation_descriptions` | RED: assertion failure |
 | Released §2.8: Fragments | Required | Apollo parser and AST conversion | `document_accepts_fragment_descriptions` | RED: assertion failure |
