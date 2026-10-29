@@ -392,7 +392,7 @@ The released baseline and immutable Working Draft above remain authoritative.
 These checks exercise the public Apollo boundary used by build integration and
 request preparation. Each row records its current RED or GREEN status; passing
 the listed regressions does not establish complete conformance.
-Generated-consumer integration remains a separate acceptance step.
+Generated-consumer integration evidence is recorded below the dependency checks.
 
 Each row identifies one independently runnable test in
 [`apollo_conformance.rs`](../crates/necrassrs/tests/apollo_conformance.rs).
@@ -425,6 +425,25 @@ explicit schema-validation clause.
 | §3.10: input coercion; schema-boundary regression | Project boundary | Input value default validation | `schema_rejects_incompatible_input_field_default` | GREEN |
 | §3.13: directive arguments; schema-boundary regression | Project boundary | Input value default validation | `schema_rejects_incompatible_directive_argument_default` | GREEN |
 | Pinned §3.6 and §3.10.1: default compatibility and OneOf coercion | Required | Input value default validation | `schema_rejects_empty_one_of_argument_default` | GREEN |
+
+### Generated-consumer introspection evidence
+
+`codegen::test::generated_consumer_introspects_all_supported_type_categories` in
+[`codegen.rs`](../crates/necrassrs-build/src/codegen.rs) compiles and executes the
+[consumer fixture](../crates/necrassrs-build/tests/fixtures/introspection_consumer.rs)
+through the generated dispatcher and the public NecrassRs execution API.
+It covers G18 and the pinned Working Draft's introspection clauses (§4.1–4.2):
+built-in and custom scalars, enums, ordinary and OneOf inputs, Objects, Interfaces,
+Unions, list/non-null wrappers, defaults, deprecation metadata and filtering,
+directive locations/repeatability, `specifiedByURL`, and abstract-type relationships.
+Assertions inspect the serialized JSON response. Introspection must not invoke
+application field resolvers, and disabling schema introspection must preserve
+`__typename` support.
+
+Status: **GREEN**, compiled and executed locally. Run with
+`cargo test -p necrassrs-build --lib --locked generated_consumer_introspects_all_supported_type_categories`.
+This evidence does not close the remaining clause-level audit or the RED OneOf
+cycle regression above.
 
 ## Current implementation gaps
 

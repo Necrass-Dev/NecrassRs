@@ -2145,6 +2145,44 @@ mod test {
     }
 
     #[test]
+    fn generated_consumer_introspects_all_supported_type_categories() {
+        let schema = Schema::parse_and_validate(
+            r#"
+                scalar DateTime @specifiedBy(url: "https://example.com/date-time")
+                enum Status { ACTIVE LEGACY @deprecated(reason: "Use ACTIVE") }
+                input Filter {
+                    limit: Int! = 10
+                    status: Status = ACTIVE
+                    enabled: Boolean = true
+                    ratio: Float = 1.5
+                    label: String = "visible"
+                    at: DateTime
+                    old: Int @deprecated(reason: "Use limit")
+                }
+                input Choice @oneOf { id: ID name: String }
+                interface Node { id: ID! }
+                type User implements Node { id: ID! }
+                union Search = User
+                directive @tag(label: String = "public") repeatable on FIELD_DEFINITION
+                directive @old @deprecated(reason: "Use tag") on FIELD
+                type Query {
+                    lookup(filter: Filter, choice: Choice, limit: Int = 3,
+                           old: Int @deprecated(reason: "Use limit")): [Search!]!
+                        @deprecated(reason: "Use search")
+                }
+            "#,
+            "schema.graphql",
+        )
+        .unwrap();
+        let generated = super::generate(&schema).unwrap();
+        assert_consumer(
+            &format!("mod generated {{ {generated} }}"),
+            include_str!("../tests/fixtures/introspection_consumer.rs"),
+            true,
+        );
+    }
+
+    #[test]
     fn generated_consumer_compiles_user_owned_custom_scalar_contracts() {
         let schema = Schema::parse_and_validate(
             r#"
