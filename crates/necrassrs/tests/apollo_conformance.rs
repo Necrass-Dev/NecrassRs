@@ -384,6 +384,15 @@ fn schema_rejects_incompatible_directive_argument_default() {
 }
 
 #[test]
+fn schema_rejects_empty_one_of_argument_default() {
+    Schema::parse_and_validate("input Choice @oneOf { value: Int other: Int } type Query { inspect(choice: Choice = {value: 1}): Int }", "schema.graphql").unwrap();
+    let schema = Schema::parse("input Choice @oneOf { value: Int other: Int } type Query { inspect(choice: Choice = {}): Int }", "schema.graphql").unwrap();
+    schema
+        .validate()
+        .expect_err("a OneOf argument default must select exactly one non-null member");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
