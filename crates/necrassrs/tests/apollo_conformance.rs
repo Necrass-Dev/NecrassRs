@@ -367,6 +367,23 @@ fn schema_rejects_incompatible_input_field_default() {
 }
 
 #[test]
+fn schema_rejects_incompatible_directive_argument_default() {
+    Schema::parse_and_validate(
+        "directive @example(value: Int = 1) on FIELD type Query { value: Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    let schema = Schema::parse(
+        "directive @example(value: Int = \"bad\") on FIELD type Query { value: Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    schema
+        .validate()
+        .expect_err("a directive argument default must be coercible to its declared type");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",

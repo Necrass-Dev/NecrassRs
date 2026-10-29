@@ -422,6 +422,7 @@ explicit schema-validation clause.
 | Pinned §4.2.1: __Schema.directives | Required | Built-in schema and schema introspection | `introspection_filters_deprecated_directives` | RED: assertion failure |
 | Pinned §3.6: Object type validation | Required | Input value default validation | `schema_rejects_incompatible_field_argument_default` | RED: assertion failure |
 | §3.10: input coercion; schema-boundary regression | Project boundary | Input value default validation | `schema_rejects_incompatible_input_field_default` | RED: assertion failure |
+| §3.13: directive arguments; schema-boundary regression | Project boundary | Input value default validation | `schema_rejects_incompatible_directive_argument_default` | RED: assertion failure |
 
 ## Current implementation gaps
 
