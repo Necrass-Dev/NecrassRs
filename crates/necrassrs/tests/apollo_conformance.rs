@@ -121,6 +121,25 @@ fn schema_rejects_deprecated_required_directive_argument() {
 }
 
 #[test]
+fn document_accepts_operation_descriptions() {
+    let schema = Schema::parse_and_validate("type Query { value: Int }", "schema.graphql").unwrap();
+    for description in [
+        r#""Operation description""#,
+        r#""""Operation description""""#,
+    ] {
+        let query = format!("{description} query Named {{ __typename }}");
+        assert_eq!(
+            introspect(&schema, &query),
+            json!({"data": {"__typename": "Query"}})
+        );
+    }
+    assert!(
+        apollo_compiler::ast::Document::parse(r#""Description" { value }"#, "request.graphql")
+            .is_err()
+    );
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
