@@ -404,6 +404,7 @@ explicit schema-validation clause.
 | Source and clause | Requirement level | Implementation boundary | Executable check | Verified status |
 | --- | --- | --- | --- | --- |
 | Released §4.2.2: Input Object introspection | Required | Built-in schema and introspection resolvers | `introspection_reports_one_of_flags` | RED: assertion failure |
+| Pinned §4.2: introspection schema | Required | Built-in schema and document validation | `introspection_rejects_null_include_deprecated` | RED: assertion failure |
 
 ## Current implementation gaps
 

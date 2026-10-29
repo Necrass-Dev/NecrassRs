@@ -24,6 +24,33 @@ fn introspect(schema: &Valid<Schema>, query: &str) -> Value {
 }
 
 #[test]
+fn introspection_rejects_null_include_deprecated() {
+    let schema = Schema::parse_and_validate("type Query { value: Int }", "schema.graphql").unwrap();
+    for argument in [
+        "",
+        "(includeDeprecated: false)",
+        "(includeDeprecated: true)",
+    ] {
+        let query = format!(r#"{{ __type(name: "Query") {{ fields{argument} {{ name }} }} }}"#);
+        ExecutableDocument::parse_and_validate(&schema, query, "request.graphql").unwrap();
+    }
+    let document = apollo_compiler::ast::Document::parse(
+        r#"{ __type(name: "Query") { fields(includeDeprecated: null) { name } } }"#,
+        "request.graphql",
+    )
+    .unwrap();
+    let errors = document
+        .to_executable_validate(&schema)
+        .expect_err("includeDeprecated has type Boolean! and must reject explicit null");
+    assert!(
+        errors
+            .errors
+            .iter()
+            .any(|error| !error.to_json().locations.is_empty())
+    );
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
