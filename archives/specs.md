@@ -413,7 +413,7 @@ explicit schema-validation clause.
 | Released §2.8: Fragments | Required | Apollo parser and AST conversion | `document_accepts_fragment_descriptions` | GREEN |
 | Pinned §2.5: Selection Sets | Required | Apollo parser and executable document validation | `document_accepts_empty_root_selection` | GREEN |
 | Pinned §5.3.3: Leaf Field Selections | Required | Apollo parser, AST and field validation | `document_distinguishes_empty_and_absent_composite_selections` | GREEN |
-| Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_self_cycle` | RED: assertion failure |
+| Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_self_cycle` | GREEN |
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_mutual_cycle` | RED: assertion failure |
 | Pinned §3.13: DirectiveDefinition | Required | Apollo parser, AST and directive validation | `schema_accepts_directives_on_directive_definitions` | RED: assertion failure |
 | Pinned §3.13.6: Directive Extensions | Required | Apollo parser and schema extension integration | `schema_accepts_directive_extensions` | RED: assertion failure |

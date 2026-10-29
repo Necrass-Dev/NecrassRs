@@ -101,6 +101,18 @@ pub(crate) fn validate_input_object_definition(
                 );
             }
         }
+        if input_object.fields.len() == 1 {
+            let field = input_object.fields.values().next().unwrap();
+            if matches!(&*field.ty, ast::Type::Named(name) if name == &input_object.name) {
+                diagnostics.push(
+                    input_object.location(),
+                    DiagnosticData::RecursiveInputObjectDefinition {
+                        name: input_object.name.clone(),
+                        trace: vec![field.node.clone()],
+                    },
+                );
+            }
+        }
     }
 
     for field in input_object.fields.values() {
