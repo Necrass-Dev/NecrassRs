@@ -54,8 +54,6 @@ pub(crate) fn field_set(p: &mut Parser) {
 ///     FragmentSpread
 ///     InlineFragment
 pub(crate) fn selection(p: &mut Parser) {
-    let mut has_selection = false;
-
     p.peek_while(|p, kind| match kind {
         T![...] => {
             let next_token = p.peek_token_n(2);
@@ -72,7 +70,6 @@ pub(crate) fn selection(p: &mut Parser) {
                         p.err("expected an Inline Fragment or a Fragment Spread");
                         p.bump(S![...]);
                     }
-                    has_selection = true;
                     ControlFlow::Continue(())
                 }
                 None => {
@@ -84,15 +81,10 @@ pub(crate) fn selection(p: &mut Parser) {
         T!['{'] => ControlFlow::Break(()),
         TokenKind::Name => {
             field::field(p);
-            has_selection = true;
             ControlFlow::Continue(())
         }
         _ => ControlFlow::Break(()),
     });
-
-    if !has_selection {
-        p.err("expected at least one Selection in Selection Set");
-    }
 }
 
 #[cfg(test)]
