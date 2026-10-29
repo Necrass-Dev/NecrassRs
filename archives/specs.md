@@ -413,6 +413,7 @@ explicit schema-validation clause.
 | Released §2.8: Fragments | Required | Apollo parser and AST conversion | `document_accepts_fragment_descriptions` | RED: assertion failure |
 | Pinned §2.5: Selection Sets | Required | Apollo parser and executable document validation | `document_accepts_empty_root_selection` | RED: assertion failure |
 | Pinned §5.3.3: Leaf Field Selections | Required | Apollo parser, AST and field validation | `document_distinguishes_empty_and_absent_composite_selections` | RED: assertion failure |
+| Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_self_cycle` | RED: assertion failure |
 
 ## Current implementation gaps
 

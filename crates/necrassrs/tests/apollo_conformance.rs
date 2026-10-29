@@ -183,6 +183,27 @@ fn document_distinguishes_empty_and_absent_composite_selections() {
 }
 
 #[test]
+fn schema_rejects_uninhabitable_one_of_self_cycle() {
+    for fields in ["next: Choice value: Int", "next: [Choice!]"] {
+        Schema::parse_and_validate(
+            format!(
+                "input Choice @oneOf {{ {fields} }} type Query {{ inspect(choice: Choice): Int }}"
+            ),
+            "schema.graphql",
+        )
+        .unwrap();
+    }
+    let schema = Schema::parse(
+        "input Choice @oneOf { next: Choice } type Query { inspect(choice: Choice): Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    schema
+        .validate()
+        .expect_err("a OneOf cycle without a finite alternative is invalid even without defaults");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
