@@ -213,6 +213,22 @@ fn schema_rejects_uninhabitable_one_of_mutual_cycle() {
 }
 
 #[test]
+fn schema_accepts_directives_on_directive_definitions() {
+    let schema = Schema::parse_and_validate(
+        "directive @old @deprecated(reason: \"Use @current\") on FIELD type Query { value: Int }",
+        "schema.graphql",
+    )
+    .expect("directive definitions may be annotated with @deprecated");
+    let serialized = schema.to_string();
+    assert!(
+        serialized.contains(r#"@deprecated(reason: "Use @current")"#),
+        "{serialized}"
+    );
+    let reparsed = Schema::parse_and_validate(&serialized, "roundtrip.graphql").unwrap();
+    assert_eq!(reparsed.directive_definitions["old"].name.as_str(), "old");
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
