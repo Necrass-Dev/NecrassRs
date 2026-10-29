@@ -411,6 +411,7 @@ explicit schema-validation clause.
 | Released §3.13.3: @deprecated | Required | Input value definition validation | `schema_rejects_deprecated_required_directive_argument` | RED: assertion failure |
 | Released §2.3–2.4: Document and Operations | Required | Apollo parser and AST conversion | `document_accepts_operation_descriptions` | RED: assertion failure |
 | Released §2.8: Fragments | Required | Apollo parser and AST conversion | `document_accepts_fragment_descriptions` | RED: assertion failure |
+| Pinned §2.5: Selection Sets | Required | Apollo parser and executable document validation | `document_accepts_empty_root_selection` | RED: assertion failure |
 
 ## Current implementation gaps
 

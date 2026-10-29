@@ -154,6 +154,14 @@ fn document_accepts_fragment_descriptions() {
 }
 
 #[test]
+fn document_accepts_empty_root_selection() {
+    let schema = Schema::parse_and_validate("type Query { value: Int }", "schema.graphql").unwrap();
+    for query in ["{}", "query Named {}"] {
+        assert_eq!(introspect(&schema, query), json!({"data": {}}));
+    }
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
