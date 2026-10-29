@@ -184,6 +184,9 @@ impl Convert for cst::DirectiveDefinition {
                         .collect()
                 })
                 .unwrap_or_default(),
+            directives: ast::DirectiveList(collect_opt(file_id, self.directives(), |x| {
+                x.directives()
+            })),
         })
     }
 }

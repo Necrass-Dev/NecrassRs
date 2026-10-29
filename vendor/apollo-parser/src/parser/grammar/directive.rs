@@ -49,6 +49,10 @@ pub(crate) fn directive_definition(p: &mut Parser) {
         p.expect(T![')'], S![')']);
     }
 
+    if let Some(T![@]) = p.peek() {
+        directives(p, Constness::Const);
+    }
+
     if let Some(node) = p.peek_data() {
         if node == "repeatable" {
             p.bump(SyntaxKind::repeatable_KW);

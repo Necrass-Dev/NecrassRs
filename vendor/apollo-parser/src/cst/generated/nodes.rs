@@ -89,6 +89,9 @@ impl DirectiveDefinition {
     pub fn arguments_definition(&self) -> Option<ArgumentsDefinition> {
         support::child(&self.syntax)
     }
+    pub fn directives(&self) -> Option<Directives> {
+        support::child(&self.syntax)
+    }
     pub fn repeatable_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, S![repeatable])
     }

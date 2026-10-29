@@ -142,6 +142,7 @@ pub struct DirectiveDefinition {
     pub arguments: Vec<Node<InputValueDefinition>>,
     pub repeatable: bool,
     pub locations: Vec<DirectiveLocation>,
+    pub directives: DirectiveList,
 }
 
 /// Type system AST for a `schema`
