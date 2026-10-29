@@ -19,7 +19,7 @@ type __Type {
   name: String
   description: String
   # must be non-null for OBJECT and INTERFACE, otherwise null.
-  fields(includeDeprecated: Boolean = false): [__Field!]
+  fields(includeDeprecated: Boolean! = false): [__Field!]
   # must be non-null for OBJECT and INTERFACE, otherwise null.
   interfaces: [__Type!]
   # must be non-null for INTERFACE and UNION, otherwise null.
