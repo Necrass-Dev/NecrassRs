@@ -386,13 +386,13 @@ The WebSocket mapping uses the protocol's [Error and Complete messages](https://
 
 Acceptance must distinguish body failure from normal end-of-body, verify that no completion event follows a source failure, and verify that unrelated operations remain active. Check actual Axum and Actix protocol exchanges rather than relying solely on an internal stream error. This decision covers failures after source creation; source-creation failures follow S03 instead.
 
-## Issue #28 RED regression inventory
+## Issue #28 regression inventory
 
 The released baseline and immutable Working Draft above remain authoritative.
 These checks exercise the public Apollo boundary used by build integration and
-request preparation. They are deliberately failing TDD regressions, not evidence
-of completed conformance. Generated-consumer integration remains a separate
-acceptance step. No production behavior is changed by these commits.
+request preparation. Each row records its current RED or GREEN status; passing
+the listed regressions does not establish complete conformance.
+Generated-consumer integration remains a separate acceptance step.
 
 Each row identifies one independently runnable test in
 [`apollo_conformance.rs`](../crates/necrassrs/tests/apollo_conformance.rs).
@@ -415,6 +415,7 @@ explicit schema-validation clause.
 | Pinned §5.3.3: Leaf Field Selections | Required | Apollo parser, AST and field validation | `document_distinguishes_empty_and_absent_composite_selections` | GREEN |
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_self_cycle` | GREEN |
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_mutual_cycle` | GREEN |
+| Pinned §3.10: InputObjectHasUnbreakableCycle, all OneOf alternatives | Required | Input Object cycle validation | `schema_rejects_one_of_when_all_alternatives_recurse` | RED: accepts an uninhabitable schema |
 | Pinned §3.13: DirectiveDefinition | Required | Apollo parser, AST and directive validation | `schema_accepts_directives_on_directive_definitions` | GREEN |
 | Pinned §3.13.6: Directive Extensions | Required | Apollo parser and schema extension integration | `schema_accepts_directive_extensions` | GREEN |
 | Pinned §3.13: TypeSystemDirectiveLocation | Required | Apollo parser and directive location model | `schema_accepts_directive_definition_location` | GREEN |

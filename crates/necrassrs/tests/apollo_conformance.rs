@@ -213,6 +213,38 @@ fn schema_rejects_uninhabitable_one_of_mutual_cycle() {
 }
 
 #[test]
+fn schema_rejects_one_of_when_all_alternatives_recurse() {
+    for fields in [
+        "left: Choice right: Choice value: Int",
+        "left: Choice right: [Choice!]",
+    ] {
+        Schema::parse_and_validate(
+            format!(
+                "input Choice @oneOf {{ {fields} }} type Query {{ inspect(choice: Choice): Int }}"
+            ),
+            "schema.graphql",
+        )
+        .expect("a scalar or list alternative must allow a finite input value");
+    }
+
+    let schema = Schema::parse(
+        "input Choice @oneOf { left: Choice right: Choice } \
+         type Query { inspect(choice: Choice): Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    let errors = schema
+        .validate()
+        .expect_err("every OneOf alternative recurses, so no finite input value exists");
+    assert!(
+        errors
+            .errors
+            .iter()
+            .any(|error| !error.to_json().locations.is_empty())
+    );
+}
+
+#[test]
 fn schema_accepts_directives_on_directive_definitions() {
     let schema = Schema::parse_and_validate(
         "directive @old @deprecated(reason: \"Use @current\") on FIELD type Query { value: Int }",
