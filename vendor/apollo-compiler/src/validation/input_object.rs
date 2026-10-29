@@ -44,10 +44,19 @@ impl FindRecursiveInputValue<'_> {
         mut seen: RecursionGuard<'_>,
         input_object: &InputObjectType,
     ) -> Result<(), CycleError<ast::InputValueDefinition>> {
-        let required_by_one_of = input_object.directives.has("oneOf")
-            && input_object.fields.len() == 1;
+        if input_object.directives.has("oneOf") {
+            let mut cycle = None;
+            for input_value in input_object.fields.values() {
+                match self.input_value_definition(&mut seen, input_value, true) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => cycle = Some(error),
+                }
+            }
+            return cycle.map_or(Ok(()), Err);
+        }
+
         for input_value in input_object.fields.values() {
-            self.input_value_definition(&mut seen, input_value, required_by_one_of)?;
+            self.input_value_definition(&mut seen, input_value, false)?;
         }
 
         Ok(())
