@@ -418,6 +418,7 @@ explicit schema-validation clause.
 | Pinned §3.13: DirectiveDefinition | Required | Apollo parser, AST and directive validation | `schema_accepts_directives_on_directive_definitions` | RED: assertion failure |
 | Pinned §3.13.6: Directive Extensions | Required | Apollo parser and schema extension integration | `schema_accepts_directive_extensions` | RED: assertion failure |
 | Pinned §3.13: TypeSystemDirectiveLocation | Required | Apollo parser and directive location model | `schema_accepts_directive_definition_location` | RED: assertion failure |
+| Pinned §4.2.6: __Directive | Required | Built-in schema and directive introspection | `introspection_reports_directive_deprecation_metadata` | RED: assertion failure |
 
 ## Current implementation gaps
 

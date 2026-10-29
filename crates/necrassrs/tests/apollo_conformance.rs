@@ -270,6 +270,29 @@ fn schema_accepts_directive_definition_location() {
 }
 
 #[test]
+fn introspection_reports_directive_deprecation_metadata() {
+    let schema = Schema::parse_and_validate(
+        "directive @current on FIELD type Query { value: Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    let response = introspect(
+        &schema,
+        "{ __schema { directives { name isDeprecated deprecationReason } } }",
+    );
+    let current = response["data"]["__schema"]["directives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|directive| directive["name"] == "current")
+        .unwrap();
+    assert_eq!(
+        current,
+        &json!({"name": "current", "isDeprecated": false, "deprecationReason": null})
+    );
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
