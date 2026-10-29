@@ -204,6 +204,15 @@ fn schema_rejects_uninhabitable_one_of_self_cycle() {
 }
 
 #[test]
+fn schema_rejects_uninhabitable_one_of_mutual_cycle() {
+    Schema::parse_and_validate("input Choice @oneOf { next: Input } input Input { choice: Choice } type Query { inspect(choice: Choice): Int }", "schema.graphql").unwrap();
+    let schema = Schema::parse("input Choice @oneOf { next: Input } input Input { choice: Choice! } type Query { inspect(choice: Choice): Int }", "schema.graphql").unwrap();
+    schema.validate().expect_err(
+        "a mandatory return edge through an ordinary input cannot terminate a OneOf cycle",
+    );
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
