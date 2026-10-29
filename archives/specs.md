@@ -420,7 +420,7 @@ explicit schema-validation clause.
 | Pinned §3.13: TypeSystemDirectiveLocation | Required | Apollo parser and directive location model | `schema_accepts_directive_definition_location` | GREEN |
 | Pinned §4.2.6: __Directive | Required | Built-in schema and directive introspection | `introspection_reports_directive_deprecation_metadata` | GREEN |
 | Pinned §4.2.1: __Schema.directives | Required | Built-in schema and schema introspection | `introspection_filters_deprecated_directives` | GREEN |
-| Pinned §3.6: Object type validation | Required | Input value default validation | `schema_rejects_incompatible_field_argument_default` | RED: assertion failure |
+| Pinned §3.6: Object type validation | Required | Input value default validation | `schema_rejects_incompatible_field_argument_default` | GREEN |
 | §3.10: input coercion; schema-boundary regression | Project boundary | Input value default validation | `schema_rejects_incompatible_input_field_default` | RED: assertion failure |
 | §3.13: directive arguments; schema-boundary regression | Project boundary | Input value default validation | `schema_rejects_incompatible_directive_argument_default` | RED: assertion failure |
 | Pinned §3.6 and §3.10.1: default compatibility and OneOf coercion | Required | Input value default validation | `schema_rejects_empty_one_of_argument_default` | RED: assertion failure |

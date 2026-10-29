@@ -163,6 +163,20 @@ pub(crate) fn validate_field_definition(
         ast::DirectiveLocation::ArgumentDefinition,
     );
     for argument in &field.arguments {
+        let is_one_of = schema
+            .get_input_object(argument.ty.inner_named_type())
+            .is_some_and(|input| input.directives.has("oneOf"));
+        if !is_one_of {
+            if let Some(default) = &argument.default_value {
+                super::value::value_of_correct_type(
+                    diagnostics,
+                    schema,
+                    &argument.ty,
+                    default,
+                    &[],
+                );
+            }
+        }
         if argument.is_required() {
             if let Some(deprecated) = argument.directives.get("deprecated") {
                 diagnostics.push(
