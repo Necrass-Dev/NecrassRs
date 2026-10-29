@@ -140,6 +140,20 @@ fn document_accepts_operation_descriptions() {
 }
 
 #[test]
+fn document_accepts_fragment_descriptions() {
+    let schema = Schema::parse_and_validate("type Query { value: Int }", "schema.graphql").unwrap();
+    for description in [r#""Fragment description""#, r#""""Fragment description""""#] {
+        let query = format!(
+            "query Named {{ ...Fields }} {description} fragment Fields on Query {{ __typename }}"
+        );
+        assert_eq!(
+            introspect(&schema, &query),
+            json!({"data": {"__typename": "Query"}})
+        );
+    }
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
