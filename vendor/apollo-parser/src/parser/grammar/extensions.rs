@@ -1,3 +1,4 @@
+use crate::parser::grammar::directive;
 use crate::parser::grammar::enum_;
 use crate::parser::grammar::input;
 use crate::parser::grammar::interface;
@@ -12,6 +13,7 @@ pub(crate) fn extensions(p: &mut Parser) {
     // to figure out which type system extension to apply.
     match p.peek_data_n(2) {
         Some("schema") => schema::schema_extension(p),
+        Some("directive") => directive::directive_extension(p),
         Some("scalar") => scalar::scalar_type_extension(p),
         Some("type") => object::object_type_extension(p),
         Some("interface") => interface::interface_type_extension(p),

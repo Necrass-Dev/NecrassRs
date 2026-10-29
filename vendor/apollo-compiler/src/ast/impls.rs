@@ -186,6 +186,7 @@ impl Definition {
         matches!(
             self,
             Self::SchemaExtension(_)
+                | Self::DirectiveExtension(_)
                 | Self::ScalarTypeExtension(_)
                 | Self::ObjectTypeExtension(_)
                 | Self::InterfaceTypeExtension(_)
@@ -208,6 +209,7 @@ impl Definition {
             Self::InputObjectTypeDefinition(_) => "an input object type definition",
             Self::SchemaDefinition(_) => "a schema definition",
             Self::SchemaExtension(_) => "a schema extension",
+            Self::DirectiveExtension(_) => "a directive extension",
             Self::ScalarTypeExtension(_) => "a scalar type extension",
             Self::ObjectTypeExtension(_) => "an object type extension",
             Self::InterfaceTypeExtension(_) => "an interface type extension",
@@ -232,6 +234,7 @@ impl Definition {
             Self::EnumTypeDefinition(def) => def.location(),
             Self::InputObjectTypeDefinition(def) => def.location(),
             Self::SchemaExtension(def) => def.location(),
+            Self::DirectiveExtension(def) => def.location(),
             Self::ScalarTypeExtension(def) => def.location(),
             Self::ObjectTypeExtension(def) => def.location(),
             Self::InterfaceTypeExtension(def) => def.location(),
@@ -258,6 +261,7 @@ impl Definition {
             Self::EnumTypeDefinition(def) => Some(&def.name),
             Self::InputObjectTypeDefinition(def) => Some(&def.name),
             Self::SchemaExtension(_) => None,
+            Self::DirectiveExtension(def) => Some(&def.name),
             Self::ScalarTypeExtension(def) => Some(&def.name),
             Self::ObjectTypeExtension(def) => Some(&def.name),
             Self::InterfaceTypeExtension(def) => Some(&def.name),
@@ -280,6 +284,7 @@ impl Definition {
             Self::EnumTypeDefinition(def) => &def.directives,
             Self::InputObjectTypeDefinition(def) => &def.directives,
             Self::SchemaExtension(def) => &def.directives,
+            Self::DirectiveExtension(def) => &def.directives,
             Self::ScalarTypeExtension(def) => &def.directives,
             Self::ObjectTypeExtension(def) => &def.directives,
             Self::InterfaceTypeExtension(def) => &def.directives,
@@ -377,6 +382,14 @@ impl Definition {
         }
     }
 
+    pub fn as_directive_extension(&self) -> Option<&Node<DirectiveExtension>> {
+        if let Self::DirectiveExtension(def) = self {
+            Some(def)
+        } else {
+            None
+        }
+    }
+
     pub fn as_scalar_type_extension(&self) -> Option<&Node<ScalarTypeExtension>> {
         if let Self::ScalarTypeExtension(def) = self {
             Some(def)
@@ -443,6 +456,7 @@ impl fmt::Debug for Definition {
             Self::EnumTypeDefinition(def) => def.fmt(f),
             Self::InputObjectTypeDefinition(def) => def.fmt(f),
             Self::SchemaExtension(def) => def.fmt(f),
+            Self::DirectiveExtension(def) => def.fmt(f),
             Self::ScalarTypeExtension(def) => def.fmt(f),
             Self::ObjectTypeExtension(def) => def.fmt(f),
             Self::InterfaceTypeExtension(def) => def.fmt(f),
@@ -506,6 +520,10 @@ impl InputObjectTypeDefinition {
 }
 
 impl SchemaExtension {
+    serialize_method!();
+}
+
+impl DirectiveExtension {
     serialize_method!();
 }
 
@@ -1460,6 +1478,12 @@ impl From<Node<SchemaExtension>> for Definition {
     }
 }
 
+impl From<Node<DirectiveExtension>> for Definition {
+    fn from(def: Node<DirectiveExtension>) -> Self {
+        Self::DirectiveExtension(def)
+    }
+}
+
 impl From<Node<ScalarTypeExtension>> for Definition {
     fn from(def: Node<ScalarTypeExtension>) -> Self {
         Self::ScalarTypeExtension(def)
@@ -1559,6 +1583,12 @@ impl From<InputObjectTypeDefinition> for Definition {
 impl From<SchemaExtension> for Definition {
     fn from(def: SchemaExtension) -> Self {
         Self::SchemaExtension(Node::new(def))
+    }
+}
+
+impl From<DirectiveExtension> for Definition {
+    fn from(def: DirectiveExtension) -> Self {
+        Self::DirectiveExtension(Node::new(def))
     }
 }
 
