@@ -386,6 +386,25 @@ The WebSocket mapping uses the protocol's [Error and Complete messages](https://
 
 Acceptance must distinguish body failure from normal end-of-body, verify that no completion event follows a source failure, and verify that unrelated operations remain active. Check actual Axum and Actix protocol exchanges rather than relying solely on an internal stream error. This decision covers failures after source creation; source-creation failures follow S03 instead.
 
+## Issue #28 RED regression inventory
+
+The released baseline and immutable Working Draft above remain authoritative.
+These checks exercise the public Apollo boundary used by build integration and
+request preparation. They are deliberately failing TDD regressions, not evidence
+of completed conformance. Generated-consumer integration remains a separate
+acceptance step. No production behavior is changed by these commits.
+
+Each row identifies one independently runnable test in
+[`apollo_conformance.rs`](../crates/necrassrs/tests/apollo_conformance.rs).
+Run a row with `cargo test -p necrassrs --test apollo_conformance --locked <test> -- --exact`.
+"Required" identifies a specification contract; "Project boundary" records
+schema-time rejection for a coercion requirement without claiming an additional
+explicit schema-validation clause.
+
+| Source and clause | Requirement level | Implementation boundary | Executable check | Verified status |
+| --- | --- | --- | --- | --- |
+| Released §4.2.2: Input Object introspection | Required | Built-in schema and introspection resolvers | `introspection_reports_one_of_flags` | RED: assertion failure |
+
 ## Current implementation gaps
 
 These observations locate work; they are not a fresh exhaustive conformance audit or a claim that existing tests passed during this document revision.
