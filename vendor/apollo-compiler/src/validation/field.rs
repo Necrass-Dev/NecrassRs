@@ -162,6 +162,19 @@ pub(crate) fn validate_field_definition(
         &field.arguments,
         ast::DirectiveLocation::ArgumentDefinition,
     );
+    for argument in &field.arguments {
+        if argument.is_required() {
+            if let Some(deprecated) = argument.directives.get("deprecated") {
+                diagnostics.push(
+                    deprecated.location(),
+                    DiagnosticData::DeprecatedRequiredInputValue {
+                        name: argument.name.clone(),
+                        describe: "field argument",
+                    },
+                );
+            }
+        }
+    }
 }
 
 pub(crate) fn validate_field_definitions(
