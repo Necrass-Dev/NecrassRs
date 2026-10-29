@@ -162,6 +162,27 @@ fn document_accepts_empty_root_selection() {
 }
 
 #[test]
+fn document_distinguishes_empty_and_absent_composite_selections() {
+    let schema = Schema::parse_and_validate(
+        "type Query { object: Object value: Int } type Object { value: Int }",
+        "schema.graphql",
+    )
+    .unwrap();
+    ExecutableDocument::parse_and_validate(&schema, "{ object {} }", "request.graphql")
+        .expect("an explicit empty composite selection is valid");
+    assert_eq!(
+        introspect(&schema, r#"{ __type(name: "Query") {} }"#),
+        json!({"data": {"__type": {}}})
+    );
+    for query in ["{ object }", "{ value {} }"] {
+        let document = apollo_compiler::ast::Document::parse(query, "request.graphql").unwrap();
+        document
+            .to_executable_validate(&schema)
+            .expect_err("composites require a selection set and leaves forbid one");
+    }
+}
+
+#[test]
 fn introspection_reports_one_of_flags() {
     let schema = Schema::parse_and_validate(
         "input Choice @oneOf { value: Int } input Ordinary { value: Int } type Query { value: Int }",
