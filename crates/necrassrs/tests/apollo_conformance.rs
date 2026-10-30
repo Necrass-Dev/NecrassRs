@@ -24,6 +24,56 @@ fn introspect(schema: &Valid<Schema>, query: &str) -> Value {
 }
 
 #[test]
+fn strings_decode_unicode_scalar_escapes() {
+    for (literal, expected) in [
+        (r#""\uD83D\uDE00""#, "😀"),
+        (r#""\u{1F600}""#, "😀"),
+        (r#""\u{0000000041}""#, "A"),
+        (r#""\uDBFF\uDFFF""#, "\u{10ffff}"),
+    ] {
+        let document = apollo_compiler::ast::Document::parse(
+            format!("query Q($s: String = {literal}) {{ value }}"),
+            "request.graphql",
+        )
+        .unwrap();
+        let apollo_compiler::ast::Definition::OperationDefinition(operation) =
+            &document.definitions[0]
+        else {
+            panic!("expected operation")
+        };
+        assert_eq!(
+            operation.variables[0]
+                .default_value
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            Some(expected)
+        );
+    }
+    for literal in [
+        r#""\uD800""#,
+        r#""\uDC00""#,
+        r#""\uD800\u0041""#,
+        r#""\uD800\uD800""#,
+        r#""\u{}""#,
+        r#""\u{110000}""#,
+        r#""\u{D800}""#,
+        r#""\u{xyz}""#,
+        r#""\u{FFFFFFFFFFFFFFFFFFFFFFFF}""#,
+        r#""\u{1F600""#,
+    ] {
+        assert!(
+            apollo_compiler::ast::Document::parse(
+                format!("{{ value(s: {literal}) }}"),
+                "request.graphql"
+            )
+            .is_err(),
+            "{literal}"
+        );
+    }
+}
+
+#[test]
 fn introspection_rejects_null_include_deprecated() {
     let schema = Schema::parse_and_validate("type Query { value: Int }", "schema.graphql").unwrap();
     for argument in [
