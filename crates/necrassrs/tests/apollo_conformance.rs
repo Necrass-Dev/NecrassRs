@@ -245,6 +245,26 @@ fn schema_rejects_one_of_when_all_alternatives_recurse() {
 }
 
 #[test]
+fn schema_rejects_one_of_cycles_through_non_root_ancestors() {
+    for escape in ["value: Int", "values: [B!]", "optional: End"] {
+        Schema::parse_and_validate(
+            format!("input A @oneOf {{ a: A b: B }} input B @oneOf {{ a: A b: B {escape} }} input End {{ next: A }} type Query {{ value(input: A): Int }}"),
+            "schema.graphql",
+        ).expect("a finite alternative in a mutually recursive component makes it inhabitable");
+    }
+    let errors = Schema::parse_and_validate(
+        "input A @oneOf { a: A b: B } input B @oneOf { a: A b: B } type Query { value(input: A): Int }",
+        "schema.graphql",
+    ).expect_err("revisiting any ancestor is a cycle, even when it is not the initial type");
+    assert!(
+        errors
+            .errors
+            .iter()
+            .any(|error| !error.to_json().locations.is_empty())
+    );
+}
+
+#[test]
 fn schema_accepts_directives_on_directive_definitions() {
     let schema = Schema::parse_and_validate(
         "directive @old @deprecated(reason: \"Use @current\") on FIELD type Query { value: Int }",
