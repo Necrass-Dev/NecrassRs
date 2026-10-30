@@ -38,7 +38,6 @@ pub struct Lexer<'a> {
 enum State {
     Start,
     Ident,
-    StringLiteralEscapedUnicode(usize),
     StringLiteral,
     StringLiteralStart,
     BlockStringLiteral,
@@ -252,54 +251,6 @@ impl<'a> Cursor<'a> {
                         continue;
                     }
                 },
-                State::StringLiteralEscapedUnicode(remaining) => match c {
-                    '"' => {
-                        self.add_err(Error::with_loc(
-                            "incomplete unicode escape sequence",
-                            c.to_string(),
-                            token.index,
-                        ));
-                        token.data = self.current_str();
-                        return self.done(token);
-                    }
-                    c if !c.is_ascii_hexdigit() => {
-                        self.add_err(Error::with_loc(
-                            "invalid unicode escape sequence",
-                            c.to_string(),
-                            0,
-                        ));
-                        state = State::StringLiteral;
-
-                        continue;
-                    }
-                    _ => {
-                        if remaining <= 1 {
-                            state = State::StringLiteral;
-                            let hex_end = self.offset + 1;
-                            let hex_start = hex_end - 4;
-                            let hex = &self.source[hex_start..hex_end];
-                            // `is_ascii_hexdigit()` checks in previous iterations ensures
-                            // this `unwrap()` does not panic:
-                            let code_point = u32::from_str_radix(hex, 16).unwrap();
-                            if char::from_u32(code_point).is_none() {
-                                // TODO: https://github.com/apollographql/apollo-rs/issues/657 needs
-                                // changes both here and in `ast/node_ext.rs`
-                                let escape_sequence_start = hex_start - 2; // include "\u"
-                                let escape_sequence = &self.source[escape_sequence_start..hex_end];
-                                self.add_err(Error::with_loc(
-                                    "surrogate code point is invalid in unicode escape sequence \
-                                     (paired surrogate not supported yet: \
-                                     https://github.com/apollographql/apollo-rs/issues/657)",
-                                    escape_sequence.to_owned(),
-                                    0,
-                                ));
-                            }
-                            continue;
-                        }
-
-                        state = State::StringLiteralEscapedUnicode(remaining - 1)
-                    }
-                },
                 State::StringLiteral => match c {
                     '"' => {
                         token.data = self.current_str();
@@ -343,7 +294,18 @@ impl<'a> Cursor<'a> {
                         state = State::StringLiteral;
                     }
                     'u' => {
-                        state = State::StringLiteralEscapedUnicode(4);
+                        if let Some((_, length)) = unicode_escape(&self.source[self.offset + 1..]) {
+                            for _ in 0..length {
+                                self.bump();
+                            }
+                        } else {
+                            self.add_err(Error::with_loc(
+                                "invalid unicode escape sequence",
+                                "".to_owned(),
+                                self.offset,
+                            ));
+                        }
+                        state = State::StringLiteral;
                     }
                     _ => {
                         self.add_err(Error::with_loc(
@@ -530,7 +492,6 @@ impl<'a> Cursor<'a> {
             }
             State::StringLiteral
             | State::BlockStringLiteral
-            | State::StringLiteralEscapedUnicode(_)
             | State::BlockStringLiteralBackslash
             | State::StringLiteralBackslash => {
                 let curr = self.drain();
@@ -781,4 +742,39 @@ type Query {
             )]
         );
     }
+}
+
+// Shared by lexing and CST decoding so accepted escapes have identical values.
+pub(crate) fn unicode_escape(input: &str) -> Option<(char, usize)> {
+    let (value, length) = if input.starts_with('{') {
+        let end = input.find('}')?;
+        let digits = &input[1..end];
+        if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        (u32::from_str_radix(digits, 16).ok()?, end + 1)
+    } else {
+        let digits = input.get(..4)?;
+        if !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let high = u32::from_str_radix(digits, 16).ok()?;
+        if (0xD800..=0xDBFF).contains(&high) {
+            if input.get(4..6)? != "\\u" {
+                return None;
+            }
+            let low = input.get(6..10)?;
+            if !low.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            let low = u32::from_str_radix(low, 16).ok()?;
+            if !(0xDC00..=0xDFFF).contains(&low) {
+                return None;
+            }
+            (0x10000 + ((high - 0xD800) << 10) + low - 0xDC00, 10)
+        } else {
+            (high, 4)
+        }
+    };
+    Some((char::from_u32(value)?, length))
 }

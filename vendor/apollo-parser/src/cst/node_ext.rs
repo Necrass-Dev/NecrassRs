@@ -174,19 +174,6 @@ fn unescape_string(input: &str) -> String {
                     break;
                 };
 
-                // TODO: https://github.com/apollographql/apollo-rs/issues/657 needs
-                // changes both here and in `lexer/mod.rs`
-                let mut unicode = || {
-                    // 1. Let value be the 16-bit hexadecimal value represented
-                    // by the sequence of hexadecimal digits within EscapedUnicode.
-                    let value = iter.by_ref().take(4).fold(0, |acc, c| {
-                        let digit = c.to_digit(16).unwrap();
-                        (acc << 4) + digit
-                    });
-                    // 2. Return the code point value.
-                    char::from_u32(value).unwrap()
-                };
-
                 match c2 {
                     '"' | '\\' | '/' => output.push(c2),
                     'b' => output.push('\u{0008}'),
@@ -194,7 +181,12 @@ fn unescape_string(input: &str) -> String {
                     'n' => output.push('\n'),
                     'r' => output.push('\r'),
                     't' => output.push('\t'),
-                    'u' => output.push(unicode()),
+                    'u' => {
+                        let (value, length) = crate::lexer::unicode_escape(iter.as_str())
+                            .expect("unicode escapes have been validated by the lexer");
+                        iter.nth(length - 1);
+                        output.push(value);
+                    }
                     _ => (),
                 }
             }
