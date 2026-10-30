@@ -2,7 +2,7 @@
 title: "Specification implementation requirements"
 ---
 
-Updated: 2026-10-27
+Updated: 2026-10-30
 
 This document maps [issue #18](https://github.com/Necrass-Dev/NecrassRs/issues/18) to GraphQL requirements, implementation gaps, and acceptance cases. It is an implementation target, not evidence of completed conformance. Requirement levels come from the cited specification; project scope, Rust representations, and deviations are identified separately.
 
@@ -13,7 +13,7 @@ The previous agreements about generated output storage structs, receiver-based p
 | Reference                                                                                                                                                                                                                                                                                                                 | Role and status                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [GraphQL September 2025](https://spec.graphql.org/September2025/)                                                                                                                                                                                                                                                         | Released baseline required by #18. Its [conformance rules](https://spec.graphql.org/September2025/#sec-Appendix-Conformance) define how normative requirements and algorithms are interpreted.                                                                                                                            |
-| [GraphQL Working Draft](https://spec.graphql.org/draft/)                                                                                                                                                                                                                                                                  | Next-edition requirements. The selected immutable target is [`59bc70ac974b0d5d1e00869f41c06bb3bfc756da`](https://github.com/graphql/graphql-spec/tree/59bc70ac974b0d5d1e00869f41c06bb3bfc756da); #23 clauses have been compared with the released baseline below. The complete difference inventory remains owned by #28. |
+| [GraphQL Working Draft](https://spec.graphql.org/draft/)                                                                                                                                                                                                                                                                  | Next-edition requirements. The selected immutable target is [`59bc70ac974b0d5d1e00869f41c06bb3bfc756da`](https://github.com/graphql/graphql-spec/tree/59bc70ac974b0d5d1e00869f41c06bb3bfc756da); The released-versus-draft inventory and #28 acceptance evidence are recorded below. |
 | [GraphQL over HTTP draft](https://http-spec.graphql.org/draft/)                                                                                                                                                                                                                                                           | Separate HTTP adapter requirements. Candidate source: [`3903e68045982cb6710880bf03527aa0e9331667`](https://github.com/graphql/graphql-over-http/blob/3903e68045982cb6710880bf03527aa0e9331667/spec/GraphQLOverHTTP.md). It is not yet the accepted complete baseline.                                                     |
 | [GraphQL over WebSocket](https://github.com/enisdenjo/graphql-ws/blob/master/PROTOCOL.md)                                                                                                                                                                                                                                 | Selected wire protocol: `graphql-transport-ws`. An immutable protocol revision remains to be selected.                                                                                                                                                                                                                    |
 | [GraphQL over SSE](https://github.com/enisdenjo/graphql-sse/blob/master/PROTOCOL.md#distinct-connections-mode)                                                                                                                                                                                                            | Selected mode: distinct connections with GET and POST. An immutable protocol revision remains to be selected.                                                                                                                                                                                                             |
@@ -205,7 +205,7 @@ Acceptance and test migration:
 
 Historical TDD Red checkpoint for #23: `cargo test -p necrassrs --locked cyclic_` fails both tests against unpatched Apollo 1.33.0. All six isolated reproductions fail the schema-rejection assertion without aborting. This records the validation gap, not completed conformance. That checkpoint preceded the local patch below; candidate specification revisions and accepted decisions above remain unchanged.
 
-The [default-cycle algorithm comparison](default-cycle-comparison.md) retains executable path-DFS and dependency-graph candidates, measured results, and the rationale for reusing completed field-default dependency analysis. Its timings remain experimental evidence; the integrated patch uses the selected graph design with iterative traversal.
+The integrated [default-cycle validator](../vendor/apollo-compiler/src/validation/input_default.rs) uses a field-default dependency graph with iterative traversal. The checks below are evidence for the maintained implementation; historical prototype timings are not current validation results.
 
 Nested variable-default normalization is a separate defect within the parent issue's Apollo deliverable, not implied by fixing schema cycles. Reuse `variable_list_default_is_coerced_to_a_list`, `variable_object_default_applies_input_field_defaults`, and `nested_list_default_is_coerced_to_a_list` from [execution.rs](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs/src/execution.rs), adding direct dependency-level assertions that pass without post-coercion wrapper repair. Its references remain [Input Coercion](https://spec.graphql.org/September2025/#sec-Input-Objects.Input-Coercion), [List Input Coercion](https://spec.graphql.org/September2025/#sec-List.Input-Coercion), and [Coercing Variable Values](https://spec.graphql.org/September2025/#sec-Coercing-Variable-Values).
 
@@ -248,7 +248,7 @@ recorded below; it does not establish complete GraphQL or Working Draft conforma
 | G03: built-in scalars; §3.5, §6.4.3                     | `generated_consumer_executes_leaf_boundaries_and_variable_numbers`; finite/non-finite Float consumer tests; `json_variable_numbers_are_normalized_without_changing_literal_kinds` | Int boundaries, scalar inputs/results, ID string preservation and integer serialization, JSON integer-valued numbers versus floating-point literals. Custom scalar evidence is recorded below.                                                                |
 | G04: enums; §3.9                                        | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; enum result and nested-list consumer tests                                                               | Enum literals, JSON string variables, membership rejection, and enum results. Invalid input does not dispatch.                                                                                                                                                |
 | G06/G11: input presence/defaults; §3.10, §6.1.2, §6.4.1 | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; public Apollo default tests                                                                              | Argument, variable, nested-field defaults, absent variables, explicit null, supplied values, and unknown literal/variable fields reach the expected boundary.                                                                                                 |
-| G07: OneOf; §3.10.1, §5.8.5                             | Generated OneOf consumer tests; `apollo_one_of` integration tests; OneOf schema/document request tests                                                                            | Valid alternatives and invalid empty/multiple/unknown/null selections; undefined second member, schema restrictions, and non-null member-variable compatibility. Draft unbreakable-cycle validation remains #28.                                              |
+| G07: OneOf; §3.10.1, §5.8.5                             | Generated OneOf consumer tests; `apollo_one_of` integration tests; OneOf schema/document request tests                                                                            | Valid alternatives and invalid empty/multiple/unknown/null selections; undefined second member, schema restrictions, and non-null member-variable compatibility. Draft unbreakable-cycle validation is covered by the #28 regressions below.                                              |
 | G08: list/nullability; §3.11, §3.12                     | Input/result wrapper tests; generated default consumer; `generated_float_list_error_preserves_nullable_items_and_index_path`                                                      | Independent container/item wrappers, nested singleton/default coercion, null items, and indexed leaf conversion errors preserving nullable siblings.                                                                                                          |
 | G09: recursive Rust layout                              | Kosaraju and schema-wrapper unit tests; `generated_recursive_inputs_box_fields_and_convert_finite_values`; expanded Cargo rebuild                                                 | Self/mutual/OneOf recursion, mixed non-null edges, lists, names, finite values, and presence states. Invalid schema/default cycles are validated separately.                                                                                                  |
 | Source synchronization (project contract)               | `expanded_input_and_result_contracts_rebuild_without_replacing_user_body`                                                                                                         | A real consumer rebuilds after input/default/recursive contract changes, retains its body, and compiles a new enum-return stub through the patched dependency. Retained return signatures remain user-written; changed return types can require manual edits. |
@@ -302,25 +302,40 @@ against the released source found:
   execution boundary. Legitimate executor argument coercion remains in place.
 - The new `InputObjectHasUnbreakableCycle` rule concerns inhabitable input types,
   including OneOf, and is distinct from default cycles. #28 owns its validation;
-  #24 owns recursive Rust input layout. It is not implemented by this patch.
+  #24 owns recursive Rust input layout. The current #28 patch implements this
+  separate rule; see the regression inventory below.
 
 The checks in the preceding matrix therefore apply to both pinned sources for
-#23's clauses. Empty selections and directive changes remain with #28;
+#23's clauses. Empty selections and directive changes are covered below by #28;
 subscription source creation remains with #29; unique response error paths belong
 to #27 with #28's draft inventory. No previously accepted representation or
 transport behavior is reopened. HTTP/WS/SSE reference selection does not establish
 or invalidate these core default-coercion checks.
 
-## Working Draft differences to reconcile
+## Pinned Working Draft difference inventory
 
-The following topics remain outside #23 and require separate acceptance cases against the pinned Working Draft. Moving links below are reading aids; #28 owns the complete difference inventory.
+This inventory compares the complete specification-source diff from the
+[September2025 commit to the selected Draft](https://github.com/graphql/graphql-spec/compare/89d93ebbe05db06787646d76a696ead8de117b2b...59bc70ac974b0d5d1e00869f41c06bb3bfc756da).
+All references to “Pinned” below mean `59bc70ac974b0d5d1e00869f41c06bb3bfc756da`;
+“Released” means `89d93ebbe05db06787646d76a696ead8de117b2b`. Draft behavior takes
+precedence, with no released/draft runtime switch.
 
-| Topic                                                        | Reference and required comparison                                                                                                                                                                                                                                                               |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Empty selection sets                                         | [§2.5 Selection Sets](https://spec.graphql.org/draft/#sec-Selection-Sets), [§5.3.3 Leaf Field Selections](https://spec.graphql.org/draft/#sec-Leaf-Field-Selections): distinguish explicit empty selections from absent selections.                                                             |
-| Directive definitions, extensions, and deprecation           | [§3.13 Directives](https://spec.graphql.org/draft/#sec-Type-System.Directives), [§4.2.6 __Directive](https://spec.graphql.org/draft/#sec-The-__Directive-Type): validate the added grammar/locations and corresponding introspection.                                                           |
-| Uninhabitable input cycles involving OneOf                   | [§3.10 Type Validation](https://spec.graphql.org/draft/#sec-Input-Objects.Type-Validation): reconcile InputObjectHasUnbreakableCycle with the existing default-cycle rule; they are different checks.                                                                                           |
-| Subscription source-creation errors and response error paths | [§6.2.3.1 Source Stream](https://spec.graphql.org/draft/#sec-Source-Stream), [§7.1 Response Format](https://spec.graphql.org/draft/#sec-Response-Format), [§7.1.6 Errors](https://spec.graphql.org/draft/#sec-Errors): preserve the selected revision's pre-execution/error-position semantics. |
+| Changed source and clauses | Released versus pinned behavior | Evidence, status, and owner |
+| --- | --- | --- |
+| §2.5, §3.12, §5.3.3; Appendix C | Selection sets permit zero selections. A composite must have a selection set, including `{}`; scalar/enum fields must have none. | GREEN: `document_accepts_empty_root_selection`, `document_distinguishes_empty_and_absent_composite_selections`; #28. |
+| §3.10 | Replace the required-singular-only cycle rule with `InputObjectHasUnbreakableCycle`, including OneOf alternatives. The default-cycle algorithms are unchanged. | GREEN: four OneOf cycle regressions below, including alternatives that return to non-root ancestors; #28. Default cycles retain #23 evidence. |
+| §3.13, §3.13.6; Appendix C | Directive definitions accept constant directives, `DIRECTIVE_DEFINITION` is a location, and directive extensions must target existing definitions without duplicate non-repeatable annotations or direct/indirect cycles. | GREEN: directive regressions plus the `3.13.6` cases in `schema_definition_and_extension_clauses`; #28. |
+| §3.13.3, §4.2.1, §4.2.6; Appendix D | Directives can be deprecated. `__Schema.directives(includeDeprecated: Boolean! = false)` filters them; `__Directive` exposes `isDeprecated` and `deprecationReason`; location introspection includes `DIRECTIVE_DEFINITION`. | GREEN: directive introspection regressions and the generated consumer; #28. |
+| Appendix D | All existing introspection `includeDeprecated` parameters become `Boolean! = false`, matching the already non-null declarations in released §4.2. | GREEN: `introspection_rejects_null_include_deprecated`, maintained built-in schema, and generated-consumer filtering; #28. This is an appendix consistency correction, not a new mode. |
+| §6.1, §6.2, §6.2.3.1, §7.1.5–7.1.6 | Source-event-stream creation moves into `ExecuteRequest`, before subscription operation execution. Source creation failure is a request error with no `data`. | PENDING #29: subscription-specific validation and source/response stream execution. The current unsupported-subscription rejection is not evidence of this behavior. |
+| §6.4.4, §7.1 | Each execution error has a unique response path. A response position may be omitted by null propagation; its original leaf path remains meaningful. | GREEN: existing `merged_*_error_is_reported_once_with_all_locations`, `embedded_conversion_errors_follow_list_nullability_and_preserve_extensions`, and null-propagation tests in `execution.rs`; #27 evidence reused by #28. |
+| §2.6, §2.8, §3.6, §3.13, §4.1, §5, §6, §7; `GraphQL.md` | Leaf-field terminology, fragment composition examples, “operation execution” terminology, and the edition heading change. Apart from the behavior identified above, these edits add no separate server acceptance mode. | Compared; query/mutation request-error and execution-result evidence remains applicable. Subscription effects belong to the preceding #29 row. |
+
+Executable descriptions, `__Type.isOneOf`, required-input deprecation restrictions,
+non-null `@deprecated(reason:)`, Unicode escapes, and input-field uniqueness are
+released-baseline requirements, not new Draft differences. Their dependency gaps
+are recorded in the #28 regression inventory. Unchanged coercion requirements
+retain the #23–#27 evidence rather than duplicating those suites.
 
 ## Transport requirements
 
@@ -416,6 +431,9 @@ explicit schema-validation clause.
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_self_cycle` | GREEN |
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_mutual_cycle` | GREEN |
 | Pinned §3.10: InputObjectHasUnbreakableCycle, all OneOf alternatives | Required | Input Object cycle validation | `schema_rejects_one_of_when_all_alternatives_recurse` | GREEN |
+| Pinned §3.10: cycles through any ancestor | Required | Input Object cycle validation | `schema_rejects_one_of_cycles_through_non_root_ancestors` | GREEN |
+| Released §2.10.4: Unicode scalar escapes | Required | Parser lexer and CST string decoding | `strings_decode_unicode_scalar_escapes` | GREEN |
+| Released §5.6.3: input field uniqueness; §3 defaults at schema boundary | Required / Project boundary for schema defaults | Recursive literal validation, including custom scalars | `input_object_literals_reject_duplicate_fields` | GREEN |
 | Pinned §3.13: DirectiveDefinition | Required | Apollo parser, AST and directive validation | `schema_accepts_directives_on_directive_definitions` | GREEN |
 | Pinned §3.13.6: Directive Extensions | Required | Apollo parser and schema extension integration | `schema_accepts_directive_extensions` | GREEN |
 | Pinned §3.13: TypeSystemDirectiveLocation | Required | Apollo parser and directive location model | `schema_accepts_directive_definition_location` | GREEN |
@@ -442,8 +460,178 @@ application field resolvers, and disabling schema introspection must preserve
 
 Status: **GREEN**, compiled and executed locally. Run with
 `cargo test -p necrassrs-build --lib --locked generated_consumer_introspects_all_supported_type_categories`.
-This evidence does not close the remaining clause-level audit or the RED OneOf
-cycle regression above.
+The OneOf cycle regressions above are also GREEN. The following clause matrix
+connects these focused checks to the remaining #28 acceptance boundaries.
+
+### Clause-level acceptance evidence
+
+Source revisions are the Released and Pinned commits defined above. Unless marked
+otherwise, each row is a **Required** contract shared by those revisions. GREEN
+means the named assertions passed in the 2026-10-30 workspace run; it does not
+mean exhaustive enumeration of every possible input. Stream-specific clauses
+§5.2.4.1 and §6.2.3 remain assigned to #29. The G01–G21 index above remains a
+parent work index, not a claim that all of #18 is complete.
+
+New boundary checks live in
+[`validation_clauses.rs`](../crates/necrassrs/tests/validation_clauses.rs):
+
+- `language_tokens_and_literal_values` checks §2.1 lexical names, BOM/comments,
+  ignored commas and line endings; §2.10 literal kinds, numeric token restrictions,
+  escaped Unicode values and block-string indentation; and constant-default syntax.
+  Description and empty-selection regressions are listed separately above.
+- `schema_definition_and_extension_clauses` accepts a schema using schema, scalar,
+  object, interface, union, enum, input, and directive extensions, then rejects the
+  independently labelled cases below through `Schema::parse_and_validate`.
+- `executable_validation_clauses_precede_dispatch` accepts merged fields, aliases,
+  repeatable directives, applicable abstract fragments, transitive fragment
+  variables, and nullable variables with applicable defaults. Each invalid case
+  below is rejected both by Apollo and by public `execute`, with non-empty error
+  locations and no `data`. A dispatcher that panics on invocation verifies that
+  these failures precede application resolver calls.
+
+Run these with `cargo test -p necrassrs --test validation_clauses --locked`.
+
+#### Schema definitions and extensions
+
+All rows below use `schema_definition_and_extension_clauses`; the case column is
+its exact assertion label. Implementation paths are relative to
+[`vendor/apollo-compiler/src`](../vendor/apollo-compiler/src).
+
+| Source clause | Case | Implementation | Status |
+| --- | --- | --- | --- |
+| Released + Pinned §3 Type System | `3.2 unique types` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3 Type System | `3.2 reserved names` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.3 | `3.3 query root required` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.3 | `3.3 object roots` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.3 | `3.3 distinct roots` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.3 | `3.3 unique schema` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.3.2 | `3.3.2 duplicate root extension` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.4 | `3.4 input types` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.4 | `3.4 output types` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.5.6 | `3.5 scalar extension target` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.6 | `3.6 field uniqueness` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.6 | `3.6 known field types` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.6 | `3.6 nonempty object` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.6.1 | `3.6.1 argument uniqueness` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.6.3 | `3.6.3 extension kind` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.6.3 | `3.6.3 duplicate extension field` | `schema/from_ast.rs; schema/validation.rs; validation/field.rs` | GREEN |
+| Released + Pinned §3.7 | `3.7 required interface fields` | `validation/interface.rs; validation/object.rs` | GREEN |
+| Released + Pinned §3.7 | `3.7 covariant field type` | `validation/interface.rs; validation/object.rs` | GREEN |
+| Released + Pinned §3.7 | `3.7 invariant argument type` | `validation/interface.rs; validation/object.rs` | GREEN |
+| Released + Pinned §3.7 | `3.7 no additional required argument` | `validation/interface.rs; validation/object.rs` | GREEN |
+| Released + Pinned §3.7 | `3.7 transitive interfaces` | `validation/interface.rs; validation/object.rs` | GREEN |
+| Released + Pinned §3.7 | `3.7 no self implementation` | `validation/interface.rs; validation/object.rs` | GREEN |
+| Released + Pinned §3.7.1 | `3.7.1 duplicate interface field extension` | `validation/interface.rs; validation/object.rs` | GREEN |
+| Released + Pinned §3.8 | `3.8 object union members` | `schema/from_ast.rs; validation/union_.rs` | GREEN |
+| Released + Pinned §3.8 | `3.8 unique union members` | `schema/from_ast.rs; validation/union_.rs` | GREEN |
+| Released + Pinned §3.8 | `3.8 nonempty union` | `schema/from_ast.rs; validation/union_.rs` | GREEN |
+| Released + Pinned §3.8.1 | `3.8.1 duplicate union extension` | `schema/from_ast.rs; validation/union_.rs` | GREEN |
+| Released + Pinned §3.9 | `3.9 unique enum values` | `schema/from_ast.rs; validation/enum_.rs` | GREEN |
+| Released + Pinned §3.9 | `3.9 reserved enum values` | `schema/from_ast.rs; validation/enum_.rs` | GREEN |
+| Released + Pinned §3.9 | `3.9 nonempty enum` | `schema/from_ast.rs; validation/enum_.rs` | GREEN |
+| Released + Pinned §3.9.1 | `3.9.1 duplicate enum extension` | `schema/from_ast.rs; validation/enum_.rs` | GREEN |
+| Released + Pinned §3.10 | `3.10 unique input fields` | `schema/from_ast.rs; validation/input_object.rs` | GREEN |
+| Released + Pinned §3.10 | `3.10 nonempty input` | `schema/from_ast.rs; validation/input_object.rs` | GREEN |
+| Released + Pinned §3.10.2 | `3.10.2 duplicate input extension` | `schema/from_ast.rs; validation/input_object.rs` | GREEN |
+| Released + Pinned §3.13 | `3.13 known directives` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §3.13 | `3.13 directive locations` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §3.13 | `3.13 unique directives` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §3.13 | `3.13 unique definitions` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §3.13 | `3.13 directive argument types` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Pinned §3.13.6 | `3.13.6 existing directive` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Pinned §3.13.6 | `3.13.6 duplicate annotation` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Pinned §3.13.6 | `3.13.6 direct cycle` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Pinned §3.13.6 | `3.13.6 indirect cycle` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §3.13 | `3.13.6 cycle through input` | `schema/from_ast.rs; validation/directive.rs` | GREEN |
+
+#### Executable documents
+
+All rows below use `executable_validation_clauses_precede_dispatch`. Apollo's
+`executable/from_ast.rs` and `validation/` modules validate the document;
+[`request.rs`](../crates/necrassrs/src/request.rs) and
+[`execution.rs`](../crates/necrassrs/src/execution.rs) enforce the pre-dispatch
+boundary. Each case label identifies its input in the test source. Where a test label uses
+an older section number, the source-clause column gives the authoritative pinned
+number; test identifiers are retained for lookup.
+
+| Source clause | Case | Implementation | Status |
+| --- | --- | --- | --- |
+| Released + Pinned §5.1.1 | `5.1.1 executable definitions` | `executable/from_ast.rs` | GREEN |
+| Released + Pinned §5.2.2.1 | `5.2.1.1 unique operation names` | `executable/from_ast.rs` | GREEN |
+| Released + Pinned §5.2.3.1 | `5.2.2.1 lone anonymous operation` | `executable/from_ast.rs` | GREEN |
+| Released + Pinned §5.3.1 | `5.3.1 defined fields` | `validation/field.rs; validation/selection.rs` | GREEN |
+| Released + Pinned §5.3.1 | `5.3.1 union field selection` | `validation/field.rs; validation/selection.rs` | GREEN |
+| Released + Pinned §5.3.2 | `5.3.2 field merging` | `validation/field.rs; validation/selection.rs` | GREEN |
+| Released + Pinned §5.3.2 | `5.3.2 argument merging` | `validation/field.rs; validation/selection.rs` | GREEN |
+| Pinned §5.3.3 | `5.3.3 leaf selections` | `validation/field.rs; validation/selection.rs` | GREEN |
+| Pinned §5.3.3 | `5.3.3 composite selections` | `validation/field.rs; validation/selection.rs` | GREEN |
+| Released + Pinned §5.4.1 | `5.4.1 known arguments` | `validation/argument.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §5.4.2 | `5.4.2 unique arguments` | `validation/argument.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §5.4.3 | `5.4.3 required arguments` | `validation/argument.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §5.4.3 | `5.4.3 non-null arguments` | `validation/argument.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §5.5.1.1 | `5.5.1.1 unique fragments` | `validation/fragment.rs` | GREEN |
+| Released + Pinned §5.5.1.2 | `5.5.1.2 known fragment type` | `validation/fragment.rs` | GREEN |
+| Released + Pinned §5.5.1.3 | `5.5.1.3 composite fragment type` | `validation/fragment.rs` | GREEN |
+| Released + Pinned §5.5.1.4 | `5.5.1.4 used fragments` | `validation/fragment.rs` | GREEN |
+| Released + Pinned §5.5.2.1 | `5.5.2.1 defined spreads` | `validation/fragment.rs` | GREEN |
+| Released + Pinned §5.5.2.2 | `5.5.2.2 no fragment cycles` | `validation/fragment.rs` | GREEN |
+| Released + Pinned §5.5.2.3 | `5.5.2.3 possible spreads` | `validation/fragment.rs` | GREEN |
+| Released + Pinned §5.6.1 | `5.6.1 literal type` | `validation/value.rs` | GREEN |
+| Released + Pinned §5.6.1 | `5.6.1 enum literal kind` | `validation/value.rs` | GREEN |
+| Released + Pinned §5.6.1 | `5.6.1 enum membership` | `validation/value.rs` | GREEN |
+| Released + Pinned §5.6.2 | `5.6.2 known input fields` | `validation/value.rs` | GREEN |
+| Released + Pinned §5.6.3 | `5.6.3 unique input fields` | `validation/value.rs` | GREEN |
+| Released + Pinned §5.6.4 | `5.6.4 required input fields` | `validation/value.rs` | GREEN |
+| Released + Pinned §5.6.4 | `5.6.4 non-null input fields` | `validation/value.rs` | GREEN |
+| Released + Pinned §5.7.1 | `5.7.1 defined directives` | `validation/directive.rs` | GREEN |
+| Released + Pinned §5.7.2 | `5.7.2 directive location` | `validation/directive.rs` | GREEN |
+| Released + Pinned §5.7.3 | `5.7.3 unique directives` | `validation/directive.rs` | GREEN |
+| Released + Pinned §5.4 | `5.4 directive argument name` | `validation/argument.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §5.4 | `5.4 directive required argument` | `validation/argument.rs; validation/directive.rs` | GREEN |
+| Released + Pinned §5.8.1 | `5.8.1 unique variables` | `validation/variable.rs` | GREEN |
+| Released + Pinned §5.8.2 | `5.8.2 input variables` | `validation/variable.rs` | GREEN |
+| Released + Pinned §5.8.3 | `5.8.3 defined variables in fragments` | `validation/variable.rs` | GREEN |
+| Released + Pinned §5.8.4 | `5.8.4 used variables` | `validation/variable.rs` | GREEN |
+| Released + Pinned §5.8.5 | `5.8.5 compatible variables` | `validation/variable.rs` | GREEN |
+| Released + Pinned §5.8.5 | `5.8.5 nullable required variable` | `validation/variable.rs` | GREEN |
+| Released + Pinned §5.8.5 | `5.8.5 list compatibility` | `validation/variable.rs` | GREEN |
+| Released + Pinned §5.6.1 | `5.6.1 variable default type` | `validation/value.rs` | GREEN |
+
+#### Existing integration evidence reused
+
+| Source clause and level | Boundary | Executable evidence | Status |
+| --- | --- | --- | --- |
+| §3 validation; Project boundary: before generating files | `necrassrs-build::build` validates SDL before synchronization/generation | `cargo_build::invalid_sdl_does_not_destroy_existing_implementation`; `cargo_build::cyclic_defaults_fail_before_consumer_generation` | GREEN |
+| §6.1 GetOperation; Required | Request preparation selects the operation | `request::tests::{multiple_operations_require_an_operation_name,requested_operation_is_selected,unknown_operation_name_is_rejected}` | GREEN |
+| §3.5, §3.9–3.12, §5.8.5, §6.1.2; Required | Literal/variable coercion, OneOf restrictions, defaults, list/null semantics | `apollo_defaults`, `apollo_one_of`, request OneOf tests, and generated input/custom-scalar consumers documented above | GREEN |
+| §2.6–2.8, §2.12, §3.13.1–3.13.2; Required | Aliases, fragments, and inclusion directives | `field_inside_named_fragment_is_executed`, `merged_fields_are_executed_once`, `skipped_field_is_not_executed`, `fragment_include_directive_uses_coerced_variable`, `non_applicable_inline_fragment_is_not_executed` in `execution.rs` | GREEN |
+| §4.1–4.2.6; Required | Generated consumer and JSON response boundary | `generated_consumer_introspects_all_supported_type_categories`; the fixture and asserted metadata are described above | GREEN |
+| §4.1–4.2; Required, with project introspection configuration | Public runtime introspection | `typename_returns_root_type_without_invoking_dispatcher`, `type_lookup_honors_aliases_fragments_and_unknown_names`, `disabled_introspection_rejects_schema_queries_before_dispatch`, `introspection_and_resolver_fields_share_one_response` | GREEN |
+| §6.4.4 and §7.1; Required | Error uniqueness and propagation | Existing merged-field and list/error tests referenced in the Draft inventory | GREEN |
+| §5.2.4.1, §6.2.3; Required | Subscription validation and stream creation/execution | End-to-end stream checks owned by #29 | PENDING #29 |
+
+### Issue #28 acceptance checkpoint
+
+On 2026-10-30, prerequisites #23, #25, and #27 were closed. The inventory above
+records the pinned differences, 25 focused dependency regressions, three
+clause-boundary tests, existing runtime/build evidence, and the generated-consumer
+introspection check. Compiler/parser source patches were synchronized and applied
+to pristine release sources successfully; see [Apollo provenance](apollo-compiler.md).
+
+Validation of the implementation at `5132020`:
+
+- `cargo test --workspace --locked`: passed, including generated-consumer
+  compilation/execution, all 25 `apollo_conformance` tests, and all three
+  `validation_clauses` tests.
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
+
+This evidence supports closing #28 for its schema/document validation and
+introspection scope. Subscription source-creation changes are inventoried and
+assigned to #29, rather than reported as implemented. Full upstream development
+suites, remote builds of the unpublished branch, and transport exchanges were not
+run at this checkpoint. These results do not close parent #18 or certify every
+possible input against the entire specification.
 
 ## Current implementation gaps
 
@@ -459,8 +647,8 @@ These observations locate work; they are not a fresh exhaustive conformance audi
 
 ## Remaining conformance work
 
-1. Complete the pinned Working Draft difference inventory and select immutable HTTP/WS/SSE revisions. The #23 clause comparison above is complete; it is not full parent conformance.
-2. Expand G01–G21 into checks for their normative clauses under the ownership recorded in #18; retain the #23 evidence above.
+1. Select immutable HTTP/WS/SSE revisions. The pinned core Working Draft difference inventory is recorded above; its subscription source-creation row remains with #29.
+2. Complete the remaining subscription/lifetime and transport acceptance work under the ownership recorded in #18. Retain the #23–#28 evidence above and expand it when new gaps are identified.
 3. Establish H01–H06 in both adapters, preserving the documented 200 deviation and accepted 406 subscription rejection. Implement and verify the accepted legacy media-labeling recommendation against the selected transport baseline.
 4. Implement and verify W01–W06 and S01–S05, including the accepted SSE pre-execution error mapping and terminal source-failure policy.
 5. Record each case's source revision/section, requirement level, applicability, implementation location, executable check, and actual verification status. Use [GraphQL Conformance](https://spec.graphql.org/September2025/#sec-Appendix-Conformance) to distinguish mandated behavior from equivalent implementation algorithms.
