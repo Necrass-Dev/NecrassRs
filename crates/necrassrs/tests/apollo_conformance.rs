@@ -101,6 +101,42 @@ fn introspection_rejects_null_include_deprecated() {
 }
 
 #[test]
+fn input_object_literals_reject_duplicate_fields() {
+    let schema = Schema::parse_and_validate(
+        "scalar JSON input Input { x: Int } directive @d(input: Input) on FIELD type Query { value(input: Input, json: JSON): Int }",
+        "schema.graphql",
+    ).unwrap();
+    for query in [
+        "{ value(input: {x: 1, x: 2}) }",
+        "query Q($input: Input = {x: 1, x: 2}) { value(input: $input) }",
+        "{ value @d(input: {x: 1, x: 2}) }",
+        "{ value(json: {nested: [{x: 1, x: 2}]}) }",
+    ] {
+        let errors = ExecutableDocument::parse_and_validate(&schema, query, "request.graphql")
+            .expect_err(
+                "input object field names must be unique, including custom scalar literals",
+            );
+        assert!(
+            errors
+                .errors
+                .iter()
+                .any(|error| !error.to_json().locations.is_empty())
+        );
+    }
+    for definition in [
+        "type Query { value(input: Input = {x: 1, x: 2}): Int }",
+        "input Defaults { input: Input = {x: 1, x: 2} } type Query { value: Int }",
+        "directive @d(input: Input = {x: 1, x: 2}) on FIELD type Query { value: Int }",
+    ] {
+        Schema::parse_and_validate(
+            format!("input Input {{ x: Int }} {definition}"),
+            "schema.graphql",
+        )
+        .expect_err("schema defaults must reject duplicate input fields");
+    }
+}
+
+#[test]
 fn schema_rejects_null_deprecation_reason() {
     Schema::parse_and_validate("type Query { value: Int @deprecated }", "schema.graphql").unwrap();
     let schema = Schema::parse(
