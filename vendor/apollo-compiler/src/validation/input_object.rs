@@ -10,8 +10,7 @@ use crate::validation::RecursionStack;
 use crate::Name;
 use crate::Node;
 
-// Implements [Circular References](https://spec.graphql.org/October2021/#sec-Input-Objects.Circular-References)
-// part of the input object validation spec.
+// Implements InputObjectHasUnbreakableCycle from the pinned Working Draft.
 struct FindRecursiveInputValue<'a> {
     schema: &'a crate::Schema,
 }
@@ -32,8 +31,8 @@ impl FindRecursiveInputValue<'_> {
             if let Some(object_def) = self.schema.get_input_object(name) {
                 self.input_object_definition(seen.push(name)?, object_def)
                     .map_err(|err| err.trace(def))?
-                }
-        } else if seen.first() == Some(name) {
+            }
+        } else {
             return Err(CycleError::Recursed(vec![def.clone()]));
         }
         Ok(())
