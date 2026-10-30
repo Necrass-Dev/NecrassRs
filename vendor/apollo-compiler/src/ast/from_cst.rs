@@ -105,6 +105,7 @@ impl Convert for cst::Definition {
             C::EnumTypeDefinition(def) => A::EnumTypeDefinition(r!(def)),
             C::InputObjectTypeDefinition(def) => A::InputObjectTypeDefinition(r!(def)),
             C::SchemaExtension(def) => A::SchemaExtension(r!(def)),
+            C::DirectiveExtension(def) => A::DirectiveExtension(r!(def)),
             C::ScalarTypeExtension(def) => A::ScalarTypeExtension(r!(def)),
             C::ObjectTypeExtension(def) => A::ObjectTypeExtension(r!(def)),
             C::InterfaceTypeExtension(def) => A::InterfaceTypeExtension(r!(def)),
@@ -184,6 +185,9 @@ impl Convert for cst::DirectiveDefinition {
                         .collect()
                 })
                 .unwrap_or_default(),
+            directives: ast::DirectiveList(collect_opt(file_id, self.directives(), |x| {
+                x.directives()
+            })),
         })
     }
 }
@@ -323,6 +327,19 @@ impl Convert for cst::SchemaExtension {
                 .root_operation_type_definitions()
                 .filter_map(|x| x.convert(file_id))
                 .collect(),
+        })
+    }
+}
+
+impl Convert for cst::DirectiveExtension {
+    type Target = ast::DirectiveExtension;
+
+    fn convert(&self, file_id: FileId) -> Option<Self::Target> {
+        Some(Self::Target {
+            name: self.name()?.convert(file_id)?,
+            directives: ast::DirectiveList(collect_opt(file_id, self.directives(), |x| {
+                x.directives()
+            })),
         })
     }
 }
@@ -474,6 +491,9 @@ impl Convert for cst::DirectiveLocation {
 
     fn convert(&self, _file_id: FileId) -> Option<Self::Target> {
         let token = self.syntax().first_token()?;
+        if token.text() == "DIRECTIVE_DEFINITION" {
+            return Some(ast::DirectiveLocation::DirectiveDefinition);
+        }
         match token.kind() {
             S![QUERY] => Some(ast::DirectiveLocation::Query),
             S![MUTATION] => Some(ast::DirectiveLocation::Mutation),
@@ -673,6 +693,7 @@ impl Convert for cst::Field {
     type Target = ast::Field;
 
     fn convert(&self, file_id: FileId) -> Option<Self::Target> {
+        let selection_set = self.selection_set();
         Some(Self::Target {
             alias: self.alias().convert(file_id)?,
             name: self.name()?.convert(file_id)?,
@@ -680,8 +701,9 @@ impl Convert for cst::Field {
             directives: ast::DirectiveList(collect_opt(file_id, self.directives(), |x| {
                 x.directives()
             })),
+            selection_set_is_explicit: selection_set.is_some(),
             // Use an empty Vec for a field without sub-selections
-            selection_set: self.selection_set().convert(file_id)?.unwrap_or_default(),
+            selection_set: selection_set.convert(file_id)?.unwrap_or_default(),
         })
     }
 }

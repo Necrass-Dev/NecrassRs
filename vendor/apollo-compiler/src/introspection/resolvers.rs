@@ -91,12 +91,18 @@ impl ObjectValue for SchemaMetaField {
                     .values()
                     .map(|def| ResolvedValue::object(TypeDefResolver { def })),
             )),
-            "directives" => Ok(ResolvedValue::list(
-                info.schema()
-                    .directive_definitions
-                    .values()
-                    .map(|def| ResolvedValue::object(DirectiveResolver { def })),
-            )),
+            "directives" => {
+                let include_deprecated = include_deprecated(info.arguments());
+                Ok(ResolvedValue::list(
+                    info.schema()
+                        .directive_definitions
+                        .values()
+                        .filter(move |def| {
+                            include_deprecated || def.directives.get("deprecated").is_none()
+                        })
+                        .map(|def| ResolvedValue::object(DirectiveResolver { def })),
+                ))
+            }
             "queryType" => Ok(type_def_opt(info, &schema_def.query)),
             "mutationType" => Ok(type_def_opt(info, &schema_def.mutation)),
             "subscriptionType" => Ok(type_def_opt(info, &schema_def.subscription)),
@@ -224,6 +230,12 @@ impl ObjectValue for TypeDefResolver<'_> {
                         .and_then(|arg| arg.as_str()),
                 ))
             }
+            "isOneOf" => {
+                let schema::ExtendedType::InputObject(def) = self.def else {
+                    return Ok(ResolvedValue::null());
+                };
+                Ok(ResolvedValue::leaf(def.directives.get("oneOf").is_some()))
+            }
             _ => Err(self.unknown_field_error(info)),
         }
     }
@@ -261,6 +273,7 @@ impl ObjectValue for TypeResolver<'_> {
             "enumValues" => Ok(ResolvedValue::null()),
             "inputFields" => Ok(ResolvedValue::null()),
             "specifiedByURL" => Ok(ResolvedValue::null()),
+            "isOneOf" => Ok(ResolvedValue::null()),
             _ => Err(self.unknown_field_error(info)),
         }
     }
@@ -297,6 +310,13 @@ impl ObjectValue for DirectiveResolver<'_> {
                     .map(|loc| ResolvedValue::leaf(loc.name())),
             )),
             "isRepeatable" => Ok(ResolvedValue::leaf(self.def.repeatable)),
+            "isDeprecated" => Ok(ResolvedValue::leaf(
+                self.def.directives.get("deprecated").is_some(),
+            )),
+            "deprecationReason" => Ok(deprecation_reason(
+                info,
+                self.def.directives.get("deprecated"),
+            )),
             _ => Err(self.unknown_field_error(info)),
         }
     }

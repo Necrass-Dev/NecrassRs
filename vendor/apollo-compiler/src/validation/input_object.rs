@@ -10,8 +10,7 @@ use crate::validation::RecursionStack;
 use crate::Name;
 use crate::Node;
 
-// Implements [Circular References](https://spec.graphql.org/October2021/#sec-Input-Objects.Circular-References)
-// part of the input object validation spec.
+// Implements InputObjectHasUnbreakableCycle from the pinned Working Draft.
 struct FindRecursiveInputValue<'a> {
     schema: &'a crate::Schema,
 }
@@ -21,26 +20,22 @@ impl FindRecursiveInputValue<'_> {
         &self,
         seen: &mut RecursionGuard<'_>,
         def: &Node<ast::InputValueDefinition>,
+        required_by_one_of: bool,
     ) -> Result<(), CycleError<ast::InputValueDefinition>> {
-        match &*def.ty {
-            // NonNull type followed by Named type is the one that's not allowed
-            // to be cyclical, so this is only case we care about.
-            //
-            // Everything else may be a cyclical input value.
-            ast::Type::NonNullNamed(name) => {
-                if !seen.contains(name) {
-                    if let Some(object_def) = self.schema.get_input_object(name) {
-                        self.input_object_definition(seen.push(name)?, object_def)
-                            .map_err(|err| err.trace(def))?
-                    }
-                } else if seen.first() == Some(name) {
-                    return Err(CycleError::Recursed(vec![def.clone()]));
-                }
-
-                Ok(())
+        let name = match &*def.ty {
+            ast::Type::NonNullNamed(name) => name,
+            ast::Type::Named(name) if required_by_one_of => name,
+            _ => return Ok(()),
+        };
+        if !seen.contains(name) {
+            if let Some(object_def) = self.schema.get_input_object(name) {
+                self.input_object_definition(seen.push(name)?, object_def)
+                    .map_err(|err| err.trace(def))?
             }
-            _ => Ok(()),
+        } else {
+            return Err(CycleError::Recursed(vec![def.clone()]));
         }
+        Ok(())
     }
 
     fn input_object_definition(
@@ -48,8 +43,19 @@ impl FindRecursiveInputValue<'_> {
         mut seen: RecursionGuard<'_>,
         input_object: &InputObjectType,
     ) -> Result<(), CycleError<ast::InputValueDefinition>> {
+        if input_object.directives.has("oneOf") {
+            let mut cycle = None;
+            for input_value in input_object.fields.values() {
+                match self.input_value_definition(&mut seen, input_value, true) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => cycle = Some(error),
+                }
+            }
+            return cycle.map_or(Ok(()), Err);
+        }
+
         for input_value in input_object.fields.values() {
-            self.input_value_definition(&mut seen, input_value)?;
+            self.input_value_definition(&mut seen, input_value, false)?;
         }
 
         Ok(())
@@ -97,6 +103,23 @@ pub(crate) fn validate_input_object_definition(
                     DiagnosticData::OneOfFieldDefault {
                         name: input_object.name.clone(),
                         field: field.name.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    for field in input_object.fields.values() {
+        if let Some(default) = &field.default_value {
+            super::value::value_of_correct_type(diagnostics, schema, &field.ty, default, &[]);
+        }
+        if field.is_required() {
+            if let Some(deprecated) = field.directives.get("deprecated") {
+                diagnostics.push(
+                    deprecated.location(),
+                    DiagnosticData::DeprecatedRequiredInputValue {
+                        name: field.name.clone(),
+                        describe: "input field",
                     },
                 );
             }

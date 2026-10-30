@@ -40,6 +40,7 @@ version = "0.8.11"
 
 [dependencies.apollo-parser]
 version = "0.8.0"
+path = "../apollo-parser"
 
 [dependencies.ariadne]
 version = "0.6.0"

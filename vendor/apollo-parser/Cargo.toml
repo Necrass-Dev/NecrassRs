@@ -1,0 +1,43 @@
+# Build-only manifest; upstream source provenance is recorded in archives/apollo-compiler.md.
+[package]
+edition = "2021"
+name = "apollo-parser"
+version = "0.8.6"
+authors = ["Irina Shestak <shestak.irina@gmail.com>"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Spec-compliant GraphQL parser."
+documentation = "https://docs.rs/apollo-parser"
+readme = "README.md"
+keywords = [
+    "graphql",
+    "parser",
+    "graphql-tooling",
+    "apollographql",
+]
+categories = [
+    "compilers",
+    "development-tools",
+    "parser-implementations",
+    "parsing",
+    "web-programming",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/apollographql/apollo-rs"
+
+[lib]
+name = "apollo_parser"
+path = "src/lib.rs"
+
+[dependencies.memchr]
+version = "2.6.1"
+
+[dependencies.rowan]
+version = "0.16.0"
+
+[dependencies.thiserror]
+version = "2.0.0"

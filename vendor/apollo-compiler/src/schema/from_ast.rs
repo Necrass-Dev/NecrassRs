@@ -11,6 +11,7 @@ pub struct SchemaBuilder {
     pub(crate) schema: Schema,
     schema_definition: SchemaDefinitionStatus,
     orphan_type_extensions: IndexMap<Name, Vec<ast::Definition>>,
+    orphan_directive_extensions: IndexMap<Name, Vec<Node<ast::DirectiveExtension>>>,
     pub(crate) errors: DiagnosticList,
 }
 
@@ -51,6 +52,7 @@ impl SchemaBuilder {
                     orphan_extensions: Vec::new(),
                 },
                 orphan_type_extensions: IndexMap::with_hasher(Default::default()),
+                orphan_directive_extensions: IndexMap::with_hasher(Default::default()),
                 errors: DiagnosticList::new(Default::default()),
             };
             let input = include_str!("../built_in_types.graphql").to_owned();
@@ -195,6 +197,7 @@ impl SchemaBuilder {
                     ),
                 },
                 ast::Definition::DirectiveDefinition(def) => {
+                    let name = def.name.clone();
                     match self.schema.directive_definitions.entry(def.name.clone()) {
                         Entry::Vacant(entry) => {
                             entry.insert(def.clone());
@@ -217,6 +220,29 @@ impl SchemaBuilder {
                                 )
                             }
                         }
+                    }
+                    if let Some(extensions) = self.orphan_directive_extensions.shift_remove(&name) {
+                        let target = self
+                            .schema
+                            .directive_definitions
+                            .get_mut(&name)
+                            .expect("directive definition was just inserted")
+                            .make_mut();
+                        for ext in &extensions {
+                            target.directives.extend(ext.directives.iter().cloned());
+                        }
+                    }
+                }
+                ast::Definition::DirectiveExtension(ext) => {
+                    if let Some(def) = self.schema.directive_definitions.get_mut(&ext.name) {
+                        def.make_mut()
+                            .directives
+                            .extend(ext.directives.iter().cloned());
+                    } else {
+                        self.orphan_directive_extensions
+                            .entry(ext.name.clone())
+                            .or_default()
+                            .push(ext.clone());
                     }
                 }
                 ast::Definition::ScalarTypeDefinition(def) => {
@@ -286,6 +312,7 @@ impl SchemaBuilder {
             mut schema,
             schema_definition,
             orphan_type_extensions,
+            orphan_directive_extensions,
             mut errors,
         } = self;
         schema.sources = errors.sources.clone();
@@ -304,6 +331,17 @@ impl SchemaBuilder {
                     let name = ext.name().unwrap().clone();
                     errors.push(name.location(), BuildError::OrphanTypeExtension { name })
                 }
+            }
+        }
+
+        for extensions in orphan_directive_extensions.values() {
+            for ext in extensions {
+                errors.push(
+                    ext.name.location(),
+                    BuildError::OrphanDirectiveExtension {
+                        name: ext.name.clone(),
+                    },
+                )
             }
         }
 

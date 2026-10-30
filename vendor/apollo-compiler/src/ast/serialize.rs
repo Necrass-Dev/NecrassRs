@@ -180,6 +180,7 @@ impl Definition {
             Definition::EnumTypeDefinition(def) => def.serialize_impl(state),
             Definition::InputObjectTypeDefinition(def) => def.serialize_impl(state),
             Definition::SchemaExtension(def) => def.serialize_impl(state),
+            Definition::DirectiveExtension(def) => def.serialize_impl(state),
             Definition::ScalarTypeExtension(def) => def.serialize_impl(state),
             Definition::ObjectTypeExtension(def) => def.serialize_impl(state),
             Definition::InterfaceTypeExtension(def) => def.serialize_impl(state),
@@ -250,11 +251,13 @@ impl DirectiveDefinition {
             arguments,
             repeatable,
             locations,
+            directives,
         } = self;
         serialize_description(state, description)?;
         state.write("directive @")?;
         state.write(name)?;
         serialize_arguments_definition(state, arguments)?;
+        directives.serialize_impl(state)?;
 
         if *repeatable {
             state.write(" repeatable")?;
@@ -474,6 +477,15 @@ impl SchemaExtension {
     }
 }
 
+impl DirectiveExtension {
+    fn serialize_impl(&self, state: &mut State) -> fmt::Result {
+        let Self { name, directives } = self;
+        state.write("extend directive @")?;
+        state.write(name)?;
+        directives.serialize_impl(state)
+    }
+}
+
 impl ScalarTypeExtension {
     fn serialize_impl(&self, state: &mut State) -> fmt::Result {
         let Self { name, directives } = self;
@@ -667,6 +679,7 @@ impl Field {
             name,
             arguments,
             directives,
+            selection_set_is_explicit,
             selection_set,
         } = self;
         if let Some(alias) = alias {
@@ -676,7 +689,7 @@ impl Field {
         state.write(name)?;
         serialize_arguments(state, arguments)?;
         directives.serialize_impl(state)?;
-        if !selection_set.is_empty() {
+        if *selection_set_is_explicit {
             state.write(" ")?;
             curly_brackets_space_separated(state, selection_set, |state, sel| {
                 sel.serialize_impl(state)
@@ -1022,6 +1035,7 @@ impl_display! {
     EnumTypeDefinition
     InputObjectTypeDefinition
     SchemaExtension
+    DirectiveExtension
     ScalarTypeExtension
     ObjectTypeExtension
     InterfaceTypeExtension

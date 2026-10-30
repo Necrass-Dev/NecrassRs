@@ -10,7 +10,7 @@ type __Schema {
   "If this server support subscription, the type that subscription operations will be rooted at."
   subscriptionType: __Type
   "A list of all directives supported by this server."
-  directives: [__Directive!]!
+  directives(includeDeprecated: Boolean! = false): [__Directive!]!
 }
 
 "The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.\n\nDepending on the kind of a type, certain fields describe information about that type. Scalar types provide no information beyond a name, description and optional `specifiedByURL`, while Enum types provide their values. Object and Interface types provide the fields they describe. Abstract types, Union and Interface, provide the Object types possible at runtime. List and NonNull types compose other types."
@@ -19,7 +19,7 @@ type __Type {
   name: String
   description: String
   # must be non-null for OBJECT and INTERFACE, otherwise null.
-  fields(includeDeprecated: Boolean = false): [__Field!]
+  fields(includeDeprecated: Boolean! = false): [__Field!]
   # must be non-null for OBJECT and INTERFACE, otherwise null.
   interfaces: [__Type!]
   # must be non-null for INTERFACE and UNION, otherwise null.
@@ -32,6 +32,8 @@ type __Type {
   ofType: __Type
   # may be non-null for custom SCALAR, otherwise null.
   specifiedByURL: String
+  # must be non-null for INPUT_OBJECT, otherwise null.
+  isOneOf: Boolean
 }
 
 "An enum describing what kind of type a given `__Type` is."
@@ -90,6 +92,8 @@ type __Directive {
   locations: [__DirectiveLocation!]!
   args(includeDeprecated: Boolean = false): [__InputValue!]!
   isRepeatable: Boolean!
+  isDeprecated: Boolean!
+  deprecationReason: String
 }
 
 "A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies."
@@ -132,6 +136,8 @@ enum __DirectiveLocation {
   INPUT_OBJECT
   "Location adjacent to an input object field definition."
   INPUT_FIELD_DEFINITION
+  "Location adjacent to a directive definition."
+  DIRECTIVE_DEFINITION
 }
 
 "Directs the executor to skip this field or fragment when the `if` argument is true."
@@ -151,8 +157,8 @@ directive @deprecated(
   """
   Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
   """
-  reason: String = "No longer supported"
-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
+  reason: String! = "No longer supported"
+) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
 
 "Exposes a URL that specifies the behavior of this scalar."
 directive @specifiedBy(

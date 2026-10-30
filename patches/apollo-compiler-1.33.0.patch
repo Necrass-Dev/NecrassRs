@@ -1,3 +1,513 @@
+--- a/src/ast/from_cst.rs
++++ b/src/ast/from_cst.rs
+@@ -105,6 +105,7 @@
+             C::EnumTypeDefinition(def) => A::EnumTypeDefinition(r!(def)),
+             C::InputObjectTypeDefinition(def) => A::InputObjectTypeDefinition(r!(def)),
+             C::SchemaExtension(def) => A::SchemaExtension(r!(def)),
++            C::DirectiveExtension(def) => A::DirectiveExtension(r!(def)),
+             C::ScalarTypeExtension(def) => A::ScalarTypeExtension(r!(def)),
+             C::ObjectTypeExtension(def) => A::ObjectTypeExtension(r!(def)),
+             C::InterfaceTypeExtension(def) => A::InterfaceTypeExtension(r!(def)),
+@@ -184,6 +185,9 @@
+                         .collect()
+                 })
+                 .unwrap_or_default(),
++            directives: ast::DirectiveList(collect_opt(file_id, self.directives(), |x| {
++                x.directives()
++            })),
+         })
+     }
+ }
+@@ -327,6 +331,19 @@
+     }
+ }
+ 
++impl Convert for cst::DirectiveExtension {
++    type Target = ast::DirectiveExtension;
++
++    fn convert(&self, file_id: FileId) -> Option<Self::Target> {
++        Some(Self::Target {
++            name: self.name()?.convert(file_id)?,
++            directives: ast::DirectiveList(collect_opt(file_id, self.directives(), |x| {
++                x.directives()
++            })),
++        })
++    }
++}
++
+ impl Convert for cst::ScalarTypeExtension {
+     type Target = ast::ScalarTypeExtension;
+ 
+@@ -474,6 +491,9 @@
+ 
+     fn convert(&self, _file_id: FileId) -> Option<Self::Target> {
+         let token = self.syntax().first_token()?;
++        if token.text() == "DIRECTIVE_DEFINITION" {
++            return Some(ast::DirectiveLocation::DirectiveDefinition);
++        }
+         match token.kind() {
+             S![QUERY] => Some(ast::DirectiveLocation::Query),
+             S![MUTATION] => Some(ast::DirectiveLocation::Mutation),
+@@ -673,6 +693,7 @@
+     type Target = ast::Field;
+ 
+     fn convert(&self, file_id: FileId) -> Option<Self::Target> {
++        let selection_set = self.selection_set();
+         Some(Self::Target {
+             alias: self.alias().convert(file_id)?,
+             name: self.name()?.convert(file_id)?,
+@@ -680,8 +701,9 @@
+             directives: ast::DirectiveList(collect_opt(file_id, self.directives(), |x| {
+                 x.directives()
+             })),
++            selection_set_is_explicit: selection_set.is_some(),
+             // Use an empty Vec for a field without sub-selections
+-            selection_set: self.selection_set().convert(file_id)?.unwrap_or_default(),
++            selection_set: selection_set.convert(file_id)?.unwrap_or_default(),
+         })
+     }
+ }
+--- a/src/ast/impls.rs
++++ b/src/ast/impls.rs
+@@ -186,6 +186,7 @@
+         matches!(
+             self,
+             Self::SchemaExtension(_)
++                | Self::DirectiveExtension(_)
+                 | Self::ScalarTypeExtension(_)
+                 | Self::ObjectTypeExtension(_)
+                 | Self::InterfaceTypeExtension(_)
+@@ -208,6 +209,7 @@
+             Self::InputObjectTypeDefinition(_) => "an input object type definition",
+             Self::SchemaDefinition(_) => "a schema definition",
+             Self::SchemaExtension(_) => "a schema extension",
++            Self::DirectiveExtension(_) => "a directive extension",
+             Self::ScalarTypeExtension(_) => "a scalar type extension",
+             Self::ObjectTypeExtension(_) => "an object type extension",
+             Self::InterfaceTypeExtension(_) => "an interface type extension",
+@@ -232,6 +234,7 @@
+             Self::EnumTypeDefinition(def) => def.location(),
+             Self::InputObjectTypeDefinition(def) => def.location(),
+             Self::SchemaExtension(def) => def.location(),
++            Self::DirectiveExtension(def) => def.location(),
+             Self::ScalarTypeExtension(def) => def.location(),
+             Self::ObjectTypeExtension(def) => def.location(),
+             Self::InterfaceTypeExtension(def) => def.location(),
+@@ -258,6 +261,7 @@
+             Self::EnumTypeDefinition(def) => Some(&def.name),
+             Self::InputObjectTypeDefinition(def) => Some(&def.name),
+             Self::SchemaExtension(_) => None,
++            Self::DirectiveExtension(def) => Some(&def.name),
+             Self::ScalarTypeExtension(def) => Some(&def.name),
+             Self::ObjectTypeExtension(def) => Some(&def.name),
+             Self::InterfaceTypeExtension(def) => Some(&def.name),
+@@ -268,9 +272,8 @@
+     }
+ 
+     pub fn directives(&self) -> &DirectiveList {
+-        static EMPTY: DirectiveList = DirectiveList(Vec::new());
+         match self {
+-            Self::DirectiveDefinition(_) => &EMPTY,
++            Self::DirectiveDefinition(def) => &def.directives,
+             Self::OperationDefinition(def) => &def.directives,
+             Self::FragmentDefinition(def) => &def.directives,
+             Self::SchemaDefinition(def) => &def.directives,
+@@ -281,6 +284,7 @@
+             Self::EnumTypeDefinition(def) => &def.directives,
+             Self::InputObjectTypeDefinition(def) => &def.directives,
+             Self::SchemaExtension(def) => &def.directives,
++            Self::DirectiveExtension(def) => &def.directives,
+             Self::ScalarTypeExtension(def) => &def.directives,
+             Self::ObjectTypeExtension(def) => &def.directives,
+             Self::InterfaceTypeExtension(def) => &def.directives,
+@@ -372,6 +376,14 @@
+ 
+     pub fn as_schema_extension(&self) -> Option<&Node<SchemaExtension>> {
+         if let Self::SchemaExtension(def) = self {
++            Some(def)
++        } else {
++            None
++        }
++    }
++
++    pub fn as_directive_extension(&self) -> Option<&Node<DirectiveExtension>> {
++        if let Self::DirectiveExtension(def) = self {
+             Some(def)
+         } else {
+             None
+@@ -444,6 +456,7 @@
+             Self::EnumTypeDefinition(def) => def.fmt(f),
+             Self::InputObjectTypeDefinition(def) => def.fmt(f),
+             Self::SchemaExtension(def) => def.fmt(f),
++            Self::DirectiveExtension(def) => def.fmt(f),
+             Self::ScalarTypeExtension(def) => def.fmt(f),
+             Self::ObjectTypeExtension(def) => def.fmt(f),
+             Self::InterfaceTypeExtension(def) => def.fmt(f),
+@@ -507,6 +520,10 @@
+ }
+ 
+ impl SchemaExtension {
++    serialize_method!();
++}
++
++impl DirectiveExtension {
+     serialize_method!();
+ }
+ 
+@@ -790,6 +807,7 @@
+             DirectiveLocation::EnumValue => "ENUM_VALUE",
+             DirectiveLocation::InputObject => "INPUT_OBJECT",
+             DirectiveLocation::InputFieldDefinition => "INPUT_FIELD_DEFINITION",
++            DirectiveLocation::DirectiveDefinition => "DIRECTIVE_DEFINITION",
+         }
+     }
+ }
+@@ -1461,6 +1479,12 @@
+     }
+ }
+ 
++impl From<Node<DirectiveExtension>> for Definition {
++    fn from(def: Node<DirectiveExtension>) -> Self {
++        Self::DirectiveExtension(def)
++    }
++}
++
+ impl From<Node<ScalarTypeExtension>> for Definition {
+     fn from(def: Node<ScalarTypeExtension>) -> Self {
+         Self::ScalarTypeExtension(def)
+@@ -1560,6 +1584,12 @@
+ impl From<SchemaExtension> for Definition {
+     fn from(def: SchemaExtension) -> Self {
+         Self::SchemaExtension(Node::new(def))
++    }
++}
++
++impl From<DirectiveExtension> for Definition {
++    fn from(def: DirectiveExtension) -> Self {
++        Self::DirectiveExtension(Node::new(def))
+     }
+ }
+ 
+--- a/src/ast/mod.rs
++++ b/src/ast/mod.rs
+@@ -104,6 +104,7 @@
+     EnumTypeDefinition(Node<EnumTypeDefinition>),
+     InputObjectTypeDefinition(Node<InputObjectTypeDefinition>),
+     SchemaExtension(Node<SchemaExtension>),
++    DirectiveExtension(Node<DirectiveExtension>),
+     ScalarTypeExtension(Node<ScalarTypeExtension>),
+     ObjectTypeExtension(Node<ObjectTypeExtension>),
+     InterfaceTypeExtension(Node<InterfaceTypeExtension>),
+@@ -142,6 +143,7 @@
+     pub arguments: Vec<Node<InputValueDefinition>>,
+     pub repeatable: bool,
+     pub locations: Vec<DirectiveLocation>,
++    pub directives: DirectiveList,
+ }
+ 
+ /// Type system AST for a `schema`
+@@ -220,6 +222,14 @@
+ pub struct SchemaExtension {
+     pub directives: DirectiveList,
+     pub root_operations: Vec<Node<(OperationType, NamedType)>>,
++}
++
++/// Type system AST for an `extend directive @foo`
++/// [_DirectiveExtension_](https://spec.graphql.org/draft/#DirectiveExtension).
++#[derive(Clone, Debug, Eq, PartialEq, Hash)]
++pub struct DirectiveExtension {
++    pub name: Name,
++    pub directives: DirectiveList,
+ }
+ 
+ /// Type system AST for an `extend scalar FooS`
+@@ -329,6 +339,7 @@
+     EnumValue,
+     InputObject,
+     InputFieldDefinition,
++    DirectiveDefinition,
+ }
+ 
+ /// Executable AST for a [_VariableDefinition_](https://spec.graphql.org/draft/#VariableDefinition)
+@@ -409,6 +420,7 @@
+     pub name: Name,
+     pub arguments: Vec<Node<Argument>>,
+     pub directives: DirectiveList,
++    pub selection_set_is_explicit: bool,
+     pub selection_set: Vec<Selection>,
+ }
+ 
+--- a/src/ast/serialize.rs
++++ b/src/ast/serialize.rs
+@@ -180,6 +180,7 @@
+             Definition::EnumTypeDefinition(def) => def.serialize_impl(state),
+             Definition::InputObjectTypeDefinition(def) => def.serialize_impl(state),
+             Definition::SchemaExtension(def) => def.serialize_impl(state),
++            Definition::DirectiveExtension(def) => def.serialize_impl(state),
+             Definition::ScalarTypeExtension(def) => def.serialize_impl(state),
+             Definition::ObjectTypeExtension(def) => def.serialize_impl(state),
+             Definition::InterfaceTypeExtension(def) => def.serialize_impl(state),
+@@ -250,11 +251,13 @@
+             arguments,
+             repeatable,
+             locations,
++            directives,
+         } = self;
+         serialize_description(state, description)?;
+         state.write("directive @")?;
+         state.write(name)?;
+         serialize_arguments_definition(state, arguments)?;
++        directives.serialize_impl(state)?;
+ 
+         if *repeatable {
+             state.write(" repeatable")?;
+@@ -474,6 +477,15 @@
+     }
+ }
+ 
++impl DirectiveExtension {
++    fn serialize_impl(&self, state: &mut State) -> fmt::Result {
++        let Self { name, directives } = self;
++        state.write("extend directive @")?;
++        state.write(name)?;
++        directives.serialize_impl(state)
++    }
++}
++
+ impl ScalarTypeExtension {
+     fn serialize_impl(&self, state: &mut State) -> fmt::Result {
+         let Self { name, directives } = self;
+@@ -667,6 +679,7 @@
+             name,
+             arguments,
+             directives,
++            selection_set_is_explicit,
+             selection_set,
+         } = self;
+         if let Some(alias) = alias {
+@@ -676,7 +689,7 @@
+         state.write(name)?;
+         serialize_arguments(state, arguments)?;
+         directives.serialize_impl(state)?;
+-        if !selection_set.is_empty() {
++        if *selection_set_is_explicit {
+             state.write(" ")?;
+             curly_brackets_space_separated(state, selection_set, |state, sel| {
+                 sel.serialize_impl(state)
+@@ -1022,6 +1035,7 @@
+     EnumTypeDefinition
+     InputObjectTypeDefinition
+     SchemaExtension
++    DirectiveExtension
+     ScalarTypeExtension
+     ObjectTypeExtension
+     InterfaceTypeExtension
+--- a/src/built_in_types.graphql
++++ b/src/built_in_types.graphql
+@@ -10,7 +10,7 @@
+   "If this server support subscription, the type that subscription operations will be rooted at."
+   subscriptionType: __Type
+   "A list of all directives supported by this server."
+-  directives: [__Directive!]!
++  directives(includeDeprecated: Boolean! = false): [__Directive!]!
+ }
+ 
+ "The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.\n\nDepending on the kind of a type, certain fields describe information about that type. Scalar types provide no information beyond a name, description and optional `specifiedByURL`, while Enum types provide their values. Object and Interface types provide the fields they describe. Abstract types, Union and Interface, provide the Object types possible at runtime. List and NonNull types compose other types."
+@@ -19,7 +19,7 @@
+   name: String
+   description: String
+   # must be non-null for OBJECT and INTERFACE, otherwise null.
+-  fields(includeDeprecated: Boolean = false): [__Field!]
++  fields(includeDeprecated: Boolean! = false): [__Field!]
+   # must be non-null for OBJECT and INTERFACE, otherwise null.
+   interfaces: [__Type!]
+   # must be non-null for INTERFACE and UNION, otherwise null.
+@@ -32,6 +32,8 @@
+   ofType: __Type
+   # may be non-null for custom SCALAR, otherwise null.
+   specifiedByURL: String
++  # must be non-null for INPUT_OBJECT, otherwise null.
++  isOneOf: Boolean
+ }
+ 
+ "An enum describing what kind of type a given `__Type` is."
+@@ -90,6 +92,8 @@
+   locations: [__DirectiveLocation!]!
+   args(includeDeprecated: Boolean = false): [__InputValue!]!
+   isRepeatable: Boolean!
++  isDeprecated: Boolean!
++  deprecationReason: String
+ }
+ 
+ "A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies."
+@@ -132,6 +136,8 @@
+   INPUT_OBJECT
+   "Location adjacent to an input object field definition."
+   INPUT_FIELD_DEFINITION
++  "Location adjacent to a directive definition."
++  DIRECTIVE_DEFINITION
+ }
+ 
+ "Directs the executor to skip this field or fragment when the `if` argument is true."
+@@ -151,14 +157,17 @@
+   """
+   Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+   """
+-  reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++  reason: String! = "No longer supported"
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ 
+ "Exposes a URL that specifies the behavior of this scalar."
+ directive @specifiedBy(
+     "The URL that specifies the behavior of this scalar."
+     url: String!
+ ) on SCALAR
++
++"Requires exactly one non-null input field to be supplied."
++directive @oneOf on INPUT_OBJECT
+ 
+ """
+ The `Int` scalar type represents non-fractional signed whole numeric values. Int can represent values between -(2^31) and 2^31 - 1.
+--- a/src/executable/from_ast.rs
++++ b/src/executable/from_ast.rs
+@@ -314,7 +314,7 @@
+                         .push(ast.alias.clone().unwrap_or_else(|| ast.name.clone()));
+                     match field_def_result {
+                         Ok(field_def) => {
+-                            let leaf = ast.selection_set.is_empty();
++                            let leaf = !ast.selection_set_is_explicit;
+                             let type_name = field_def.ty.inner_named_type();
+                             match schema
+                                 .as_ref()
+@@ -342,6 +342,9 @@
+                                             .with_opt_alias(ast.alias.clone())
+                                             .with_arguments(ast.arguments.iter().cloned())
+                                             .with_directives(ast.directives.iter().cloned())
++                                            .with_explicit_selection_set(
++                                                ast.selection_set_is_explicit,
++                                            )
+                                             .with_ast_selections(
+                                                 schema,
+                                                 errors,
+@@ -409,6 +412,11 @@
+ }
+ 
+ impl Field {
++    fn with_explicit_selection_set(mut self, is_explicit: bool) -> Self {
++        self.selection_set_is_explicit = is_explicit;
++        self
++    }
++
+     fn with_ast_selections(
+         mut self,
+         schema: Option<&Schema>,
+--- a/src/executable/mod.rs
++++ b/src/executable/mod.rs
+@@ -167,6 +167,7 @@
+     pub name: Name,
+     pub arguments: Vec<Node<Argument>>,
+     pub directives: DirectiveList,
++    pub selection_set_is_explicit: bool,
+     pub selection_set: SelectionSet,
+ }
+ 
+@@ -890,6 +891,7 @@
+             name,
+             arguments: Vec::new(),
+             directives: DirectiveList::new(),
++            selection_set_is_explicit: false,
+             selection_set,
+         }
+     }
+@@ -928,6 +930,7 @@
+     }
+ 
+     pub fn with_selection(mut self, selection: impl Into<Selection>) -> Self {
++        self.selection_set_is_explicit = true;
+         self.selection_set.push(selection);
+         self
+     }
+@@ -936,6 +939,7 @@
+         mut self,
+         selections: impl IntoIterator<Item = impl Into<Selection>>,
+     ) -> Self {
++        self.selection_set_is_explicit = true;
+         self.selection_set.extend(selections);
+         self
+     }
+--- a/src/executable/serialize.rs
++++ b/src/executable/serialize.rs
+@@ -98,6 +98,7 @@
+             name: self.name.clone(),
+             arguments: self.arguments.clone(),
+             directives: self.directives.clone(),
++            selection_set_is_explicit: self.selection_set_is_explicit,
+             selection_set: self.selection_set.to_ast(),
+         }
+     }
+--- a/src/introspection/resolvers.rs
++++ b/src/introspection/resolvers.rs
+@@ -91,12 +91,18 @@
+                     .values()
+                     .map(|def| ResolvedValue::object(TypeDefResolver { def })),
+             )),
+-            "directives" => Ok(ResolvedValue::list(
+-                info.schema()
+-                    .directive_definitions
+-                    .values()
+-                    .map(|def| ResolvedValue::object(DirectiveResolver { def })),
+-            )),
++            "directives" => {
++                let include_deprecated = include_deprecated(info.arguments());
++                Ok(ResolvedValue::list(
++                    info.schema()
++                        .directive_definitions
++                        .values()
++                        .filter(move |def| {
++                            include_deprecated || def.directives.get("deprecated").is_none()
++                        })
++                        .map(|def| ResolvedValue::object(DirectiveResolver { def })),
++                ))
++            }
+             "queryType" => Ok(type_def_opt(info, &schema_def.query)),
+             "mutationType" => Ok(type_def_opt(info, &schema_def.mutation)),
+             "subscriptionType" => Ok(type_def_opt(info, &schema_def.subscription)),
+@@ -223,6 +229,12 @@
+                         .and_then(|dir| dir.specified_argument_by_name("url"))
+                         .and_then(|arg| arg.as_str()),
+                 ))
++            }
++            "isOneOf" => {
++                let schema::ExtendedType::InputObject(def) = self.def else {
++                    return Ok(ResolvedValue::null());
++                };
++                Ok(ResolvedValue::leaf(def.directives.get("oneOf").is_some()))
+             }
+             _ => Err(self.unknown_field_error(info)),
+         }
+@@ -261,6 +273,7 @@
+             "enumValues" => Ok(ResolvedValue::null()),
+             "inputFields" => Ok(ResolvedValue::null()),
+             "specifiedByURL" => Ok(ResolvedValue::null()),
++            "isOneOf" => Ok(ResolvedValue::null()),
+             _ => Err(self.unknown_field_error(info)),
+         }
+     }
+@@ -297,6 +310,13 @@
+                     .map(|loc| ResolvedValue::leaf(loc.name())),
+             )),
+             "isRepeatable" => Ok(ResolvedValue::leaf(self.def.repeatable)),
++            "isDeprecated" => Ok(ResolvedValue::leaf(
++                self.def.directives.get("deprecated").is_some(),
++            )),
++            "deprecationReason" => Ok(deprecation_reason(
++                info,
++                self.def.directives.get("deprecated"),
++            )),
+             _ => Err(self.unknown_field_error(info)),
+         }
+     }
 --- a/src/resolvers/input_coercion.rs
 +++ b/src/resolvers/input_coercion.rs
 @@ -46,11 +46,23 @@
@@ -141,7 +651,7 @@
          }
 @@ -213,6 +266,8 @@
  }
-
+ 
  fn graphql_value_to_json(
 +    schema: &Schema,
 +    ty: &Type,
@@ -195,7 +705,7 @@
 +        }
      }
  }
-
+ 
 @@ -301,12 +374,17 @@
              }
          }
@@ -238,6 +748,100 @@
                  ctx.errors
                      .push(err.into_field_error(path, &ctx.document.sources));
                  PropagateNull
+--- a/src/schema/from_ast.rs
++++ b/src/schema/from_ast.rs
+@@ -11,6 +11,7 @@
+     pub(crate) schema: Schema,
+     schema_definition: SchemaDefinitionStatus,
+     orphan_type_extensions: IndexMap<Name, Vec<ast::Definition>>,
++    orphan_directive_extensions: IndexMap<Name, Vec<Node<ast::DirectiveExtension>>>,
+     pub(crate) errors: DiagnosticList,
+ }
+ 
+@@ -51,6 +52,7 @@
+                     orphan_extensions: Vec::new(),
+                 },
+                 orphan_type_extensions: IndexMap::with_hasher(Default::default()),
++                orphan_directive_extensions: IndexMap::with_hasher(Default::default()),
+                 errors: DiagnosticList::new(Default::default()),
+             };
+             let input = include_str!("../built_in_types.graphql").to_owned();
+@@ -195,6 +197,7 @@
+                     ),
+                 },
+                 ast::Definition::DirectiveDefinition(def) => {
++                    let name = def.name.clone();
+                     match self.schema.directive_definitions.entry(def.name.clone()) {
+                         Entry::Vacant(entry) => {
+                             entry.insert(def.clone());
+@@ -217,6 +220,29 @@
+                                 )
+                             }
+                         }
++                    }
++                    if let Some(extensions) = self.orphan_directive_extensions.shift_remove(&name) {
++                        let target = self
++                            .schema
++                            .directive_definitions
++                            .get_mut(&name)
++                            .expect("directive definition was just inserted")
++                            .make_mut();
++                        for ext in &extensions {
++                            target.directives.extend(ext.directives.iter().cloned());
++                        }
++                    }
++                }
++                ast::Definition::DirectiveExtension(ext) => {
++                    if let Some(def) = self.schema.directive_definitions.get_mut(&ext.name) {
++                        def.make_mut()
++                            .directives
++                            .extend(ext.directives.iter().cloned());
++                    } else {
++                        self.orphan_directive_extensions
++                            .entry(ext.name.clone())
++                            .or_default()
++                            .push(ext.clone());
+                     }
+                 }
+                 ast::Definition::ScalarTypeDefinition(def) => {
+@@ -286,6 +312,7 @@
+             mut schema,
+             schema_definition,
+             orphan_type_extensions,
++            orphan_directive_extensions,
+             mut errors,
+         } = self;
+         schema.sources = errors.sources.clone();
+@@ -304,6 +331,17 @@
+                     let name = ext.name().unwrap().clone();
+                     errors.push(name.location(), BuildError::OrphanTypeExtension { name })
+                 }
++            }
++        }
++
++        for extensions in orphan_directive_extensions.values() {
++            for ext in extensions {
++                errors.push(
++                    ext.name.location(),
++                    BuildError::OrphanDirectiveExtension {
++                        name: ext.name.clone(),
++                    },
++                )
+             }
+         }
+ 
+--- a/src/schema/mod.rs
++++ b/src/schema/mod.rs
+@@ -306,6 +306,9 @@
+ 
+     #[error("type extension for undefined type `{name}`")]
+     OrphanTypeExtension { name: Name },
++
++    #[error("directive extension for undefined directive `@{name}`")]
++    OrphanDirectiveExtension { name: Name },
+ 
+     #[error("adding {describe_ext}, but `{name}` is {describe_def}")]
+     TypeExtensionKindMismatch {
 --- a/src/schema/validation.rs
 +++ b/src/schema/validation.rs
 @@ -39,6 +39,7 @@
@@ -248,7 +852,157 @@
      // Remove definitions of unused built-in scalars
      if !builtin_scalars.all_used() {
          schema.types.retain(|name, def| {
---- /dev/null
+--- a/src/validation/diagnostics.rs
++++ b/src/validation/diagnostics.rs
+@@ -318,6 +318,21 @@
+         name: Name,
+         trace: Vec<Node<ast::InputValueDefinition>>,
+     },
++    #[error("input object defaults contain a cycle")]
++    RecursiveInputDefault {
++        trace: Vec<(Name, Node<ast::InputValueDefinition>)>,
++    },
++    #[error("OneOf input field `{name}.{field}` must be nullable")]
++    NonNullableOneOfField { name: Name, field: Name },
++    #[error("OneOf input field `{name}.{field}` must not define a default value")]
++    OneOfFieldDefault { name: Name, field: Name },
++    #[error("the required {describe} `{name}` cannot be deprecated")]
++    DeprecatedRequiredInputValue {
++        name: Name,
++        describe: &'static str,
++    },
++    #[error("OneOf input `{name}` must specify exactly one non-null field")]
++    InvalidOneOfSelection { name: Name },
+     #[error("`{name}` fragment cannot reference itself")]
+     RecursiveFragmentDefinition {
+         /// Source location of just the "fragment FragName" part.
+@@ -498,6 +513,35 @@
+             DiagnosticData::RecursiveInputObjectDefinition { name, trace } => {
+                 report.with_label_opt(main_location, "cyclical input object definition");
+                 label_recursive_trace(report, trace, name, |reference| &reference.name);
++            }
++            DiagnosticData::RecursiveInputDefault { trace } => {
++                for (ty, field) in trace {
++                    report.with_label_opt(
++                        field
++                            .default_value
++                            .as_ref()
++                            .and_then(|value| value.location()),
++                        format_args!(
++                            "default for `{ty}.{}` participates in this cycle",
++                            field.name
++                        ),
++                    );
++                }
++            }
++            DiagnosticData::NonNullableOneOfField { .. } => {
++                report.with_label_opt(main_location, "remove the outer non-null wrapper");
++            }
++            DiagnosticData::OneOfFieldDefault { .. } => {
++                report.with_label_opt(main_location, "remove this default value");
++            }
++            DiagnosticData::DeprecatedRequiredInputValue { .. } => {
++                report.with_label_opt(main_location, "remove `@deprecated` or make this optional");
++            }
++            DiagnosticData::InvalidOneOfSelection { .. } => {
++                report.with_label_opt(
++                    main_location,
++                    "select exactly one field with a non-null value",
++                );
+             }
+             DiagnosticData::RecursiveFragmentDefinition {
+                 head_location,
+--- a/src/validation/directive.rs
++++ b/src/validation/directive.rs
+@@ -1,5 +1,6 @@
+ use super::CycleError;
+ use crate::ast;
++use crate::ast::DirectiveLocation;
+ use crate::collections::HashMap;
+ use crate::collections::HashSet;
+ use crate::coordinate::DirectiveArgumentCoordinate;
+@@ -163,6 +164,10 @@
+     ) -> Result<(), CycleError<ast::Directive>> {
+         for input_value in &def.arguments {
+             self.input_value(directive_guard, type_guard, input_value)?;
++        }
++
++        for directive in &def.directives {
++            self.directive(directive_guard, type_guard, directive)?;
+         }
+ 
+         Ok(())
+@@ -197,6 +202,29 @@
+         built_in_scalars,
+         &def.arguments,
+         ast::DirectiveLocation::ArgumentDefinition,
++    );
++    for argument in &def.arguments {
++        if let Some(default) = &argument.default_value {
++            super::value::value_of_correct_type(diagnostics, schema, &argument.ty, default, &[]);
++        }
++        if argument.is_required() {
++            if let Some(deprecated) = argument.directives.get("deprecated") {
++                diagnostics.push(
++                    deprecated.location(),
++                    DiagnosticData::DeprecatedRequiredInputValue {
++                        name: argument.name.clone(),
++                        describe: "directive argument",
++                    },
++                );
++            }
++        }
++    }
++    validate_directives(
++        diagnostics,
++        Some(schema),
++        def.directives.iter(),
++        DirectiveLocation::DirectiveDefinition,
++        &[],
+     );
+ 
+     let head_location = SourceSpan::recompose(def.location(), def.name.location());
+--- a/src/validation/field.rs
++++ b/src/validation/field.rs
+@@ -162,6 +162,28 @@
+         &field.arguments,
+         ast::DirectiveLocation::ArgumentDefinition,
+     );
++    for argument in &field.arguments {
++        if let Some(default) = &argument.default_value {
++            super::value::value_of_correct_type(
++                diagnostics,
++                schema,
++                &argument.ty,
++                default,
++                &[],
++            );
++        }
++        if argument.is_required() {
++            if let Some(deprecated) = argument.directives.get("deprecated") {
++                diagnostics.push(
++                    deprecated.location(),
++                    DiagnosticData::DeprecatedRequiredInputValue {
++                        name: argument.name.clone(),
++                        describe: "field argument",
++                    },
++                );
++            }
++        }
++    }
+ }
+ 
+ pub(crate) fn validate_field_definitions(
+@@ -210,7 +232,7 @@
+     field: &Node<executable::Field>,
+     field_type: &ast::Type,
+ ) -> Result<(), ()> {
+-    let is_leaf = field.selection_set.is_empty();
++    let is_leaf = !field.selection_set_is_explicit;
+     let tname = field_type.inner_named_type();
+     let fname = &field.name;
+ 
+--- a/src/validation/input_default.rs
 +++ b/src/validation/input_default.rs
 @@ -0,0 +1,111 @@
 +//! InputObjectDefaultValueHasCycle, GraphQL September 2025.
@@ -362,95 +1116,82 @@
 +        }
 +    }
 +}
---- a/src/validation/diagnostics.rs
-+++ b/src/validation/diagnostics.rs
-@@ -318,6 +318,16 @@
-         name: Name,
-         trace: Vec<Node<ast::InputValueDefinition>>,
-     },
-+    #[error("input object defaults contain a cycle")]
-+    RecursiveInputDefault {
-+        trace: Vec<(Name, Node<ast::InputValueDefinition>)>,
-+    },
-+    #[error("OneOf input field `{name}.{field}` must be nullable")]
-+    NonNullableOneOfField { name: Name, field: Name },
-+    #[error("OneOf input field `{name}.{field}` must not define a default value")]
-+    OneOfFieldDefault { name: Name, field: Name },
-+    #[error("OneOf input `{name}` must specify exactly one non-null field")]
-+    InvalidOneOfSelection { name: Name },
-     #[error("`{name}` fragment cannot reference itself")]
-     RecursiveFragmentDefinition {
-         /// Source location of just the "fragment FragName" part.
-@@ -498,6 +508,32 @@
-             DiagnosticData::RecursiveInputObjectDefinition { name, trace } => {
-                 report.with_label_opt(main_location, "cyclical input object definition");
-                 label_recursive_trace(report, trace, name, |reference| &reference.name);
-+            }
-+            DiagnosticData::RecursiveInputDefault { trace } => {
-+                for (ty, field) in trace {
-+                    report.with_label_opt(
-+                        field
-+                            .default_value
-+                            .as_ref()
-+                            .and_then(|value| value.location()),
-+                        format_args!(
-+                            "default for `{ty}.{}` participates in this cycle",
-+                            field.name
-+                        ),
-+                    );
-+                }
-+            }
-+            DiagnosticData::NonNullableOneOfField { .. } => {
-+                report.with_label_opt(main_location, "remove the outer non-null wrapper");
-+            }
-+            DiagnosticData::OneOfFieldDefault { .. } => {
-+                report.with_label_opt(main_location, "remove this default value");
-+            }
-+            DiagnosticData::InvalidOneOfSelection { .. } => {
-+                report.with_label_opt(
-+                    main_location,
-+                    "select exactly one field with a non-null value",
-+                );
-             }
-             DiagnosticData::RecursiveFragmentDefinition {
-                 head_location,
---- a/src/validation/mod.rs
-+++ b/src/validation/mod.rs
-@@ -7,6 +7,7 @@
- pub(crate) mod enum_;
- pub(crate) mod field;
- pub(crate) mod fragment;
-+pub(crate) mod input_default;
- pub(crate) mod input_object;
- pub(crate) mod interface;
- pub(crate) mod object;
-@@ -308,6 +309,10 @@
-                     RecursiveDirectiveDefinition { .. } => "RecursiveDirectiveDefinition",
-                     RecursiveInterfaceDefinition { .. } => "RecursiveInterfaceDefinition",
-                     RecursiveInputObjectDefinition { .. } => "RecursiveInputObjectDefinition",
-+                    RecursiveInputDefault { .. } => "RecursiveInputDefault",
-+                    NonNullableOneOfField { .. } => "NonNullableOneOfField",
-+                    OneOfFieldDefault { .. } => "OneOfFieldDefault",
-+                    InvalidOneOfSelection { .. } => "InvalidOneOfSelection",
-                     RecursiveFragmentDefinition { .. } => "RecursiveFragmentDefinition",
-                     DeeplyNestedType { .. } => "DeeplyNestedType",
-                     EmptyFieldSet { .. } => "EmptyFieldSet",
-@@ -376,7 +381,11 @@
-             Details::CompilerDiagnostic(diagnostic) => {
-                 use diagnostics::DiagnosticData::*;
-                 match diagnostic {
--                    RecursionError { .. } => None,
-+                    RecursionError { .. }
-+                    | RecursiveInputDefault { .. }
-+                    | NonNullableOneOfField { .. }
-+                    | OneOfFieldDefault { .. } => None,
-+                    InvalidOneOfSelection { .. } => None,
-                     UniqueVariable { name, .. } => Some(format!(
-                         r#"There can be only one variable named "${name}"."#
-                     )),
 --- a/src/validation/input_object.rs
 +++ b/src/validation/input_object.rs
-@@ -79,6 +79,29 @@
+@@ -10,8 +10,7 @@
+ use crate::Name;
+ use crate::Node;
+ 
+-// Implements [Circular References](https://spec.graphql.org/October2021/#sec-Input-Objects.Circular-References)
+-// part of the input object validation spec.
++// Implements InputObjectHasUnbreakableCycle from the pinned Working Draft.
+ struct FindRecursiveInputValue<'a> {
+     schema: &'a crate::Schema,
+ }
+@@ -21,26 +20,22 @@
+         &self,
+         seen: &mut RecursionGuard<'_>,
+         def: &Node<ast::InputValueDefinition>,
++        required_by_one_of: bool,
+     ) -> Result<(), CycleError<ast::InputValueDefinition>> {
+-        match &*def.ty {
+-            // NonNull type followed by Named type is the one that's not allowed
+-            // to be cyclical, so this is only case we care about.
+-            //
+-            // Everything else may be a cyclical input value.
+-            ast::Type::NonNullNamed(name) => {
+-                if !seen.contains(name) {
+-                    if let Some(object_def) = self.schema.get_input_object(name) {
+-                        self.input_object_definition(seen.push(name)?, object_def)
+-                            .map_err(|err| err.trace(def))?
+-                    }
+-                } else if seen.first() == Some(name) {
+-                    return Err(CycleError::Recursed(vec![def.clone()]));
+-                }
+-
+-                Ok(())
+-            }
+-            _ => Ok(()),
+-        }
++        let name = match &*def.ty {
++            ast::Type::NonNullNamed(name) => name,
++            ast::Type::Named(name) if required_by_one_of => name,
++            _ => return Ok(()),
++        };
++        if !seen.contains(name) {
++            if let Some(object_def) = self.schema.get_input_object(name) {
++                self.input_object_definition(seen.push(name)?, object_def)
++                    .map_err(|err| err.trace(def))?
++            }
++        } else {
++            return Err(CycleError::Recursed(vec![def.clone()]));
++        }
++        Ok(())
+     }
+ 
+     fn input_object_definition(
+@@ -48,8 +43,19 @@
+         mut seen: RecursionGuard<'_>,
+         input_object: &InputObjectType,
+     ) -> Result<(), CycleError<ast::InputValueDefinition>> {
++        if input_object.directives.has("oneOf") {
++            let mut cycle = None;
++            for input_value in input_object.fields.values() {
++                match self.input_value_definition(&mut seen, input_value, true) {
++                    Ok(()) => return Ok(()),
++                    Err(error) => cycle = Some(error),
++                }
++            }
++            return cycle.map_or(Ok(()), Err);
++        }
++
+         for input_value in input_object.fields.values() {
+-            self.input_value_definition(&mut seen, input_value)?;
++            self.input_value_definition(&mut seen, input_value, false)?;
+         }
+ 
+         Ok(())
+@@ -79,6 +85,46 @@
          // input objects don't use variables
          Default::default(),
      );
@@ -477,12 +1218,129 @@
 +            }
 +        }
 +    }
-
++
++    for field in input_object.fields.values() {
++        if let Some(default) = &field.default_value {
++            super::value::value_of_correct_type(diagnostics, schema, &field.ty, default, &[]);
++        }
++        if field.is_required() {
++            if let Some(deprecated) = field.directives.get("deprecated") {
++                diagnostics.push(
++                    deprecated.location(),
++                    DiagnosticData::DeprecatedRequiredInputValue {
++                        name: field.name.clone(),
++                        describe: "input field",
++                    },
++                );
++            }
++        }
++    }
+ 
      match FindRecursiveInputValue::check(schema, input_object) {
          Ok(_) => {}
+--- a/src/validation/mod.rs
++++ b/src/validation/mod.rs
+@@ -7,6 +7,7 @@
+ pub(crate) mod enum_;
+ pub(crate) mod field;
+ pub(crate) mod fragment;
++pub(crate) mod input_default;
+ pub(crate) mod input_object;
+ pub(crate) mod interface;
+ pub(crate) mod object;
+@@ -308,6 +309,11 @@
+                     RecursiveDirectiveDefinition { .. } => "RecursiveDirectiveDefinition",
+                     RecursiveInterfaceDefinition { .. } => "RecursiveInterfaceDefinition",
+                     RecursiveInputObjectDefinition { .. } => "RecursiveInputObjectDefinition",
++                    RecursiveInputDefault { .. } => "RecursiveInputDefault",
++                    NonNullableOneOfField { .. } => "NonNullableOneOfField",
++                    OneOfFieldDefault { .. } => "OneOfFieldDefault",
++                    DeprecatedRequiredInputValue { .. } => "DeprecatedRequiredInputValue",
++                    InvalidOneOfSelection { .. } => "InvalidOneOfSelection",
+                     RecursiveFragmentDefinition { .. } => "RecursiveFragmentDefinition",
+                     DeeplyNestedType { .. } => "DeeplyNestedType",
+                     EmptyFieldSet { .. } => "EmptyFieldSet",
+@@ -376,7 +382,12 @@
+             Details::CompilerDiagnostic(diagnostic) => {
+                 use diagnostics::DiagnosticData::*;
+                 match diagnostic {
+-                    RecursionError { .. } => None,
++                    RecursionError { .. }
++                    | RecursiveInputDefault { .. }
++                    | NonNullableOneOfField { .. }
++                    | OneOfFieldDefault { .. }
++                    | DeprecatedRequiredInputValue { .. } => None,
++                    InvalidOneOfSelection { .. } => None,
+                     UniqueVariable { name, .. } => Some(format!(
+                         r#"There can be only one variable named "${name}"."#
+                     )),
+@@ -773,6 +784,9 @@
+                     report.with_label_opt(self.location, "extension here")
+                 }
+                 SchemaBuildError::OrphanTypeExtension { .. } => {
++                    report.with_label_opt(self.location, "extension here")
++                }
++                SchemaBuildError::OrphanDirectiveExtension { .. } => {
+                     report.with_label_opt(self.location, "extension here")
+                 }
+                 SchemaBuildError::TypeExtensionKindMismatch { def_location, .. } => {
 --- a/src/validation/value.rs
 +++ b/src/validation/value.rs
-@@ -202,6 +202,16 @@
+@@ -31,6 +31,44 @@
+ }
+ 
+ pub(crate) fn value_of_correct_type(
++    diagnostics: &mut DiagnosticList,
++    schema: &crate::Schema,
++    ty: &Node<ast::Type>,
++    arg_value: &Node<ast::Value>,
++    var_defs: &[Node<ast::VariableDefinition>],
++) {
++    validate_input_field_uniqueness(diagnostics, arg_value);
++    value_type(diagnostics, schema, ty, arg_value, var_defs);
++}
++
++fn validate_input_field_uniqueness(diagnostics: &mut DiagnosticList, value: &Node<ast::Value>) {
++    match &**value {
++        ast::Value::Object(fields) => {
++            let mut seen = crate::collections::HashMap::default();
++            for (name, value) in fields {
++                if let Some(original_definition) = seen.insert(name, name.location()) {
++                    diagnostics.push(
++                        name.location(),
++                        DiagnosticData::UniqueInputValue {
++                            name: name.clone(),
++                            original_definition,
++                            redefined_definition: name.location(),
++                        },
++                    );
++                }
++                validate_input_field_uniqueness(diagnostics, value);
++            }
++        }
++        ast::Value::List(items) => {
++            for item in items {
++                validate_input_field_uniqueness(diagnostics, item);
++            }
++        }
++        _ => {}
++    }
++}
++
++fn value_type(
+     diagnostics: &mut DiagnosticList,
+     schema: &crate::Schema,
+     ty: &Node<ast::Type>,
+@@ -192,7 +230,7 @@
+                 let item_type = ty.same_location(ty.item_type().clone());
+                 if type_definition.is_input_type() {
+                     for v in li {
+-                        value_of_correct_type(diagnostics, schema, &item_type, v, var_defs);
++                        value_type(diagnostics, schema, &item_type, v, var_defs);
+                     }
+                 } else {
+                     unsupported_type(diagnostics, arg_value, &item_type);
+@@ -202,6 +240,16 @@
          ast::Value::Object(obj) => match &type_definition {
              schema::ExtendedType::Scalar(scalar) if !scalar.is_built_in() => {}
              schema::ExtendedType::InputObject(input_obj) => {
@@ -499,10 +1357,11 @@
                  let undefined_field = obj
                      .iter()
                      .find(|(name, ..)| !input_obj.fields.contains_key(name));
-@@ -248,6 +258,26 @@
+@@ -248,7 +296,27 @@
                      let used_val = obj.iter().find(|(obj_name, ..)| obj_name == input_name);
-
+ 
                      if let Some((_, v)) = used_val {
+-                        value_of_correct_type(diagnostics, schema, ty, v, var_defs);
 +                        if is_one_of {
 +                            if let Some(var_def) = v
 +                                .as_variable()
@@ -523,18 +1382,7 @@
 +                                }
 +                            }
 +                        }
-                         value_of_correct_type(diagnostics, schema, ty, v, var_defs);
++                        value_type(diagnostics, schema, ty, v, var_defs);
                      }
                  })
---- a/src/built_in_types.graphql
-+++ b/src/built_in_types.graphql
-@@ -160,6 +160,9 @@
-     url: String!
- ) on SCALAR
-
-+"Requires exactly one non-null input field to be supplied."
-+directive @oneOf on INPUT_OBJECT
-+
- """
- The `Int` scalar type represents non-fractional signed whole numeric values. Int can represent values between -(2^31) and 2^31 - 1.
- """
+             }

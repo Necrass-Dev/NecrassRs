@@ -326,6 +326,11 @@ pub(crate) enum DiagnosticData {
     NonNullableOneOfField { name: Name, field: Name },
     #[error("OneOf input field `{name}.{field}` must not define a default value")]
     OneOfFieldDefault { name: Name, field: Name },
+    #[error("the required {describe} `{name}` cannot be deprecated")]
+    DeprecatedRequiredInputValue {
+        name: Name,
+        describe: &'static str,
+    },
     #[error("OneOf input `{name}` must specify exactly one non-null field")]
     InvalidOneOfSelection { name: Name },
     #[error("`{name}` fragment cannot reference itself")]
@@ -528,6 +533,9 @@ impl DiagnosticData {
             }
             DiagnosticData::OneOfFieldDefault { .. } => {
                 report.with_label_opt(main_location, "remove this default value");
+            }
+            DiagnosticData::DeprecatedRequiredInputValue { .. } => {
+                report.with_label_opt(main_location, "remove `@deprecated` or make this optional");
             }
             DiagnosticData::InvalidOneOfSelection { .. } => {
                 report.with_label_opt(

@@ -167,6 +167,7 @@ pub struct Field {
     pub name: Name,
     pub arguments: Vec<Node<Argument>>,
     pub directives: DirectiveList,
+    pub selection_set_is_explicit: bool,
     pub selection_set: SelectionSet,
 }
 
@@ -890,6 +891,7 @@ impl Field {
             name,
             arguments: Vec::new(),
             directives: DirectiveList::new(),
+            selection_set_is_explicit: false,
             selection_set,
         }
     }
@@ -928,6 +930,7 @@ impl Field {
     }
 
     pub fn with_selection(mut self, selection: impl Into<Selection>) -> Self {
+        self.selection_set_is_explicit = true;
         self.selection_set.push(selection);
         self
     }
@@ -936,6 +939,7 @@ impl Field {
         mut self,
         selections: impl IntoIterator<Item = impl Into<Selection>>,
     ) -> Self {
+        self.selection_set_is_explicit = true;
         self.selection_set.extend(selections);
         self
     }

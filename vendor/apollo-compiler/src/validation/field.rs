@@ -162,6 +162,28 @@ pub(crate) fn validate_field_definition(
         &field.arguments,
         ast::DirectiveLocation::ArgumentDefinition,
     );
+    for argument in &field.arguments {
+        if let Some(default) = &argument.default_value {
+            super::value::value_of_correct_type(
+                diagnostics,
+                schema,
+                &argument.ty,
+                default,
+                &[],
+            );
+        }
+        if argument.is_required() {
+            if let Some(deprecated) = argument.directives.get("deprecated") {
+                diagnostics.push(
+                    deprecated.location(),
+                    DiagnosticData::DeprecatedRequiredInputValue {
+                        name: argument.name.clone(),
+                        describe: "field argument",
+                    },
+                );
+            }
+        }
+    }
 }
 
 pub(crate) fn validate_field_definitions(
@@ -210,7 +232,7 @@ pub(crate) fn validate_leaf_field_selection(
     field: &Node<executable::Field>,
     field_type: &ast::Type,
 ) -> Result<(), ()> {
-    let is_leaf = field.selection_set.is_empty();
+    let is_leaf = !field.selection_set_is_explicit;
     let tname = field_type.inner_named_type();
     let fname = &field.name;
 

@@ -312,6 +312,7 @@ impl DiagnosticData {
                     RecursiveInputDefault { .. } => "RecursiveInputDefault",
                     NonNullableOneOfField { .. } => "NonNullableOneOfField",
                     OneOfFieldDefault { .. } => "OneOfFieldDefault",
+                    DeprecatedRequiredInputValue { .. } => "DeprecatedRequiredInputValue",
                     InvalidOneOfSelection { .. } => "InvalidOneOfSelection",
                     RecursiveFragmentDefinition { .. } => "RecursiveFragmentDefinition",
                     DeeplyNestedType { .. } => "DeeplyNestedType",
@@ -384,7 +385,8 @@ impl DiagnosticData {
                     RecursionError { .. }
                     | RecursiveInputDefault { .. }
                     | NonNullableOneOfField { .. }
-                    | OneOfFieldDefault { .. } => None,
+                    | OneOfFieldDefault { .. }
+                    | DeprecatedRequiredInputValue { .. } => None,
                     InvalidOneOfSelection { .. } => None,
                     UniqueVariable { name, .. } => Some(format!(
                         r#"There can be only one variable named "${name}"."#
@@ -782,6 +784,9 @@ impl ToCliReport for DiagnosticData {
                     report.with_label_opt(self.location, "extension here")
                 }
                 SchemaBuildError::OrphanTypeExtension { .. } => {
+                    report.with_label_opt(self.location, "extension here")
+                }
+                SchemaBuildError::OrphanDirectiveExtension { .. } => {
                     report.with_label_opt(self.location, "extension here")
                 }
                 SchemaBuildError::TypeExtensionKindMismatch { def_location, .. } => {

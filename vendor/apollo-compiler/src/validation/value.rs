@@ -37,6 +37,44 @@ pub(crate) fn value_of_correct_type(
     arg_value: &Node<ast::Value>,
     var_defs: &[Node<ast::VariableDefinition>],
 ) {
+    validate_input_field_uniqueness(diagnostics, arg_value);
+    value_type(diagnostics, schema, ty, arg_value, var_defs);
+}
+
+fn validate_input_field_uniqueness(diagnostics: &mut DiagnosticList, value: &Node<ast::Value>) {
+    match &**value {
+        ast::Value::Object(fields) => {
+            let mut seen = crate::collections::HashMap::default();
+            for (name, value) in fields {
+                if let Some(original_definition) = seen.insert(name, name.location()) {
+                    diagnostics.push(
+                        name.location(),
+                        DiagnosticData::UniqueInputValue {
+                            name: name.clone(),
+                            original_definition,
+                            redefined_definition: name.location(),
+                        },
+                    );
+                }
+                validate_input_field_uniqueness(diagnostics, value);
+            }
+        }
+        ast::Value::List(items) => {
+            for item in items {
+                validate_input_field_uniqueness(diagnostics, item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn value_type(
+    diagnostics: &mut DiagnosticList,
+    schema: &crate::Schema,
+    ty: &Node<ast::Type>,
+    arg_value: &Node<ast::Value>,
+    var_defs: &[Node<ast::VariableDefinition>],
+) {
     let Some(type_definition) = schema.types.get(ty.inner_named_type()) else {
         return;
     };
@@ -192,7 +230,7 @@ pub(crate) fn value_of_correct_type(
                 let item_type = ty.same_location(ty.item_type().clone());
                 if type_definition.is_input_type() {
                     for v in li {
-                        value_of_correct_type(diagnostics, schema, &item_type, v, var_defs);
+                        value_type(diagnostics, schema, &item_type, v, var_defs);
                     }
                 } else {
                     unsupported_type(diagnostics, arg_value, &item_type);
@@ -278,7 +316,7 @@ pub(crate) fn value_of_correct_type(
                                 }
                             }
                         }
-                        value_of_correct_type(diagnostics, schema, ty, v, var_defs);
+                        value_type(diagnostics, schema, ty, v, var_defs);
                     }
                 })
             }
