@@ -117,6 +117,7 @@ fn check_generated_consumer(framework: &str) {
     assert!(!source.contains("rev ="));
     assert!(!source.contains("branch ="));
     assert!(!source.contains("tag ="));
+    assert!(!source.contains("apollo-compiler"));
     let adapter = format!("necrassrs-{framework}");
     for package in ["necrassrs", adapter.as_str(), "necrassrs-build"] {
         let git = format!(
@@ -134,13 +135,6 @@ fn check_generated_consumer(framework: &str) {
         );
         source = source.replace(&git, &local);
     }
-    let apollo = workspace
-        .join("vendor/apollo-compiler")
-        .canonicalize()
-        .unwrap();
-    let patch = r#"apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", version = "1.33.0" }"#;
-    assert!(source.contains(patch));
-    source = source.replace(patch, &format!("apollo-compiler = {{ path = {apollo:?} }}"));
     fs::write(manifest, source).unwrap();
     fs::copy(workspace.join("Cargo.lock"), project.join("Cargo.lock")).unwrap();
 

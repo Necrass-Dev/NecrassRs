@@ -1,11 +1,11 @@
-use apollo_compiler::{
+use necrassrs::Response;
+use reed_compiler::{
     Name,
     response::{
         GraphQLError, JsonMap, ResponseDataPathSegment,
         serde_json_bytes::{json, to_value},
     },
 };
-use necrassrs::Response;
 
 #[test]
 fn execution_error_response_contains_null_data_and_path() {

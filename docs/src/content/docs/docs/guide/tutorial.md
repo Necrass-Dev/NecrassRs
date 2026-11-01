@@ -17,8 +17,7 @@ Union results, nullable and list forms, recursive input and Object relationships
 and generated query and mutation routing. Borrowed Object results and generated
 subscription routing remain unsupported. These examples describe this checkout;
 a previously resolved Git dependency must be updated before it contains these
-changes. Use the maintained Apollo source replacement configured in the
-repository's Cargo manifests.
+changes. NecrassRs uses the Reed compiler packages included in this repository.
 
 ## 1. Create a project
 

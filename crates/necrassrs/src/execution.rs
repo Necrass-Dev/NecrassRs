@@ -1,4 +1,5 @@
-use apollo_compiler::{
+use futures_util::future::join_all;
+use reed_compiler::{
     Name, Node, Schema,
     ast::{Type, Value},
     collections::{HashSet, IndexMap},
@@ -9,7 +10,6 @@ use apollo_compiler::{
     schema::{ExtendedType, FieldDefinition, ObjectType},
     validation::Valid,
 };
-use futures_util::future::join_all;
 
 use crate::{
     Request, ResolvedObject, ResolvedValue, ResolverError, Response, ScalarError, ScalarLiteralMap,
@@ -857,7 +857,7 @@ fn coerce_input_value(
 fn variable_literal(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
-    definition: &apollo_compiler::ast::VariableDefinition,
+    definition: &reed_compiler::ast::VariableDefinition,
     value: &JsonValue,
     path: &[ResponseDataPathSegment],
 ) -> Result<Node<Value>, Box<GraphQLError>> {
@@ -1466,7 +1466,7 @@ mod tests {
     };
 
     use crate::{FieldCoordinate, Request, ResolvedValue, ResolverError, request::prepare_request};
-    use apollo_compiler::{
+    use reed_compiler::{
         Schema,
         response::{
             JsonMap, JsonValue, ResponseDataPathSegment,

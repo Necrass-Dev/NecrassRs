@@ -1,4 +1,4 @@
-use apollo_compiler::{
+use reed_compiler::{
     Node,
     ast::Value,
     parser::SourceSpan,

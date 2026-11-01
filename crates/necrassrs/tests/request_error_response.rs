@@ -1,8 +1,8 @@
-use apollo_compiler::response::{
+use necrassrs::Response;
+use reed_compiler::response::{
     GraphQLError, JsonMap,
     serde_json_bytes::{json, to_value},
 };
-use necrassrs::Response;
 
 #[test]
 fn request_error_response_omits_data() {

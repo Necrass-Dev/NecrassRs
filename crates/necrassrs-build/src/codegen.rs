@@ -1,17 +1,17 @@
-//! In-memory Rust generation from a validated Apollo schema.
+//! In-memory Rust generation from a validated Reed schema.
 //!
 //! Use [`crate::build`] for normal Cargo integration and editable resolver
 //! synchronization. This module only generates disposable contract source.
 
-use apollo_compiler::{
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
+use reed_compiler::{
     Schema,
     ast::{NamedType, Type},
     parser::SourceSpan,
     schema::{ComponentName, ExtendedType},
     validation::Valid,
 };
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
 
 /// Returns Rust source containing embedded SDL, argument types, resolver traits,
 /// and a schema dispatcher. Does not write files or synchronize user source.
@@ -30,7 +30,7 @@ use quote::{format_ident, quote};
 /// abstract results. Custom scalars and borrowed Objects are not yet supported.
 ///
 /// ```
-/// use apollo_compiler::Schema;
+/// use reed_compiler::Schema;
 /// let schema = Schema::parse_and_validate(
 ///     "type Query { hello: String! }", "schema.graphql",
 /// ).unwrap();
@@ -134,7 +134,7 @@ fn kosaraju(graph: &[Vec<usize>]) -> Vec<usize> {
 
 fn boxed_input_fields(
     schema: &Valid<Schema>,
-) -> std::collections::HashSet<(apollo_compiler::Name, apollo_compiler::Name)> {
+) -> std::collections::HashSet<(reed_compiler::Name, reed_compiler::Name)> {
     use std::collections::{HashMap, HashSet};
 
     let inputs: Vec<_> = schema
@@ -1867,9 +1867,9 @@ fn output_list_value(
 
 #[cfg(test)]
 mod test {
-    use apollo_compiler::Schema;
     use miette::Diagnostic;
     use quote::{ToTokens, quote};
+    use reed_compiler::Schema;
 
     fn normalize_type(tokens: proc_macro2::TokenStream) -> String {
         syn::parse2::<syn::Type>(tokens)
@@ -5140,10 +5140,6 @@ mod test {
                 .as_nanos(),
         ));
         fs::create_dir(&directory).unwrap();
-        let apollo = workspace
-            .join("vendor/apollo-compiler")
-            .canonicalize()
-            .unwrap();
         let runtime = workspace.join("crates/necrassrs").canonicalize().unwrap();
         fs::write(
             directory.join("Cargo.toml"),
@@ -5161,8 +5157,6 @@ mod test {
                     necrassrs = {{ path = {runtime:?} }}
                     futures = "0.3"
                     serde_json = "1.0"
-                    [patch.crates-io]
-                    apollo-compiler = {{ path = {apollo:?} }}
                     [profile.dev]
                     panic = "abort"
                     [profile.release]

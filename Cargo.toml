@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/lead-compiler",
-    "crates/lead-parser",
+    "crates/reed-compiler",
+    "crates/reed-parser",
     "crates/necrassrs",
     "crates/necrassrs-actix",
     "crates/necrassrs-axum",
@@ -13,18 +13,12 @@ members = [
     "examples/tutorial"
 ]
 resolver = "3"
-exclude = ["vendor/apollo-compiler", "vendor/apollo-parser"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-apollo-compiler = "1.33.0"
-lead-compiler = { path = "crates/lead-compiler", version = "0.1.0" }
-lead-parser = { path = "crates/lead-parser", version = "0.1.0" }
+reed-compiler = { path = "crates/reed-compiler", version = "0.1.0" }
+reed-parser = { path = "crates/reed-parser", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
-
-[patch.crates-io]
-apollo-compiler = { path = "vendor/apollo-compiler" }
-apollo-parser = { path = "vendor/apollo-parser" }
