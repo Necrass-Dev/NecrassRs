@@ -1,4 +1,4 @@
-use apollo_compiler::{
+use lead_compiler::{
     ExecutableDocument, Node,
     ast::Document,
     executable::Operation,
@@ -78,7 +78,7 @@ impl From<Vec<GraphQLError>> for RequestError {
 }
 
 pub(crate) fn prepare_request(
-    schema: &Valid<apollo_compiler::Schema>,
+    schema: &Valid<lead_compiler::Schema>,
     request: &Request,
 ) -> Result<PreparedRequest, RequestError> {
     // Parse once into Apollo's AST so syntax and validation failures remain distinct.
@@ -120,8 +120,8 @@ pub(crate) fn prepare_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apollo_compiler::Schema;
-    use apollo_compiler::response::serde_json_bytes::json;
+    use lead_compiler::Schema;
+    use lead_compiler::response::serde_json_bytes::json;
 
     const MULTIPLE_OPERATIONS: &str = r#"
         query First {

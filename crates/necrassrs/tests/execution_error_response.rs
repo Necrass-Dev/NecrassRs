@@ -1,4 +1,4 @@
-use apollo_compiler::{
+use lead_compiler::{
     Name,
     response::{
         GraphQLError, JsonMap, ResponseDataPathSegment,

@@ -3,7 +3,7 @@
 //! Use [`crate::build`] for normal Cargo integration and editable resolver
 //! synchronization. This module only generates disposable contract source.
 
-use apollo_compiler::{
+use lead_compiler::{
     Schema,
     ast::{NamedType, Type},
     parser::SourceSpan,
@@ -30,7 +30,7 @@ use quote::{format_ident, quote};
 /// abstract results. Custom scalars and borrowed Objects are not yet supported.
 ///
 /// ```
-/// use apollo_compiler::Schema;
+/// use lead_compiler::Schema;
 /// let schema = Schema::parse_and_validate(
 ///     "type Query { hello: String! }", "schema.graphql",
 /// ).unwrap();
@@ -134,7 +134,7 @@ fn kosaraju(graph: &[Vec<usize>]) -> Vec<usize> {
 
 fn boxed_input_fields(
     schema: &Valid<Schema>,
-) -> std::collections::HashSet<(apollo_compiler::Name, apollo_compiler::Name)> {
+) -> std::collections::HashSet<(lead_compiler::Name, lead_compiler::Name)> {
     use std::collections::{HashMap, HashSet};
 
     let inputs: Vec<_> = schema
@@ -1867,7 +1867,7 @@ fn output_list_value(
 
 #[cfg(test)]
 mod test {
-    use apollo_compiler::Schema;
+    use lead_compiler::Schema;
     use miette::Diagnostic;
     use quote::{ToTokens, quote};
 

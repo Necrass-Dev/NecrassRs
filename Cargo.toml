@@ -20,7 +20,6 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-apollo-compiler = "1.33.0"
 lead-compiler = { path = "crates/lead-compiler", version = "0.1.0" }
 lead-parser = { path = "crates/lead-parser", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }

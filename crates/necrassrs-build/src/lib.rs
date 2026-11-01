@@ -43,7 +43,7 @@
 //! This affects all panics; ordinary application failures should be returned as
 //! runtime resolver errors.
 
-use apollo_compiler::Schema;
+use lead_compiler::Schema;
 use std::path::{Path, PathBuf};
 
 pub mod codegen;
@@ -176,8 +176,8 @@ pub enum BuildError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
-    /// SDL parsing or schema validation diagnostics from Apollo Compiler.
-    Schema(apollo_compiler::validation::DiagnosticList),
+    /// SDL parsing or schema validation diagnostics from Lead Compiler.
+    Schema(lead_compiler::validation::DiagnosticList),
     /// A valid GraphQL schema uses an unsupported generation feature.
     Codegen(codegen::CodegenError),
     /// Existing or synchronized resolver source could not be parsed or reconciled.

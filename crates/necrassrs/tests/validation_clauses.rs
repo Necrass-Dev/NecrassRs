@@ -1,4 +1,4 @@
-use apollo_compiler::Schema;
+use lead_compiler::Schema;
 use necrassrs::{Dispatcher, FieldCoordinate, JsonMap, Request, ResolvedValue, ResolverError};
 
 struct NoDispatch;

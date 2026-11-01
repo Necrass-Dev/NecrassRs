@@ -1,4 +1,4 @@
-use apollo_compiler::response::{
+use lead_compiler::response::{
     GraphQLError, JsonMap,
     serde_json_bytes::{json, to_value},
 };

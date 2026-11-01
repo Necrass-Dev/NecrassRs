@@ -301,32 +301,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "apollo-compiler"
-version = "1.33.0"
-dependencies = [
- "ahash",
- "apollo-parser",
- "ariadne",
- "futures",
- "indexmap",
- "rowan",
- "serde",
- "serde_json_bytes",
- "thiserror 2.0.20",
- "triomphe",
- "typed-arena",
-]
-
-[[package]]
-name = "apollo-parser"
-version = "0.8.6"
-dependencies = [
- "memchr",
- "rowan",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "ariadne"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1719,10 +1693,10 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 name = "necrassrs"
 version = "0.1.0"
 dependencies = [
- "apollo-compiler",
  "async-graphql",
  "criterion",
  "futures-util",
+ "lead-compiler",
  "serde",
  "serde_json",
  "tokio",
@@ -1758,8 +1732,8 @@ dependencies = [
 name = "necrassrs-build"
 version = "0.1.0"
 dependencies = [
- "apollo-compiler",
  "futures",
+ "lead-compiler",
  "miette",
  "proc-macro2",
  "quote",
@@ -3090,3 +3064,11 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "apollo-compiler"
+version = "1.33.0"
+
+[[patch.unused]]
+name = "apollo-parser"
+version = "0.8.6"

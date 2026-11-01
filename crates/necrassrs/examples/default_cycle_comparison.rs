@@ -1,6 +1,6 @@
 //! Experimental default-cycle validators for issue #23, not production validation.
 //! Run: cargo run -p necrassrs --release --locked --example default_cycle_comparison
-use apollo_compiler::{Name, Schema, ast::Value, schema::ExtendedType};
+use lead_compiler::{Name, Schema, ast::Value, schema::ExtendedType};
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
