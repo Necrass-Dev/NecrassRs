@@ -1,4 +1,4 @@
-use lead_compiler::{ast, Schema};
+use lead_compiler::Schema;
 
 #[test]
 fn parses_and_validates_a_schema() {
@@ -6,43 +6,18 @@ fn parses_and_validates_a_schema() {
 }
 
 #[test]
-fn exposes_maintained_parser_unicode_behavior() {
-    for (literal, expected) in [(r#""\uD83D\uDE00""#, "😀"), (r#""\u{1F600}""#, "😀")] {
-        let document = ast::Document::parse(
-            format!("query Example($value: String = {literal}) {{ value }}"),
-            "query.graphql",
-        )
-        .unwrap();
-        let ast::Definition::OperationDefinition(operation) = &document.definitions[0] else {
-            panic!("expected an operation definition")
-        };
-        assert_eq!(
-            operation.variables[0]
-                .default_value
-                .as_ref()
-                .unwrap()
-                .as_str(),
-            Some(expected)
-        );
-    }
+fn rejects_cyclic_defaults_without_aborting() {
+    const CHILD_ENV: &str = "LEAD_COMPILER_CYCLIC_DEFAULT_TEST_CASE";
+    let cases = [
+        "input R { next: R = {} } type Query { value(input: R): String }",
+        "input R { next: R = {} } type Query { value(input: R = {}): String }",
+        "input A { bs: [B] = [{}] } input B { a: A = {} } type Query { value(input: A): String }",
+    ];
 
-    assert!(ast::Document::parse(
-        "query Example($value: String = \"\\uD800\") { value }",
-        "query.graphql"
-    )
-    .is_err());
-}
-
-#[test]
-fn rejects_cyclic_input_defaults_without_aborting() {
-    const CHILD_ENV: &str = "LEAD_COMPILER_CYCLIC_DEFAULT_TEST_CHILD";
-
-    if std::env::var_os(CHILD_ENV).is_some() {
-        let errors = Schema::parse_and_validate(
-            "input Recursive { next: Recursive = {} } type Query { value(input: Recursive): String }",
-            "schema.graphql",
-        )
-        .expect_err("cyclic input defaults must fail schema validation");
+    if let Ok(index) = std::env::var(CHILD_ENV) {
+        let errors =
+            Schema::parse_and_validate(cases[index.parse::<usize>().unwrap()], "schema.graphql")
+                .expect_err("cyclic defaults must fail schema validation");
         assert!(errors.errors.iter().any(|diagnostic| {
             diagnostic
                 .to_json()
@@ -52,20 +27,22 @@ fn rejects_cyclic_input_defaults_without_aborting() {
         return;
     }
 
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "rejects_cyclic_input_defaults_without_aborting",
-            "--nocapture",
-        ])
-        .env(CHILD_ENV, "1")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "cyclic default validation failed ({})\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for (index, _) in cases.iter().enumerate() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "rejects_cyclic_defaults_without_aborting",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, index.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "cyclic default validation failed ({})\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

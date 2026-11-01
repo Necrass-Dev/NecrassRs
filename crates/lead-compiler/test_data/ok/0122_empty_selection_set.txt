@@ -1,0 +1,140 @@
+Schema {
+    sources: {
+        1: SourceFile {
+            path: "built_in.graphql",
+            source_text: include_str!("built_in.graphql"),
+        },
+        51: SourceFile {
+            path: "0122_empty_selection_set.graphql",
+            source_text: "query getName {}\n\ntype Query {\n  topProducts(first: Int): Product,\n}\n\ntype Product {\n  name: String\n  birthday: String\n}",
+        },
+    },
+    schema_definition: SchemaDefinition {
+        description: None,
+        directives: [],
+        query: Some(
+            ComponentName {
+                origin: Definition,
+                name: "Query",
+            },
+        ),
+        mutation: None,
+        subscription: None,
+    },
+    directive_definitions: {
+        "skip": built_in_directive!("skip"),
+        "include": built_in_directive!("include"),
+        "deprecated": built_in_directive!("deprecated"),
+        "specifiedBy": built_in_directive!("specifiedBy"),
+        "oneOf": built_in_directive!("oneOf"),
+    },
+    types: {
+        "__Schema": built_in_type!("__Schema"),
+        "__Type": built_in_type!("__Type"),
+        "__TypeKind": built_in_type!("__TypeKind"),
+        "__Field": built_in_type!("__Field"),
+        "__InputValue": built_in_type!("__InputValue"),
+        "__EnumValue": built_in_type!("__EnumValue"),
+        "__Directive": built_in_type!("__Directive"),
+        "__DirectiveLocation": built_in_type!("__DirectiveLocation"),
+        "Int": built_in_type!("Int"),
+        "String": built_in_type!("String"),
+        "Boolean": built_in_type!("Boolean"),
+        "Query": Object(
+            18..68 @51 ObjectType {
+                description: None,
+                name: "Query",
+                implements_interfaces: {},
+                directives: [],
+                fields: {
+                    "topProducts": Component {
+                        origin: Definition,
+                        node: 33..65 @51 FieldDefinition {
+                            description: None,
+                            name: "topProducts",
+                            arguments: [
+                                45..55 @51 InputValueDefinition {
+                                    description: None,
+                                    name: "first",
+                                    ty: 52..55 @51 Named(
+                                        "Int",
+                                    ),
+                                    default_value: None,
+                                    directives: [],
+                                },
+                            ],
+                            ty: Named(
+                                "Product",
+                            ),
+                            directives: [],
+                        },
+                    },
+                },
+            },
+        ),
+        "Product": Object(
+            70..120 @51 ObjectType {
+                description: None,
+                name: "Product",
+                implements_interfaces: {},
+                directives: [],
+                fields: {
+                    "name": Component {
+                        origin: Definition,
+                        node: 87..99 @51 FieldDefinition {
+                            description: None,
+                            name: "name",
+                            arguments: [],
+                            ty: Named(
+                                "String",
+                            ),
+                            directives: [],
+                        },
+                    },
+                    "birthday": Component {
+                        origin: Definition,
+                        node: 102..118 @51 FieldDefinition {
+                            description: None,
+                            name: "birthday",
+                            arguments: [],
+                            ty: Named(
+                                "String",
+                            ),
+                            directives: [],
+                        },
+                    },
+                },
+            },
+        ),
+    },
+}
+ExecutableDocument {
+    sources: {
+        1: SourceFile {
+            path: "built_in.graphql",
+            source_text: include_str!("built_in.graphql"),
+        },
+        51: SourceFile {
+            path: "0122_empty_selection_set.graphql",
+            source_text: "query getName {}\n\ntype Query {\n  topProducts(first: Int): Product,\n}\n\ntype Product {\n  name: String\n  birthday: String\n}",
+        },
+    },
+    operations: OperationMap {
+        anonymous: None,
+        named: {
+            "getName": 0..16 @51 Operation {
+                operation_type: Query,
+                name: Some(
+                    "getName",
+                ),
+                variables: [],
+                directives: [],
+                selection_set: SelectionSet {
+                    ty: "Query",
+                    selections: [],
+                },
+            },
+        },
+    },
+    fragments: {},
+}

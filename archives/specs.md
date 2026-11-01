@@ -198,8 +198,8 @@ Acceptance and test migration:
 
 - Reject self-cyclic defaults and mutual defaults through lists directly through the patched schema-validation API. Keep subprocess isolation for regressions that could otherwise abort the test runner.
 - Preserve valid recursive types, finite explicitly supplied values, terminating defaults, and reuse of the same finite default across list items and arguments. These are not evidence of a default-expansion cycle.
-- `request::tests::cyclic_input_default_is_rejected_without_aborting` now requires Apollo schema rejection with diagnostics; later request rejection no longer satisfies the regression.
-- The five cases from `execution::tests::cyclic_default_execution_preserves_errors_without_dispatch` now live in `request::tests::cyclic_argument_defaults_are_rejected_before_execution`: literal input, omitted arguments, absent argument variables, absent input-field variables, and a mutual cycle through a list. Each subprocess requires Apollo schema rejection before request preparation or dispatch. The original request documents remain as reproduction context. The previous alias-path/null response is a wrapper fallback, not the target response to an invalid schema.
+- `lead-compiler`'s `rejects_cyclic_defaults_without_aborting` requires schema rejection with diagnostics; later request rejection does not satisfy the regression.
+- Distinct self-cycle, argument-default, and mutual-list-cycle schemas run in isolated subprocesses owned by Lead. Request variants that exercise the same invalid schema are not duplicated in NecrassRs. The previous alias-path/null response is a wrapper fallback, not the target response to an invalid schema.
 - Preserve legitimate argument-error path and null-propagation coverage using valid schemas and applicable execution errors; do not keep an invalid schema valid merely to retain the old assertions. References: [Coercing Field Arguments](https://spec.graphql.org/September2025/#sec-Coercing-Field-Arguments), [Handling Execution Errors](https://spec.graphql.org/September2025/#sec-Handling-Execution-Errors).
 - Remove superseded `active_defaults` cycle guards only after the patched dependency is used by build/runtime/consumer paths and direct validation regressions pass. Retain NecrassRs' required field-argument coercion.
 
@@ -221,8 +221,8 @@ separate work. No complete G08/G09/G11 or next-edition conformance is claimed.
 
 | Clause / level                                                             | Applicability and implementation                              | Executable evidence                                                                                                                                                | Status                                                                                                       |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| September 2025 §3.10 Type Validation, default-cycle prohibition (required) | Apollo field-default graph; distinct from type cycles         | Existing request cyclic subprocess tests; `graph_validation_distinguishes_defaults_from_type_recursion`; `graph_validation_handles_shared_and_long_default_chains` | Passed locally; includes diagnostics, extensions, finite recursion and shared/long chains                    |
-| September 2025 §3.10 Input Coercion and §6.1.2 (required)                  | Apollo variable and nested input-field defaults               | `variable_defaults_are_coerced_by_apollo`; `supplied_objects_apply_nested_defaults_without_replacing_null_or_values`                                               | Passed directly through Apollo without wrapper repair                                                        |
+| September 2025 §3.10 Type Validation, default-cycle prohibition (required) | Apollo field-default graph; distinct from type cycles         | Lead cyclic subprocess tests; `graph_validation_distinguishes_defaults_from_type_recursion`; `graph_validation_handles_shared_and_long_default_chains`             | Passed locally; includes diagnostics, extensions, finite recursion and shared/long chains                    |
+| September 2025 §3.10 Input Coercion and §6.1.2 (required)                  | Lead variable and nested input-field defaults                 | `variable_defaults_are_coerced_by_lead`; `supplied_objects_apply_nested_defaults_without_replacing_null_or_values`                                                 | Passed directly through the compiler without wrapper repair                                                  |
 | September 2025 §3.11 List Input Coercion (required)                        | Singleton and nested-list defaults in the public variable API | The same direct API tests and retained execution default regressions                                                                                               | Passed locally                                                                                               |
 | September 2025 §6.4.1 (required; preserved boundary)                       | NecrassRs executor field-argument coercion                    | `input_object_defaults_and_single_value_list_coercion_are_applied`; finite-default reuse and existing alias/error/null propagation tests                           | Passed after removing only superseded guards                                                                 |
 | Cargo source selection (project integration requirement)                   | Workspace and external consumer roots, including CLI starter  | `consumer_root_resolves_patched_apollo_for_build_and_runtime`; `cyclic_defaults_fail_before_consumer_generation`; CLI generated-consumer check                     | Passed for local paths; pinned remote Git verification is recorded in [the patch record](apollo-compiler.md) |
@@ -247,8 +247,8 @@ recorded below; it does not establish complete GraphQL or Working Draft conforma
 | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | G03: built-in scalars; §3.5, §6.4.3                     | `generated_consumer_executes_leaf_boundaries_and_variable_numbers`; finite/non-finite Float consumer tests; `json_variable_numbers_are_normalized_without_changing_literal_kinds` | Int boundaries, scalar inputs/results, ID string preservation and integer serialization, JSON integer-valued numbers versus floating-point literals. Custom scalar evidence is recorded below.                                                                |
 | G04: enums; §3.9                                        | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; enum result and nested-list consumer tests                                                               | Enum literals, JSON string variables, membership rejection, and enum results. Invalid input does not dispatch.                                                                                                                                                |
-| G06/G11: input presence/defaults; §3.10, §6.1.2, §6.4.1 | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; public Apollo default tests                                                                              | Argument, variable, nested-field defaults, absent variables, explicit null, supplied values, and unknown literal/variable fields reach the expected boundary.                                                                                                 |
-| G07: OneOf; §3.10.1, §5.8.5                             | Generated OneOf consumer tests; `apollo_one_of` integration tests; OneOf schema/document request tests                                                                            | Valid alternatives and invalid empty/multiple/unknown/null selections; undefined second member, schema restrictions, and non-null member-variable compatibility. Draft unbreakable-cycle validation is covered by the #28 regressions below.                                              |
+| G06/G11: input presence/defaults; §3.10, §6.1.2, §6.4.1 | `generated_consumer_preserves_coerced_defaults_presence_and_enum_kinds`; public Lead default tests                                                                                | Argument, variable, nested-field defaults, absent variables, explicit null, supplied values, and unknown literal/variable fields reach the expected boundary.                                                                                                 |
+| G07: OneOf; §3.10.1, §5.8.5                             | Generated OneOf consumer tests and Lead `one_of` tests                                                                                                                             | Valid alternatives and invalid empty/multiple/unknown/null selections; undefined second member, schema restrictions, and non-null member-variable compatibility. Draft unbreakable-cycle validation is covered by the #28 regressions below.                                              |
 | G08: list/nullability; §3.11, §3.12                     | Input/result wrapper tests; generated default consumer; `generated_float_list_error_preserves_nullable_items_and_index_path`                                                      | Independent container/item wrappers, nested singleton/default coercion, null items, and indexed leaf conversion errors preserving nullable siblings.                                                                                                          |
 | G09: recursive Rust layout                              | Kosaraju and schema-wrapper unit tests; `generated_recursive_inputs_box_fields_and_convert_finite_values`; expanded Cargo rebuild                                                 | Self/mutual/OneOf recursion, mixed non-null edges, lists, names, finite values, and presence states. Invalid schema/default cycles are validated separately.                                                                                                  |
 | Source synchronization (project contract)               | `expanded_input_and_result_contracts_rebuild_without_replacing_user_body`                                                                                                         | A real consumer rebuilds after input/default/recursive contract changes, retains its body, and compiles a new enum-return stub through the patched dependency. Retained return signatures remain user-written; changed return types can require manual edits. |
@@ -404,14 +404,14 @@ Acceptance must distinguish body failure from normal end-of-body, verify that no
 ## Issue #28 regression inventory
 
 The released baseline and immutable Working Draft above remain authoritative.
-These checks exercise the public Apollo boundary used by build integration and
+These checks exercise the public Lead boundary used by build integration and
 request preparation. Each row records its current RED or GREEN status; passing
 the listed regressions does not establish complete conformance.
 Generated-consumer integration evidence is recorded below the dependency checks.
 
 Each row identifies one independently runnable test in
-[`apollo_conformance.rs`](../crates/necrassrs/tests/apollo_conformance.rs).
-Run a row with `cargo test -p necrassrs --test apollo_conformance --locked <test> -- --exact`.
+[`conformance.rs`](../crates/lead-compiler/tests/conformance.rs).
+Run a row with `cargo test -p lead-compiler --test main --locked conformance::<test> -- --exact`.
 "Required" identifies a specification contract; "Project boundary" records
 schema-time rejection for a coercion requirement without claiming an additional
 explicit schema-validation clause.
@@ -424,19 +424,19 @@ explicit schema-validation clause.
 | Released §3.6: Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_field_argument` | GREEN |
 | Released §3.10: Input Object type validation; §3.13.3 | Required | Input value definition validation | `schema_rejects_deprecated_required_input_field` | GREEN |
 | Released §3.13.3: @deprecated | Required | Input value definition validation | `schema_rejects_deprecated_required_directive_argument` | GREEN |
-| Released §2.3–2.4: Document and Operations | Required | Apollo parser and AST conversion | `document_accepts_operation_descriptions` | GREEN |
-| Released §2.8: Fragments | Required | Apollo parser and AST conversion | `document_accepts_fragment_descriptions` | GREEN |
-| Pinned §2.5: Selection Sets | Required | Apollo parser and executable document validation | `document_accepts_empty_root_selection` | GREEN |
-| Pinned §5.3.3: Leaf Field Selections | Required | Apollo parser, AST and field validation | `document_distinguishes_empty_and_absent_composite_selections` | GREEN |
+| Released §2.3–2.4: Document and Operations | Required | Lead parser and AST conversion | `document_accepts_operation_descriptions` | GREEN |
+| Released §2.8: Fragments | Required | Lead parser and AST conversion | `document_accepts_fragment_descriptions` | GREEN |
+| Pinned §2.5: Selection Sets | Required | Lead parser and executable document validation | `document_accepts_empty_root_selection` | GREEN |
+| Pinned §5.3.3: Leaf Field Selections | Required | Lead parser, AST and field validation | `document_distinguishes_empty_and_absent_composite_selections` | GREEN |
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_self_cycle` | GREEN |
 | Pinned §3.10: InputObjectHasUnbreakableCycle | Required | Input Object cycle validation | `schema_rejects_uninhabitable_one_of_mutual_cycle` | GREEN |
 | Pinned §3.10: InputObjectHasUnbreakableCycle, all OneOf alternatives | Required | Input Object cycle validation | `schema_rejects_one_of_when_all_alternatives_recurse` | GREEN |
 | Pinned §3.10: cycles through any ancestor | Required | Input Object cycle validation | `schema_rejects_one_of_cycles_through_non_root_ancestors` | GREEN |
 | Released §2.10.4: Unicode scalar escapes | Required | Parser lexer and CST string decoding | `strings_decode_unicode_scalar_escapes` | GREEN |
 | Released §5.6.3: input field uniqueness; §3 defaults at schema boundary | Required / Project boundary for schema defaults | Recursive literal validation, including custom scalars | `input_object_literals_reject_duplicate_fields` | GREEN |
-| Pinned §3.13: DirectiveDefinition | Required | Apollo parser, AST and directive validation | `schema_accepts_directives_on_directive_definitions` | GREEN |
-| Pinned §3.13.6: Directive Extensions | Required | Apollo parser and schema extension integration | `schema_accepts_directive_extensions` | GREEN |
-| Pinned §3.13: TypeSystemDirectiveLocation | Required | Apollo parser and directive location model | `schema_accepts_directive_definition_location` | GREEN |
+| Pinned §3.13: DirectiveDefinition | Required | Lead parser, AST and directive validation | `schema_accepts_directives_on_directive_definitions` | GREEN |
+| Pinned §3.13.6: Directive Extensions | Required | Lead parser and schema extension integration | `schema_accepts_directive_extensions` | GREEN |
+| Pinned §3.13: TypeSystemDirectiveLocation | Required | Lead parser and directive location model | `schema_accepts_directive_definition_location` | GREEN |
 | Pinned §4.2.6: __Directive | Required | Built-in schema and directive introspection | `introspection_reports_directive_deprecation_metadata` | GREEN |
 | Pinned §4.2.1: __Schema.directives | Required | Built-in schema and schema introspection | `introspection_filters_deprecated_directives` | GREEN |
 | Pinned §3.6: Object type validation | Required | Input value default validation | `schema_rejects_incompatible_field_argument_default` | GREEN |
@@ -472,8 +472,8 @@ mean exhaustive enumeration of every possible input. Stream-specific clauses
 §5.2.4.1 and §6.2.3 remain assigned to #29. The G01–G21 index above remains a
 parent work index, not a claim that all of #18 is complete.
 
-New boundary checks live in
-[`validation_clauses.rs`](../crates/necrassrs/tests/validation_clauses.rs):
+Language and compiler boundary checks live in
+[`clause_inventory.rs`](../crates/lead-compiler/tests/clause_inventory.rs):
 
 - `language_tokens_and_literal_values` checks §2.1 lexical names, BOM/comments,
   ignored commas and line endings; §2.10 literal kinds, numeric token restrictions,
@@ -482,20 +482,21 @@ New boundary checks live in
 - `schema_definition_and_extension_clauses` accepts a schema using schema, scalar,
   object, interface, union, enum, input, and directive extensions, then rejects the
   independently labelled cases below through `Schema::parse_and_validate`.
-- `executable_validation_clauses_precede_dispatch` accepts merged fields, aliases,
+- `executable_validation_clauses` accepts merged fields, aliases,
   repeatable directives, applicable abstract fragments, transitive fragment
   variables, and nullable variables with applicable defaults. Each invalid case
-  below is rejected both by Apollo and by public `execute`, with non-empty error
-  locations and no `data`. A dispatcher that panics on invocation verifies that
-  these failures precede application resolver calls.
+  below is rejected by Lead with non-empty diagnostics.
 
-Run these with `cargo test -p necrassrs --test validation_clauses --locked`.
+Run these with `cargo test -p lead-compiler --test main --locked clause_inventory -- --test-threads=1`.
+The NecrassRs [`validation_clauses.rs`](../crates/necrassrs/tests/validation_clauses.rs)
+keeps one integration check that a Lead validation error becomes an error-only
+GraphQL response before application dispatch.
 
 #### Schema definitions and extensions
 
 All rows below use `schema_definition_and_extension_clauses`; the case column is
 its exact assertion label. Implementation paths are relative to
-[`vendor/apollo-compiler/src`](../vendor/apollo-compiler/src).
+[`lead-compiler/src`](../crates/lead-compiler/src).
 
 | Source clause | Case | Implementation | Status |
 | --- | --- | --- | --- |
@@ -546,11 +547,10 @@ its exact assertion label. Implementation paths are relative to
 
 #### Executable documents
 
-All rows below use `executable_validation_clauses_precede_dispatch`. Apollo's
+All rows below use `executable_validation_clauses`. Lead's
 `executable/from_ast.rs` and `validation/` modules validate the document;
-[`request.rs`](../crates/necrassrs/src/request.rs) and
-[`execution.rs`](../crates/necrassrs/src/execution.rs) enforce the pre-dispatch
-boundary. Each case label identifies its input in the test source. Where a test label uses
+the separate NecrassRs integration check enforces the pre-dispatch response
+boundary without duplicating this matrix. Each case label identifies its input in the test source. Where a test label uses
 an older section number, the source-clause column gives the authoritative pinned
 number; test identifiers are retained for lookup.
 
@@ -603,7 +603,7 @@ number; test identifiers are retained for lookup.
 | --- | --- | --- | --- |
 | §3 validation; Project boundary: before generating files | `necrassrs-build::build` validates SDL before synchronization/generation | `cargo_build::invalid_sdl_does_not_destroy_existing_implementation`; `cargo_build::cyclic_defaults_fail_before_consumer_generation` | GREEN |
 | §6.1 GetOperation; Required | Request preparation selects the operation | `request::tests::{multiple_operations_require_an_operation_name,requested_operation_is_selected,unknown_operation_name_is_rejected}` | GREEN |
-| §3.5, §3.9–3.12, §5.8.5, §6.1.2; Required | Literal/variable coercion, OneOf restrictions, defaults, list/null semantics | `apollo_defaults`, `apollo_one_of`, request OneOf tests, and generated input/custom-scalar consumers documented above | GREEN |
+| §3.5, §3.9–3.12, §5.8.5, §6.1.2; Required | Literal/variable coercion, OneOf restrictions, defaults, list/null semantics | Lead `defaults` and `one_of` tests, plus generated input/custom-scalar consumers documented above | GREEN |
 | §2.6–2.8, §2.12, §3.13.1–3.13.2; Required | Aliases, fragments, and inclusion directives | `field_inside_named_fragment_is_executed`, `merged_fields_are_executed_once`, `skipped_field_is_not_executed`, `fragment_include_directive_uses_coerced_variable`, `non_applicable_inline_fragment_is_not_executed` in `execution.rs` | GREEN |
 | §4.1–4.2.6; Required | Generated consumer and JSON response boundary | `generated_consumer_introspects_all_supported_type_categories`; the fixture and asserted metadata are described above | GREEN |
 | §4.1–4.2; Required, with project introspection configuration | Public runtime introspection | `typename_returns_root_type_without_invoking_dispatcher`, `type_lookup_honors_aliases_fragments_and_unknown_names`, `disabled_introspection_rejects_schema_queries_before_dispatch`, `introspection_and_resolver_fields_share_one_response` | GREEN |
@@ -621,8 +621,8 @@ to pristine release sources successfully; see [Apollo provenance](apollo-compile
 Validation of the implementation at `5132020`:
 
 - `cargo test --workspace --locked`: passed, including generated-consumer
-  compilation/execution, all 25 `apollo_conformance` tests, and all three
-  `validation_clauses` tests.
+  compilation/execution, all 25 conformance tests, and all three clause-inventory
+  tests. These tests have since moved to Lead without changing their contracts.
 - `cargo fmt --all -- --check`: passed.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
 
@@ -632,6 +632,32 @@ assigned to #29, rather than reported as implemented. Full upstream development
 suites, remote builds of the unpublished branch, and transport exchanges were not
 run at this checkpoint. These results do not close parent #18 or certify every
 possible input against the entire specification.
+
+### Lead test restoration and ownership checkpoint
+
+On 2026-11-01, issue #68 restored Apollo Compiler 1.33.0's recorded test modules,
+534 fixture/support files, and the `rename` example required by the upstream test
+harness under `lead-compiler`. The upstream main suite, fixture validation,
+serialization/reparse checks, and the existing Lead public-API checks run as
+separate test executables so the process-global source identifiers remain isolated.
+
+GraphQL language, parsing, schema/document validation, introspection, and input or
+variable coercion assertions are owned by Lead. NecrassRs retains request
+selection, error-response conversion, resolver non-invocation, execution,
+generated-consumer, Cargo, and filesystem behavior. A cross-layer case tests the
+GraphQL rule in Lead and only the integration transformation in NecrassRs; it does
+not repeat the full compiler matrix or Lead's complete diagnostic text.
+
+Restored expectations were reconciled with the pinned September 2025 and Working
+Draft contracts. Built-in source positions and debug/introspection fixtures now
+include the maintained `@oneOf`, directive deprecation, directive-definition
+location, and explicit-selection-set models. The former parser-error fixture that
+combined an empty selection set with an ignored comma is now the valid
+`0122_empty_selection_set` fixture because both tokens are accepted by the pinned
+grammar. The upstream introspection sample now supplies a non-null deprecation
+reason and does not deprecate a required input field. These are expectation and
+fixture corrections; no incompatible GraphQL behavior was accepted to make the
+restored suite pass.
 
 ## Current implementation gaps
 
