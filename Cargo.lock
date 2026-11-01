@@ -1542,6 +1542,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4345964bb142484797b161f473a503a434de77149dd8c7427788c6e13379388"
 
 [[package]]
+name = "lead-compiler"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "ariadne",
+ "expect-test",
+ "futures",
+ "indexmap",
+ "lead-parser",
+ "rowan",
+ "serde",
+ "serde_json",
+ "serde_json_bytes",
+ "thiserror 2.0.20",
+ "triomphe",
+ "typed-arena",
+]
+
+[[package]]
 name = "lead-parser"
 version = "0.1.0"
 dependencies = [

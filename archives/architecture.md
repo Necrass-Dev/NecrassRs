@@ -54,9 +54,10 @@ Static request validation does not establish that runtime variable coercion or c
 
 ### 3.2 Staged Lead migration
 
-The workspace contains `lead-parser` 0.1.0, derived from the maintained Apollo
-Parser 0.8.6 source and corrections. It is an independently buildable and
-testable package intended to become the parser dependency of `lead-compiler`.
+The workspace contains `lead-parser` and `lead-compiler` 0.1.0, derived from the
+maintained Apollo Parser 0.8.6 and Apollo Compiler 1.33.0 sources and corrections.
+Both are independently buildable and testable packages. `lead-compiler` uses the
+local `lead-parser` package through the workspace's path-and-version dependency.
 NecrassRs does not use Lead at this stage: its runtime, build tooling, templates,
 and consumers continue to resolve the maintained Apollo packages through the
 existing overrides. Keep both vendor trees and their patches until that consumer
@@ -412,6 +413,7 @@ necrassrs/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── crates/
+│   ├── lead-compiler/
 │   ├── lead-parser/
 │   ├── necrassrs/
 │   ├── necrassrs-build/
