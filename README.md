@@ -103,6 +103,8 @@ The starter configures `panic = "abort"` for development and release builds. Cal
 
 | Package | Responsibility |
 | --- | --- |
+| `lead-parser` | GraphQL lexical analysis, parsing, and concrete syntax trees |
+| `lead-compiler` | GraphQL schema and document models, validation, introspection, and input coercion |
 | `necrassrs` | GraphQL requests, execution, resolver errors, and responses |
 | `necrassrs-build` | SDL validation, Rust generation, and resolver source synchronization |
 | `necrassrs-axum` | Axum request extraction, response conversion, and GraphiQL |
@@ -111,6 +113,8 @@ The starter configures `panic = "abort"` for development and release builds. Cal
 | `necrassrs-cli` | The `necrass init` project initializer |
 
 Applications normally depend on their HTTP adapter, which uses `necrassrs-http` internally. The shared package does not execute GraphQL or run a server. Axum routes use the adapter's `negotiate_response` middleware; Actix integrates negotiation into its extractor and responder.
+
+NecrassRs re-exports its public GraphQL schema, validation, JSON, and error types from `lead-compiler`, so ordinary applications do not need a direct compiler dependency. Applications that previously passed `apollo-compiler` values directly must migrate those values and imports to `lead-compiler`; identically shaped types from the two packages have different Rust type identities.
 
 ## Further reading
 

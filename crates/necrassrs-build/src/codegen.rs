@@ -1,4 +1,4 @@
-//! In-memory Rust generation from a validated Apollo schema.
+//! In-memory Rust generation from a validated Lead schema.
 //!
 //! Use [`crate::build`] for normal Cargo integration and editable resolver
 //! synchronization. This module only generates disposable contract source.

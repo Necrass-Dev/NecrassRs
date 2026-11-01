@@ -13,7 +13,6 @@ members = [
     "examples/tutorial"
 ]
 resolver = "3"
-exclude = ["vendor/apollo-compiler", "vendor/apollo-parser"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,7 +22,3 @@ edition = "2024"
 lead-compiler = { path = "crates/lead-compiler", version = "0.1.0" }
 lead-parser = { path = "crates/lead-parser", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
-
-[patch.crates-io]
-apollo-compiler = { path = "vendor/apollo-compiler" }
-apollo-parser = { path = "vendor/apollo-parser" }

@@ -81,7 +81,7 @@ pub(crate) fn prepare_request(
     schema: &Valid<lead_compiler::Schema>,
     request: &Request,
 ) -> Result<PreparedRequest, RequestError> {
-    // Parse once into Apollo's AST so syntax and validation failures remain distinct.
+    // Parse once into Lead's AST so syntax and validation failures remain distinct.
     let ast = Document::parse(request.document.as_str(), "request.graphql").map_err(|error| {
         RequestError {
             errors: error

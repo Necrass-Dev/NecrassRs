@@ -1,28 +1,28 @@
 ---
-title: "Local Apollo correction and upstream work"
+title: "Historical Apollo corrections and upstream work"
 ---
 
-NecrassRs maintains its own Apollo Compiler patch for
+This record documents the Apollo Compiler patches previously maintained for
 [#23](https://github.com/Necrass-Dev/NecrassRs/issues/23) and OneOf support
 and JSON numeric variable coercion in [#24](https://github.com/Necrass-Dev/NecrassRs/issues/24).
 The compiler and parser patches also carry language, validation, and introspection
-corrections for [#28](https://github.com/Necrass-Dev/NecrassRs/issues/28). The separate
+corrections for [#28](https://github.com/Necrass-Dev/NecrassRs/issues/28). The maintained implementation now lives in
+[`lead-compiler`](../crates/lead-compiler) and [`lead-parser`](../crates/lead-parser);
+NecrassRs no longer has a vendored Apollo source or Cargo source override. The separate
 [dodok8/apollo-rs fork](https://github.com/dodok8/apollo-rs) is a preparation area
 for the minimal upstream implementation and regression tests. It is not a local
 path dependency of NecrassRs. The two repositories have different change scopes.
 
 ## NecrassRs-owned artifacts
 
-- [Compiler source patch](../patches/apollo-compiler-1.33.0.patch), relative to
+- [Compiler source patch](patches/apollo-compiler-1.33.0.patch), relative to
   the compiler crate root, records changes to 20 library source files.
-- [Parser source patch](../patches/apollo-parser-0.8.6.patch), relative to the
+- [Parser source patch](patches/apollo-parser-0.8.6.patch), relative to the
   parser crate root, records changes to 10 library source files.
-- `vendor/apollo-compiler` and `vendor/apollo-parser` contain the corresponding
-  crates.io library sources with those patches applied, READMEs, license texts,
-  and `.cargo_vcs_info.json`. The compiler also retains the example embedded by
-  its rustdoc. External upstream test fixtures, benches, and other examples are
-  omitted; in-source tests remain in the source copies.
-- The build-only manifests omit upstream development targets/dependencies. The
+- At the 2026-10-30 checkpoint, `vendor/apollo-compiler` and
+  `vendor/apollo-parser` contained the corresponding patched crates.io sources.
+  These trees were removed after the implementation and tests moved to Lead.
+- The historical build-only manifests omitted upstream development targets/dependencies. The
   compiler's direct parser path selects the maintained parser from the same
   checkout. These are packaging adaptations, excluded from the source patches.
 - Direct dependency regressions, subprocess checks, executor cases, external
@@ -52,8 +52,8 @@ patch -p1 < /path/to/apollo-parser-0.8.6.patch
 On 2026-10-30, both patches applied cleanly to fresh release extractions, and every
 resulting `src/` file matched the corresponding vendored file byte for byte.
 
-Keep both vendored source trees and their patches synchronized. Each source diff excludes
-NecrassRs packaging changes and can be reviewed independently. The corrected
+The archived patches are immutable provenance for the Lead packages. Each source
+diff excludes NecrassRs packaging changes and can be reviewed independently. The corrected
 schema validator builds a field-default dependency graph and traverses it
 iteratively. Variable-default and input-field-default branches reuse Apollo's
 existing coercion while preserving validated scalar literal representations.
@@ -68,14 +68,14 @@ and unsigned integer values and normalize integer-valued floating representation
 to strings. Fractional values remain invalid for Int and ID. GraphQL literal
 validation is unchanged: floating-point literals remain invalid at Int and ID
 positions. `json_variable_numbers_are_normalized_without_changing_literal_kinds`
-checks this directly through Apollo, and a compiled generated consumer checks
+checks this directly through Lead, and a compiled generated consumer checks
 the same behavior through resolver dispatch and result serialization.
 
 Validated ID integer literals are converted directly from their AST text to
 strings before JSON number parsing. This preserves integers beyond signed,
 unsigned, or floating-point ranges in variable and nested input-field defaults,
 including singleton and nested lists. The NecrassRs argument coercion path uses
-the same representation for request literals and argument defaults. Public Apollo
+the same representation for request literals and argument defaults. Public Lead
 and compiled-consumer regressions cover positive/negative large IDs and 400-digit
 integers without rounding.
 
@@ -95,8 +95,8 @@ before recursively coercing the selected field, then checks that its coerced
 value remains non-null. The same path handles nested objects, list elements,
 and variable defaults. Nullable whole objects and nullable list items retain
 their ordinary semantics. Invalid supplied selections produce request errors
-before execution; `crates/necrassrs/tests/apollo_one_of.rs` exercises these rules
-directly through Apollo's public API.
+before execution; [`one_of.rs`](../crates/lead-compiler/tests/one_of.rs) exercises
+these rules directly through Lead's public API.
 
 ## Language, validation, and introspection corrections
 
@@ -119,9 +119,9 @@ Introspection reports `isOneOf`, directive deprecation metadata and filtering,
 The complete regression inventory and generated-consumer evidence are maintained
 in [specs.md](specs.md#issue-28-regression-inventory).
 
-## Cargo and consumers
+## Historical Cargo and consumer verification
 
-The NecrassRs root selects both maintained source copies:
+Before the Lead migration, the NecrassRs root selected both maintained source copies:
 
 ```toml
 [patch.crates-io]
@@ -139,7 +139,7 @@ does not inherit one from a dependency manifest:
 apollo-compiler = { path = "../NecrassRs/vendor/apollo-compiler" }
 ```
 
-Adjust the path for the checkout. Current CLI templates use the repository default
+After adjusting the path for the checkout, CLI templates used the repository default
 branch for framework dependencies and the compiler override. The first consumer
 build records resolved revisions in its lockfile. The compiler override is:
 
@@ -189,8 +189,8 @@ instead of applying JSON variable numeric restrictions to them.
 At the numeric-fix checkpoint, CLI templates pinned the corrected source. The
 recorded remote checks above remain historical evidence for those pinned revisions.
 
-Current CLI templates use the repository default branch for NecrassRs dependencies
-and the Apollo patch. The generated consumer's first build records the resolved
+Current CLI templates use the repository default branch for NecrassRs dependencies;
+Lead resolves transitively without an Apollo override. The generated consumer's first build records the resolved
 revisions in its lockfile. Local CLI checks validate both framework templates
 against the maintained checkout; they do not establish the behavior of a future
 remote revision. See [getting started](https://necrass.rs/docs/installation/#create-a-project) for the current
@@ -213,32 +213,23 @@ require an upstream merge. Upstream's existing compatibility discussion is
 [#928](https://github.com/apollographql/apollo-rs/issues/928); stricter default-cycle
 validation rejects schemas previously accepted by 1.33.0.
 
-## Verification and removal
+## Current verification
 
 From NecrassRs:
 
 ```sh
-cargo test -p necrassrs --locked --test apollo_defaults
-cargo test -p necrassrs --locked --test apollo_conformance --test validation_clauses
-cargo test -p necrassrs --locked cyclic_
+cargo test -p lead-compiler --test main --locked
+cargo test -p lead-compiler --test public_api --locked
+cargo test -p lead-compiler --test snapshot --locked
 cargo test -p necrassrs-build --test cargo_build --locked
 cargo test --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The workspace tests compile the maintained dependencies but do not run their full
-upstream development suites. Those suites were not run for this checkpoint. Run
-them from an appropriately patched full upstream checkout, not the build-only copy:
-
-```sh
-cargo test -p apollo-compiler --test main input_defaults
-cargo test -p apollo-compiler
-```
-
-Remove the local patch/source override only after an upstream release passes the
-portable regressions and external consumer checks. Update the root lockfile and
-all root/template overrides together. The #23 pinned specification comparison is recorded in [specs.md](specs.md).
+Issue #69 removed the vendored source trees and active Cargo overrides after the
+Lead suites and external consumer checks covered the maintained behavior. The
+Apollo patches remain archived for provenance. The #23 pinned specification comparison is recorded in [specs.md](specs.md).
 The pinned core specification difference inventory is recorded there as well.
 Subscription and transport work remains separate; local patch verification is not
 full parent-issue conformance.

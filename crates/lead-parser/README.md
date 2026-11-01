@@ -164,8 +164,8 @@ at your option.
 
 Lead Parser 0.1.0 is derived from Apollo Parser 0.8.6 at upstream revision
 [`e36ca6dceb668b4b0c703449beea39e75c16ead5`](https://github.com/apollographql/apollo-rs/tree/e36ca6dceb668b4b0c703449beea39e75c16ead5/crates/apollo-parser).
-NecrassRs maintains the source corrections recorded in
-[`patches/apollo-parser-0.8.6.patch`](../../patches/apollo-parser-0.8.6.patch).
+The source corrections used to establish Lead are preserved in the historical
+[`apollo-parser-0.8.6.patch`](../../archives/patches/apollo-parser-0.8.6.patch).
 Package naming, documentation paths, fixture discovery, source item order needed
 by workspace lints, and regression tests are adapted for the Lead package; the
 parser module organization is retained. The

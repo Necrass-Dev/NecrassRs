@@ -143,7 +143,7 @@ fn graph(schema: &Schema, keys: &[Key], work: &Work) -> (bool, usize) {
 }
 
 fn schema(input: &str) -> Schema {
-    // Deliberately bypass Apollo validation: this compares the missing rule itself.
+    // Deliberately bypass Lead validation: this compares the missing rule itself.
     Schema::parse(
         format!("{input}\ntype Query {{ hello: String }}"),
         "comparison.graphql",
