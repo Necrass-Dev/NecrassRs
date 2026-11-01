@@ -1,5 +1,5 @@
-use lead_compiler::{Schema, ast::Type as GraphqlType, schema::ExtendedType, validation::Valid};
 use quote::{format_ident, quote};
+use reed_compiler::{Schema, ast::Type as GraphqlType, schema::ExtendedType, validation::Valid};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -2239,7 +2239,7 @@ fn composite_resolver_output_type(
 
 fn named_composite_resolver_output_type(
     schema: &Schema,
-    name: &lead_compiler::Name,
+    name: &reed_compiler::Name,
     root_names: &[&str],
 ) -> Option<proc_macro2::TokenStream> {
     match schema.types.get(name)? {

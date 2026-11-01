@@ -1,4 +1,4 @@
-use lead_compiler::{
+use reed_compiler::{
     ExecutableDocument, Node,
     ast::Document,
     executable::Operation,
@@ -78,10 +78,10 @@ impl From<Vec<GraphQLError>> for RequestError {
 }
 
 pub(crate) fn prepare_request(
-    schema: &Valid<lead_compiler::Schema>,
+    schema: &Valid<reed_compiler::Schema>,
     request: &Request,
 ) -> Result<PreparedRequest, RequestError> {
-    // Parse once into Lead's AST so syntax and validation failures remain distinct.
+    // Parse once into Reed's AST so syntax and validation failures remain distinct.
     let ast = Document::parse(request.document.as_str(), "request.graphql").map_err(|error| {
         RequestError {
             errors: error
@@ -120,8 +120,8 @@ pub(crate) fn prepare_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lead_compiler::Schema;
-    use lead_compiler::response::serde_json_bytes::json;
+    use reed_compiler::Schema;
+    use reed_compiler::response::serde_json_bytes::json;
 
     const MULTIPLE_OPERATIONS: &str = r#"
         query First {

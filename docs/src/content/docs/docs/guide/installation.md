@@ -45,7 +45,7 @@ Use `necrass --help` and `necrass init --help` for command usage. Without a term
 supply an explicit command; bare `necrass` prints help and exits with an error.
 
 The starter uses Git dependencies from the repository's default branch, including
-the Lead compiler packages used by NecrassRs. Cargo records the resolved revisions in the
+the Reed compiler packages used by NecrassRs. Cargo records the resolved revisions in the
 new project's `Cargo.lock` on the first build. Keep that lockfile for repeatable
 builds; later builds reuse it rather than following every new Git commit.
 

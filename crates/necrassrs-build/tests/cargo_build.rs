@@ -1608,7 +1608,7 @@ impl Drop for Consumer {
 }
 
 #[test]
-fn consumer_root_resolves_lead_for_build_and_runtime() {
+fn consumer_root_resolves_reed_for_build_and_runtime() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     let rustc = Command::new("rustc").arg("-vV").output().unwrap();
     assert_success(&rustc);
@@ -1631,20 +1631,20 @@ fn consumer_root_resolves_lead_for_build_and_runtime() {
         .unwrap();
     assert_success(&metadata);
     let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
-    let lead: Vec<_> = metadata["packages"]
+    let reed: Vec<_> = metadata["packages"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|p| p["name"] == "lead-compiler")
+        .filter(|p| p["name"] == "reed-compiler")
         .collect();
-    assert_eq!(lead.len(), 1);
-    assert!(lead[0]["source"].is_null());
+    assert_eq!(reed.len(), 1);
+    assert!(reed[0]["source"].is_null());
     let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../lead-compiler/Cargo.toml")
+        .join("../reed-compiler/Cargo.toml")
         .canonicalize()
         .unwrap();
     assert_eq!(
-        Path::new(lead[0]["manifest_path"].as_str().unwrap()),
+        Path::new(reed[0]["manifest_path"].as_str().unwrap()),
         expected
     );
     for package in ["necrassrs", "necrassrs-build"] {
@@ -1665,7 +1665,7 @@ fn consumer_root_resolves_lead_for_build_and_runtime() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|d| d["name"] == "lead_compiler" && d["pkg"] == lead[0]["id"])
+                .any(|d| d["name"] == "reed_compiler" && d["pkg"] == reed[0]["id"])
         );
     }
     let main = consumer.directory.join("src/main.rs");
@@ -1679,7 +1679,7 @@ fn consumer_root_resolves_lead_for_build_and_runtime() {
     );
     fs::write(main, source).unwrap();
     consumer.bootstrap();
-    consumer.implement("hello", "lead consumer");
+    consumer.implement("hello", "reed consumer");
     let build = Command::new(env!("CARGO"))
         .current_dir(&consumer.directory)
         .args([
@@ -1704,7 +1704,7 @@ fn consumer_root_resolves_lead_for_build_and_runtime() {
     let response: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
     assert_eq!(
         response,
-        serde_json::json!({"data": {"hello": "lead consumer"}})
+        serde_json::json!({"data": {"hello": "reed consumer"}})
     );
 }
 

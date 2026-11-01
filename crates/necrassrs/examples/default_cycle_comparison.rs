@@ -1,6 +1,6 @@
 //! Experimental default-cycle validators for issue #23, not production validation.
 //! Run: cargo run -p necrassrs --release --locked --example default_cycle_comparison
-use lead_compiler::{Name, Schema, ast::Value, schema::ExtendedType};
+use reed_compiler::{Name, Schema, ast::Value, schema::ExtendedType};
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
@@ -143,7 +143,7 @@ fn graph(schema: &Schema, keys: &[Key], work: &Work) -> (bool, usize) {
 }
 
 fn schema(input: &str) -> Schema {
-    // Deliberately bypass Lead validation: this compares the missing rule itself.
+    // Deliberately bypass Reed validation: this compares the missing rule itself.
     Schema::parse(
         format!("{input}\ntype Query {{ hello: String }}"),
         "comparison.graphql",

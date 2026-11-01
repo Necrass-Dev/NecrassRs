@@ -1,5 +1,5 @@
 use futures_util::future::join_all;
-use lead_compiler::{
+use reed_compiler::{
     Name, Node, Schema,
     ast::{Type, Value},
     collections::{HashSet, IndexMap},
@@ -857,7 +857,7 @@ fn coerce_input_value(
 fn variable_literal(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
-    definition: &lead_compiler::ast::VariableDefinition,
+    definition: &reed_compiler::ast::VariableDefinition,
     value: &JsonValue,
     path: &[ResponseDataPathSegment],
 ) -> Result<Node<Value>, Box<GraphQLError>> {
@@ -1466,7 +1466,7 @@ mod tests {
     };
 
     use crate::{FieldCoordinate, Request, ResolvedValue, ResolverError, request::prepare_request};
-    use lead_compiler::{
+    use reed_compiler::{
         Schema,
         response::{
             JsonMap, JsonValue, ResponseDataPathSegment,

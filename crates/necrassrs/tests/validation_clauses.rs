@@ -1,5 +1,5 @@
-use lead_compiler::Schema;
 use necrassrs::{Dispatcher, FieldCoordinate, JsonMap, Request, ResolvedValue, ResolverError};
+use reed_compiler::Schema;
 
 struct NoDispatch;
 

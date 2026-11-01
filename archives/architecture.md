@@ -24,9 +24,9 @@ After initialization, building and running the application does not require an i
 ## 2. Design direction
 
 - SDL is the sole source of the public GraphQL contract. Do not synchronize Rust implementations back into SDL.
-- Use Lead Compiler's schema models and validation rather than duplicating a GraphQL schema model and validator.
-- Parsing uses `lead-parser` through Lead Compiler. Do not add a direct parser dependency unless direct CST access is needed.
-- Implement execution inside `necrassrs`, retaining Lead's models and validation. Do not require a separate executor crate.
+- Use Reed Compiler's schema models and validation rather than duplicating a GraphQL schema model and validator.
+- Parsing uses `reed-parser` through Reed Compiler. Do not add a direct parser dependency unless direct CST access is needed.
+- Implement execution inside `necrassrs`, retaining Reed's models and validation. Do not require a separate executor crate.
 - Use one Cargo workspace for the runtime, build library, Axum and Actix adapters, shared HTTP negotiation, and CLI. Keep code generation and Cargo integration as separate modules within the build library.
 - Axum is the first officially supported HTTP adapter. The execution core does not depend on Axum.
 - Applications own one Context type per schema and construct its values per request. Generate a struct for each field's arguments.
@@ -36,13 +36,13 @@ After initialization, building and running the application does not require an i
 - Do not spawn independent tasks for individual fields by default. Target a `Send` execution future with request-scoped borrowing.
 - Do not reuse prototype code. Carry forward observations and validation scenarios as acceptance criteria.
 
-## 3. Lead Compiler usage
+## 3. Reed Compiler usage
 
 ### 3.1 Responsibilities supplied by the dependency
 
 At build time, use SDL parsing, schema validation, and the `Schema` model. At runtime, parse and validate request documents against the schema and use `ExecutableDocument`.
 
-| Area                                | Lead Compiler contribution                                         | NecrassRs responsibility                                                                                                 |
+| Area                                | Reed Compiler contribution                                         | NecrassRs responsibility                                                                                                 |
 | ----------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | SDL                                 | Parsing, semantic validation, type and field lookup                | Supported-feature restrictions and Rust generation checks                                                                |
 | Code generation and synchronization | Validated schema model                                             | Rust naming and type mapping, traits, wrappers, dispatch, and AST-based reconciliation of editable resolver declarations |
@@ -50,26 +50,26 @@ At build time, use SDL parsing, schema validation, and the `Schema` model. At ru
 | Input processing                    | Public variable-value coercion API                                 | Field-argument processing, generated argument conversion, and custom scalar integration                                  |
 | Execution                           | Validated schema and executable-document models                    | Field collection, resolver dispatch, Context propagation, result coercion, errors, and null propagation                  |
 
-Static request validation does not establish that runtime variable coercion or custom scalar input validation has completed. Reuse `request::coerce_variable_values` for variables. Lead Compiler's field-argument coercion implementation is crate-private; do not rely on it as a consumer API.
+Static request validation does not establish that runtime variable coercion or custom scalar input validation has completed. Reuse `request::coerce_variable_values` for variables. Reed Compiler's field-argument coercion implementation is crate-private; do not rely on it as a consumer API.
 
-### 3.2 Lead package identity
+### 3.2 Reed package identity
 
-The workspace contains `lead-parser` and `lead-compiler` 0.1.0, derived from the
+The workspace contains `reed-parser` and `reed-compiler` 0.1.0, derived from the
 maintained Apollo Parser 0.8.6 and Apollo Compiler 1.33.0 sources and corrections.
-Both are independently buildable and testable packages. `lead-compiler` uses the
-local `lead-parser` package through the workspace's path-and-version dependency.
-NecrassRs runtime and build tooling use the same workspace `lead-compiler` package,
+Both are independently buildable and testable packages. `reed-compiler` uses the
+local `reed-parser` package through the workspace's path-and-version dependency.
+NecrassRs runtime and build tooling use the same workspace `reed-compiler` package,
 and generated consumers resolve those types through the NecrassRs packages without
 an Apollo override. The former Apollo source patches remain archived provenance;
 they are not active dependency wiring.
 
 ### 3.3 No separate schema crate for now
 
-The current architecture does not include `necrassrs-schema`. Do not copy Lead's entire type, field, and argument model into local types or create a crate solely to wrap dependencies.
+The current architecture does not include `necrassrs-schema`. Do not copy Reed's entire type, field, and argument model into local types or create a crate solely to wrap dependencies.
 
 Keep generation-specific information, such as Rust identifiers, generated type names, and recursive input representations, inside the codegen module of `necrassrs-build`. Extract a shared model or policy only when a concrete NecrassRs requirement spans the generator and runtime.
 
-Distinguish consumer APIs from internal schema representation. Users should not need Lead internals to implement resolvers or Context. Generated code should access runtime contracts through public `necrassrs` paths.
+Distinguish consumer APIs from internal schema representation. Users should not need Reed internals to implement resolvers or Context. Generated code should access runtime contracts through public `necrassrs` paths.
 
 #### Generated argument names
 
@@ -148,20 +148,20 @@ Use the GraphQL September 2025 specification as the reference for supported beha
 
 The greeting MVP established `String!` arguments and results. Expand that scope only when generation, conversion, dispatch, and runtime behavior are covered together.
 
-Lead schema validation establishes GraphQL validity, not NecrassRs code generation or execution support. Treat a type as supported through the generated API only when Rust generation, input conversion, dispatch, and runtime result completion work together and are tested.
+Reed schema validation establishes GraphQL validity, not NecrassRs code generation or execution support. Treat a type as supported through the generated API only when Rust generation, input conversion, dispatch, and runtime result completion work together and are tested.
 
 Current implementation status:
 
 - The generator produces built-in and custom scalar, enum, ordinary/OneOf input-object, list, nullable, recursive input, owned Object, Interface, and Union contracts. Generated consumer checks cover defaults, input presence, literal/variable distinctions, custom scalar naming and synchronization, borrowed Context values, `Send` resolver futures, Object wrappers, abstract runtime type selection, multilevel Objects, and finite recursive selections.
 - The runtime completes built-in and custom scalar, enum, Object, Interface, and Union results with nullable and list combinations. It preserves Object parents, custom scalar literal kinds, list-item errors, and nullability during completion. Generated Float conversion preserves non-finite-value errors and nullable list siblings with index paths.
 - Generated query and mutation dispatch execute through the runtime with borrowed Context and a `Send` execution future. Executable consumer checks cover the greeting, custom root/field names, argument conversion failures, domain-error preservation, composite field errors, abstract results, recursive Object relationships, serial top-level mutation completion, merged selections, and successful execution after resolver errors.
-- The generator exposes `generated::SDL` as a public string constant using Lead's schema serialization. Executable consumer checks reconstruct the runtime schema from it, including definitions and extensions from multiple sources.
+- The generator exposes `generated::SDL` as a public string constant using Reed's schema serialization. Executable consumer checks reconstruct the runtime schema from it, including definitions and extensions from multiple sources.
 - A Linux/macOS subprocess test builds a partial consumer with `panic = "abort"` in both Cargo dev and release profiles. It checks successful execution of an implemented field and `SIGABRT` termination without a response when an unimplemented field is selected.
-- `CodegenError` implements `miette::Diagnostic`, retaining the original named source and available Lead byte spans without reading files. Argument-type labels cover the complete type reference; return-type labels identify the named type. Missing locations or source entries leave the message available without fabricated sources or labels. Tests cover argument diagnostics across multiple sources, UTF-8 byte offsets, and type nodes without locations. The consumer build-script fixture renders codegen diagnostics with miette and preserves Lead's own diagnostic rendering; the library does not enable `fancy`.
+- `CodegenError` implements `miette::Diagnostic`, retaining the original named source and available Reed byte spans without reading files. Argument-type labels cover the complete type reference; return-type labels identify the named type. Missing locations or source entries leave the message available without fabricated sources or labels. Tests cover argument diagnostics across multiple sources, UTF-8 byte offsets, and type nodes without locations. The consumer build-script fixture renders codegen diagnostics with miette and preserves Reed's own diagnostic rendering; the library does not enable `fancy`.
 - The pure codegen tests verify what happens when explicitly supplied Rust implementations are compiled against changed contracts. They do not exercise implementation-file synchronization and must not be interpreted as its intended workflow. In the target Cargo workflow, deleted or renamed fields remove only untouched generated stubs; a stale resolver with a body, attribute, or comment stops synchronization before writes. Direct field access to a removed argument is also rejected before writes, while argument use hidden inside macro input remains a Rust compilation check because synchronization does not interpret macro semantics or rewrite business logic.
-- The current `build()` implementation recursively reads SDL, validates a combined Lead schema, writes disposable code to `OUT_DIR/necrassrs.rs`, and creates or synchronizes the resolver source tree rooted at `src/resolvers.rs`. It follows reachable inline modules and conventional external module files, updates moved resolver implementations and custom scalar scaffolds in place, and adds new stubs to the entry source. A nonempty resolver entry must contain exactly one empty query-root marker using the explicit `crate::generated::resolvers::<Root>Resolver<Context>` path; grouped, missing, aliased, malformed, ambiguous, unsupported, or symbolic-link targets fail before any write. Synchronization validates a complete multi-file plan, stages replacements, detects intervening edits, and rolls back already-applied replacements after a reported commit failure without overwriting later external changes. Cargo acceptance and unit tests cover field-level stubs, moved implementations, reachable and unreachable modules, ownership ambiguity, retained bodies and bindings, output-shape changes, field additions/deletions/renames, argument changes, custom scalar creation/evolution/removal and name collisions, custom root and Context types, absent and whitespace-only cold starts, injective names, invalid SDL, composite wrappers and abstract results, multi-file failure handling, and execution without source SDL files.
+- The current `build()` implementation recursively reads SDL, validates a combined Reed schema, writes disposable code to `OUT_DIR/necrassrs.rs`, and creates or synchronizes the resolver source tree rooted at `src/resolvers.rs`. It follows reachable inline modules and conventional external module files, updates moved resolver implementations and custom scalar scaffolds in place, and adds new stubs to the entry source. A nonempty resolver entry must contain exactly one empty query-root marker using the explicit `crate::generated::resolvers::<Root>Resolver<Context>` path; grouped, missing, aliased, malformed, ambiguous, unsupported, or symbolic-link targets fail before any write. Synchronization validates a complete multi-file plan, stages replacements, detects intervening edits, and rolls back already-applied replacements after a reported commit failure without overwriting later external changes. Cargo acceptance and unit tests cover field-level stubs, moved implementations, reachable and unreachable modules, ownership ambiguity, retained bodies and bindings, output-shape changes, field additions/deletions/renames, argument changes, custom scalar creation/evolution/removal and name collisions, custom root and Context types, absent and whitespace-only cold starts, injective names, invalid SDL, composite wrappers and abstract results, multi-file failure handling, and execution without source SDL files.
 
-The support contract requires explicit diagnostics for unsupported schema features, with source locations when available. Do not silently map unsupported types to String or treat Lead validation as proof that generation will succeed. Keep validation diagnostics separate from generation errors, and do not make temporary limitations such as lack of Int support permanent rejection contracts.
+The support contract requires explicit diagnostics for unsupported schema features, with source locations when available. Do not silently map unsupported types to String or treat Reed validation as proof that generation will succeed. Keep validation diagnostics separate from generation errors, and do not make temporary limitations such as lack of Int support permanent rejection contracts.
 
 Type expansion must preserve SDL identity and nullability, distinguish omitted nullable inputs from explicit null, and preserve list-container and list-item nullability independently. The implemented mappings use `Option<T>` for nullable outputs, `Vec<T>` for lists, `Id` for ID, `GraphQLInput<T>` for nullable input positions after coercion/defaulting, ordinary input structs, OneOf enums, application-owned custom scalar and Object types, and generated enums for Interface and Union results. Recursive nullable singular input edges inside SCCs use `Box<T>`; list edges already provide indirection. Recursive output relationships stay finite at the Rust type level through field-level dispatch and a boxed Object-resolution future. Borrowed Object results remain separate work.
 
@@ -192,7 +192,7 @@ Generated dispatch knows which Rust resolver to invoke and converts prepared arg
 
 Resolvers return a NecrassRs error containing a message and optional extension map. Application codes such as `USER_NOT_FOUND` belong in that map; they are not required by the GraphQL specification. The executor supplies source locations and response paths, including aliases and list indices, collects execution errors, and propagates null to the correct nullable boundary. The HTTP adapter converts the completed result without taking over these responsibilities.
 
-Request errors omit the `data` entry. Execution results contain `data`, which may be partial or null, and include errors when execution fails. Ordinary domain errors must remain separate from the deliberate process-termination policy for selected unimplemented resolvers. Reuse Lead response types where suitable without exposing compiler internals in user resolver implementations.
+Request errors omit the `data` entry. Execution results contain `data`, which may be partial or null, and include errors when execution fails. Ordinary domain errors must remain separate from the deliberate process-termination policy for selected unimplemented resolvers. Reuse Reed response types where suitable without exposing compiler internals in user resolver implementations.
 
 ## 4. Crates
 
@@ -205,7 +205,7 @@ Request errors omit the `data` entry. Execution results contain `data`, which ma
 | `necrassrs-http`  | Framework-independent response media-type negotiation                                                                                                             | Axum and Actix adapters        |
 | `necrassrs-cli`   | The `necrass` binary and new-project scaffolding                                                                                                                  | Developers                     |
 
-Within `necrassrs-build`, keep contract generation independent of Cargo environment variables and filesystem operations so it can be tested directly. Cargo integration manages inputs, rebuild instructions, disposable output, and reading/writing the designated implementation source. Source synchronization compares Rust ASTs; it does not duplicate Lead's schema model. The runtime does not depend on the build library.
+Within `necrassrs-build`, keep contract generation independent of Cargo environment variables and filesystem operations so it can be tested directly. Cargo integration manages inputs, rebuild instructions, disposable output, and reading/writing the designated implementation source. Source synchronization compares Rust ASTs; it does not duplicate Reed's schema model. The runtime does not depend on the build library.
 
 There is no separate codegen package: it currently has no independent consumer or release lifecycle. A module boundary preserves testability without adding another published dependency. Extract a crate only when another tool needs independent reuse or a concrete dependency or release boundary emerges.
 
@@ -228,11 +228,11 @@ Arrows below indicate dependencies.
 ```text
 Consumer build.rs
   └─ necrassrs-build
-       └─ lead-compiler
+       └─ reed-compiler
 
 Consumer server and generated code
   ├─ necrassrs
-  │    └─ lead-compiler
+  │    └─ reed-compiler
   ├─ necrassrs-axum
   │    ├─ necrassrs
   │    ├─ necrassrs-http
@@ -246,7 +246,7 @@ necrassrs-cli
   └─ New-project templates
 ```
 
-A build-time `Schema` instance does not survive into the running server. The generator embeds the validated schema as `generated::SDL` using Lead's SDL serialization, preserving schema definitions and extensions rather than the original source formatting or comments. Parse and validate it once during application initialization, then reuse that runtime schema across requests. The synchronization acceptance flow edits a generated resolver body and runs that consumer without source SDL files. Do not introduce a separate schema serialization format.
+A build-time `Schema` instance does not survive into the running server. The generator embeds the validated schema as `generated::SDL` using Reed's SDL serialization, preserving schema definitions and extensions rather than the original source formatting or comments. Parse and validate it once during application initialization, then reuse that runtime schema across requests. The synchronization acceptance flow edits a generated resolver body and runs that consumer without source SDL files. Do not introduce a separate schema serialization format.
 
 The complete workflow is:
 
@@ -259,7 +259,7 @@ cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli -
 Edit SDL
   → cargo build
   → build.rs
-  → Lead schema parsing and validation
+  → Reed schema parsing and validation
   → NecrassRs support and Rust naming checks
   → Generate Rust contracts and wiring in OUT_DIR
   → Read the existing resolver implementation AST, or create its initial structs and declarations
@@ -360,7 +360,7 @@ The initializer writes the application dependencies into its new manifest. Befor
 | `[build-dependencies]`            | `necrassrs-build`, called by `build.rs`, plus any build-script diagnostic-rendering dependency used by the chosen template |
 | `[dev-dependencies]`              | Test and example dependencies only when needed; not the CLI                                                                |
 
-Ordinary consumers should not need a direct Lead Compiler dependency. NecrassRs re-exports the compiler types in its public runtime contract. Direct users of Apollo Compiler must migrate to Lead because equivalent definitions from different crates are distinct Rust types. Once initialized, the application builds and runs with Cargo without an installed CLI.
+Ordinary consumers should not need a direct Reed Compiler dependency. NecrassRs re-exports the compiler types in its public runtime contract. Direct users of Apollo Compiler must migrate to Reed because equivalent definitions from different crates are distinct Rust types. Once initialized, the application builds and runs with Cargo without an installed CLI.
 
 ### 7.2 Everyday development
 
@@ -413,8 +413,8 @@ necrassrs/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── crates/
-│   ├── lead-compiler/
-│   ├── lead-parser/
+│   ├── reed-compiler/
+│   ├── reed-parser/
 │   ├── necrassrs/
 │   ├── necrassrs-build/
 │   ├── necrassrs-axum/
@@ -463,7 +463,7 @@ Official repository documentation is written in English. Agent workflow and AI-a
 - Define compatibility between `necrassrs-build` and `necrassrs`, including runtime contracts called by generated code. Publishing matching versions alone does not prevent incompatible consumer combinations. Validate the supported combination with the consumer example and use that combination in CLI templates.
 - Before release, verify packaging and consumer builds without relying on local-only paths.
 
-Lead Compiler currently follows the workspace toolchain policy. Check the NecrassRs MSRV separately when updating its upstream-derived dependencies.
+Reed Compiler currently follows the workspace toolchain policy. Check the NecrassRs MSRV separately when updating its upstream-derived dependencies.
 
 ## 10. Validation and acceptance criteria
 
@@ -506,12 +506,12 @@ All four expansion groups are implemented in the current source checkout:
 3. Output objects, interfaces, and unions, including resolver wiring and execution — implemented.
 4. Custom scalar contracts and input/output conversion — implemented.
 
-Existing runtime coverage beyond the generated MVP remains in place. Each expansion must validate the complete supported path rather than declaring support based only on generated Rust types or successful Lead validation.
+Existing runtime coverage beyond the generated MVP remains in place. Each expansion must validate the complete supported path rather than declaring support based only on generated Rust types or successful Reed validation.
 
 ## 11. Open decisions
 
 1. **Resolver API extensions:** The field-level `Resolver` contract, empty query-root and mutation-root markers, one Context type per schema, argument structs, associated output types, custom scalar conversion, and `Send`/`Sync` bounds are established. Borrowed Object and subscription contracts remain open.
-2. **Execution details:** Ownership of execution, Lead validation reuse, parent-Object dispatch, abstract results, and finite recursive completion are established. Broader field scheduling and subscription execution remain open.
+2. **Execution details:** Ownership of execution, Reed validation reuse, parent-Object dispatch, abstract results, and finite recursive completion are established. Broader field scheduling and subscription execution remain open.
 3. **Source synchronization limits:** Reachable inline and conventional external module discovery, exact identity matching, multi-file planning, staged replacement, rollback, retained-body preservation, safe stale-stub removal, and concurrent-edit protection are implemented under [issue #47](https://github.com/Necrass-Dev/NecrassRs/issues/47) and [issue #48](https://github.com/Necrass-Dev/NecrassRs/issues/48). Macro expansion is intentionally left to Rust compilation, and the multi-file set has no durable journal for recovery after process termination; revisit those boundaries only if concrete failures justify the additional complexity.
 4. **Remaining GraphQL type coverage:** Borrowed Object results, subscriptions, and explicit diagnostics for unsupported future features remain. Do not reopen #1's agreed behavior as an executor-selection task.
 5. **Further HTTP adapters:** Support and shared behavior beyond the current Axum adapter. The current introspection and GraphiQL policy is documented in [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/).
@@ -522,8 +522,8 @@ SQL generation, ORM integration, automatic batching, a separate non-`Send` mode,
 ## 12. References
 
 - Internal design basis: the 2026-09-17 prototype report, cumulative development article, and subsequent architecture discussions. Do not reproduce private development records in the public repository.
-- [Lead Compiler](../crates/lead-compiler/README.md): current models, parsing, and validation.
-- [Lead Parser](../crates/lead-parser/README.md): current GraphQL parser and concrete syntax tree.
+- [Reed Compiler](../crates/reed-compiler/README.md): current models, parsing, and validation.
+- [Reed Parser](../crates/reed-parser/README.md): current GraphQL parser and concrete syntax tree.
 - [GraphQL September 2025: Execution](https://spec.graphql.org/September2025/#sec-Execution): execution semantics.
 - [GraphQL September 2025: Errors](https://spec.graphql.org/September2025/#sec-Errors): request and execution error response formats.
 - [GraphQL September 2025: Handling Execution Errors](https://spec.graphql.org/September2025/#sec-Handling-Execution-Errors): null propagation.

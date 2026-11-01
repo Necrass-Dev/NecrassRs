@@ -1522,39 +1522,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4345964bb142484797b161f473a503a434de77149dd8c7427788c6e13379388"
 
 [[package]]
-name = "lead-compiler"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "ariadne",
- "expect-test",
- "futures",
- "indexmap",
- "lead-parser",
- "pretty_assertions",
- "rowan",
- "serde",
- "serde_json",
- "serde_json_bytes",
- "serial_test",
- "thiserror 2.0.20",
- "triomphe",
- "typed-arena",
- "unindent",
-]
-
-[[package]]
-name = "lead-parser"
-version = "0.1.0"
-dependencies = [
- "expect-test",
- "indexmap",
- "memchr",
- "rowan",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1696,7 +1663,7 @@ dependencies = [
  "async-graphql",
  "criterion",
  "futures-util",
- "lead-compiler",
+ "reed-compiler",
  "serde",
  "serde_json",
  "tokio",
@@ -1733,10 +1700,10 @@ name = "necrassrs-build"
 version = "0.1.0"
 dependencies = [
  "futures",
- "lead-compiler",
  "miette",
  "proc-macro2",
  "quote",
+ "reed-compiler",
  "serde_json",
  "syn 2.0.119",
 ]
@@ -2029,6 +1996,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "reed-compiler"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "ariadne",
+ "expect-test",
+ "futures",
+ "indexmap",
+ "pretty_assertions",
+ "reed-parser",
+ "rowan",
+ "serde",
+ "serde_json",
+ "serde_json_bytes",
+ "serial_test",
+ "thiserror 2.0.20",
+ "triomphe",
+ "typed-arena",
+ "unindent",
+]
+
+[[package]]
+name = "reed-parser"
+version = "0.1.0"
+dependencies = [
+ "expect-test",
+ "indexmap",
+ "memchr",
+ "rowan",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

@@ -29,8 +29,8 @@
 //! Runtime subscriptions are rejected. Schema introspection is enabled by default;
 //! use [`execute_with_options`] to disable it independently of any UI.
 
-use lead_compiler::response::ExecutionResponse;
-pub use lead_compiler::{
+use reed_compiler::response::ExecutionResponse;
+pub use reed_compiler::{
     Schema,
     ast::Value as ScalarLiteral,
     response::{GraphQLError, JsonMap, JsonValue},

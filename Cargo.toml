@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/lead-compiler",
-    "crates/lead-parser",
+    "crates/reed-compiler",
+    "crates/reed-parser",
     "crates/necrassrs",
     "crates/necrassrs-actix",
     "crates/necrassrs-axum",
@@ -19,6 +19,6 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-lead-compiler = { path = "crates/lead-compiler", version = "0.1.0" }
-lead-parser = { path = "crates/lead-parser", version = "0.1.0" }
+reed-compiler = { path = "crates/reed-compiler", version = "0.1.0" }
+reed-parser = { path = "crates/reed-parser", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }

@@ -177,7 +177,7 @@ curl -i http://127.0.0.1:3000/graphql \
 | No acceptable response media type or invalid Accept                   | 406         | Empty HTTP error response                    |
 | Unsupported method on a POST-only resource                            | 405         | Framework route response, with `Allow: POST` |
 
-The runtime distinguishes Lead AST parsing failures from validation failures without interpreting diagnostic messages. `Response::is_syntax_error()` exposes that distinction to adapters; the classification is not serialized into GraphQL responses. Manually constructed `Response::request_error(s)` values remain general request errors.
+The runtime distinguishes Reed AST parsing failures from validation failures without interpreting diagnostic messages. `Response::is_syntax_error()` exposes that distinction to adapters; the classification is not serialized into GraphQL responses. Manually constructed `Response::request_error(s)` values remain general request errors.
 
 NecrassRs deliberately does not adopt HTTP 294. Completed execution results use 200 even when errors propagate to a null root. See the [maintainer decision in #18](https://github.com/Necrass-Dev/NecrassRs/issues/18#issuecomment-5843384906).
 

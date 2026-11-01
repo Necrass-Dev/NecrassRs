@@ -7,7 +7,7 @@ This record documents the Apollo Compiler patches previously maintained for
 and JSON numeric variable coercion in [#24](https://github.com/Necrass-Dev/NecrassRs/issues/24).
 The compiler and parser patches also carry language, validation, and introspection
 corrections for [#28](https://github.com/Necrass-Dev/NecrassRs/issues/28). The maintained implementation now lives in
-[`lead-compiler`](../crates/lead-compiler) and [`lead-parser`](../crates/lead-parser);
+[`reed-compiler`](../crates/reed-compiler) and [`reed-parser`](../crates/reed-parser);
 NecrassRs no longer has a vendored Apollo source or Cargo source override. The separate
 [dodok8/apollo-rs fork](https://github.com/dodok8/apollo-rs) is a preparation area
 for the minimal upstream implementation and regression tests. It is not a local
@@ -21,7 +21,7 @@ path dependency of NecrassRs. The two repositories have different change scopes.
   parser crate root, records changes to 10 library source files.
 - At the 2026-10-30 checkpoint, `vendor/apollo-compiler` and
   `vendor/apollo-parser` contained the corresponding patched crates.io sources.
-  These trees were removed after the implementation and tests moved to Lead.
+  These trees were removed after the implementation and tests moved to Reed.
 - The historical build-only manifests omitted upstream development targets/dependencies. The
   compiler's direct parser path selects the maintained parser from the same
   checkout. These are packaging adaptations, excluded from the source patches.
@@ -52,7 +52,7 @@ patch -p1 < /path/to/apollo-parser-0.8.6.patch
 On 2026-10-30, both patches applied cleanly to fresh release extractions, and every
 resulting `src/` file matched the corresponding vendored file byte for byte.
 
-The archived patches are immutable provenance for the Lead packages. Each source
+The archived patches are immutable provenance for the Reed packages. Each source
 diff excludes NecrassRs packaging changes and can be reviewed independently. The corrected
 schema validator builds a field-default dependency graph and traverses it
 iteratively. Variable-default and input-field-default branches reuse Apollo's
@@ -68,14 +68,14 @@ and unsigned integer values and normalize integer-valued floating representation
 to strings. Fractional values remain invalid for Int and ID. GraphQL literal
 validation is unchanged: floating-point literals remain invalid at Int and ID
 positions. `json_variable_numbers_are_normalized_without_changing_literal_kinds`
-checks this directly through Lead, and a compiled generated consumer checks
+checks this directly through Reed, and a compiled generated consumer checks
 the same behavior through resolver dispatch and result serialization.
 
 Validated ID integer literals are converted directly from their AST text to
 strings before JSON number parsing. This preserves integers beyond signed,
 unsigned, or floating-point ranges in variable and nested input-field defaults,
 including singleton and nested lists. The NecrassRs argument coercion path uses
-the same representation for request literals and argument defaults. Public Lead
+the same representation for request literals and argument defaults. Public Reed
 and compiled-consumer regressions cover positive/negative large IDs and 400-digit
 integers without rounding.
 
@@ -95,8 +95,8 @@ before recursively coercing the selected field, then checks that its coerced
 value remains non-null. The same path handles nested objects, list elements,
 and variable defaults. Nullable whole objects and nullable list items retain
 their ordinary semantics. Invalid supplied selections produce request errors
-before execution; [`one_of.rs`](../crates/lead-compiler/tests/one_of.rs) exercises
-these rules directly through Lead's public API.
+before execution; [`one_of.rs`](../crates/reed-compiler/tests/one_of.rs) exercises
+these rules directly through Reed's public API.
 
 ## Language, validation, and introspection corrections
 
@@ -121,7 +121,7 @@ in [specs.md](specs.md#issue-28-regression-inventory).
 
 ## Historical Cargo and consumer verification
 
-Before the Lead migration, the NecrassRs root selected both maintained source copies:
+Before the Reed migration, the NecrassRs root selected both maintained source copies:
 
 ```toml
 [patch.crates-io]
@@ -190,7 +190,7 @@ At the numeric-fix checkpoint, CLI templates pinned the corrected source. The
 recorded remote checks above remain historical evidence for those pinned revisions.
 
 Current CLI templates use the repository default branch for NecrassRs dependencies;
-Lead resolves transitively without an Apollo override. The generated consumer's first build records the resolved
+Reed resolves transitively without an Apollo override. The generated consumer's first build records the resolved
 revisions in its lockfile. Local CLI checks validate both framework templates
 against the maintained checkout; they do not establish the behavior of a future
 remote revision. See [getting started](https://necrass.rs/docs/installation/#create-a-project) for the current
@@ -218,9 +218,9 @@ validation rejects schemas previously accepted by 1.33.0.
 From NecrassRs:
 
 ```sh
-cargo test -p lead-compiler --test main --locked
-cargo test -p lead-compiler --test public_api --locked
-cargo test -p lead-compiler --test snapshot --locked
+cargo test -p reed-compiler --test main --locked
+cargo test -p reed-compiler --test public_api --locked
+cargo test -p reed-compiler --test snapshot --locked
 cargo test -p necrassrs-build --test cargo_build --locked
 cargo test --workspace --locked
 cargo fmt --all -- --check
@@ -228,7 +228,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Issue #69 removed the vendored source trees and active Cargo overrides after the
-Lead suites and external consumer checks covered the maintained behavior. The
+Reed suites and external consumer checks covered the maintained behavior. The
 Apollo patches remain archived for provenance. The #23 pinned specification comparison is recorded in [specs.md](specs.md).
 The pinned core specification difference inventory is recorded there as well.
 Subscription and transport work remains separate; local patch verification is not

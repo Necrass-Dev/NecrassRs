@@ -1,0 +1,52 @@
+[package]
+name = "reed-compiler"
+version = "0.1.0"
+authors = ["Irina Shestak <shestak.irina@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Necrass-Dev/NecrassRs"
+documentation = "https://docs.rs/reed-compiler"
+description = "A compiler for the GraphQL query language."
+keywords = ["graphql", "parser", "graphql-tooling"]
+categories = [
+    "compilers",
+    "development-tools",
+    "parser-implementations",
+    "parsing",
+    "web-programming",
+]
+edition = "2021"
+readme = "README.md"
+autotests = false
+
+[lib]
+name = "reed_compiler"
+
+[dependencies]
+ahash = "0.8.11"
+ariadne = { version = "0.6.0", features = ["auto-color"] }
+futures = "0.3"
+indexmap = "2.0.0"
+reed-parser.workspace = true
+rowan = "0.16.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json_bytes = { version = "0.2.2", features = ["preserve_order"] }
+thiserror = "2.0.0"
+triomphe = "0.1.13"
+typed-arena = "2.0"
+
+[dev-dependencies]
+expect-test = "1.4"
+pretty_assertions = "1.3.0"
+serde_json = "1.0"
+serial_test = "4.0.0"
+unindent = "0.2.3"
+
+[[test]]
+name = "main"
+
+[[test]]
+name = "public_api"
+
+# FileId is process-global, so these fixture tests run in their own executable.
+[[test]]
+name = "snapshot_tests"
