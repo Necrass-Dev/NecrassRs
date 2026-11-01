@@ -1503,10 +1503,6 @@ impl Consumer {
         let consumer = Self { directory };
         fs::create_dir(consumer.directory.join("src")).unwrap();
         fs::create_dir(consumer.directory.join("schema")).unwrap();
-        let apollo = workspace
-            .join("vendor/apollo-compiler")
-            .canonicalize()
-            .unwrap();
         let runtime = workspace.join("crates/necrassrs").canonicalize().unwrap();
         let build_library = Path::new(env!("CARGO_MANIFEST_DIR"))
             .canonicalize()
@@ -1525,8 +1521,6 @@ impl Consumer {
             necrassrs = {{ path = {runtime:?} }}
             futures = "0.3"
             serde_json = "1.0"
-            [patch.crates-io]
-            apollo-compiler = {{ path = {apollo:?} }}
             [build-dependencies]
             necrassrs-build = {{ path = {build_library:?} }}
             miette = "7.6.0"
@@ -1614,7 +1608,7 @@ impl Drop for Consumer {
 }
 
 #[test]
-fn consumer_root_resolves_patched_apollo_for_build_and_runtime() {
+fn consumer_root_resolves_lead_for_build_and_runtime() {
     let consumer = Consumer::new(include_str!("fixtures/consumer/schema.graphql"));
     let rustc = Command::new("rustc").arg("-vV").output().unwrap();
     assert_success(&rustc);
@@ -1637,20 +1631,20 @@ fn consumer_root_resolves_patched_apollo_for_build_and_runtime() {
         .unwrap();
     assert_success(&metadata);
     let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
-    let apollo: Vec<_> = metadata["packages"]
+    let lead: Vec<_> = metadata["packages"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|p| p["name"] == "apollo-compiler")
+        .filter(|p| p["name"] == "lead-compiler")
         .collect();
-    assert_eq!(apollo.len(), 1);
-    assert!(apollo[0]["source"].is_null());
+    assert_eq!(lead.len(), 1);
+    assert!(lead[0]["source"].is_null());
     let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../vendor/apollo-compiler/Cargo.toml")
+        .join("../lead-compiler/Cargo.toml")
         .canonicalize()
         .unwrap();
     assert_eq!(
-        Path::new(apollo[0]["manifest_path"].as_str().unwrap()),
+        Path::new(lead[0]["manifest_path"].as_str().unwrap()),
         expected
     );
     for package in ["necrassrs", "necrassrs-build"] {
@@ -1671,7 +1665,7 @@ fn consumer_root_resolves_patched_apollo_for_build_and_runtime() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|d| d["name"] == "apollo_compiler" && d["pkg"] == apollo[0]["id"])
+                .any(|d| d["name"] == "lead_compiler" && d["pkg"] == lead[0]["id"])
         );
     }
     let main = consumer.directory.join("src/main.rs");
@@ -1685,7 +1679,7 @@ fn consumer_root_resolves_patched_apollo_for_build_and_runtime() {
     );
     fs::write(main, source).unwrap();
     consumer.bootstrap();
-    consumer.implement("hello", "patched consumer");
+    consumer.implement("hello", "lead consumer");
     let build = Command::new(env!("CARGO"))
         .current_dir(&consumer.directory)
         .args([
@@ -1710,7 +1704,7 @@ fn consumer_root_resolves_patched_apollo_for_build_and_runtime() {
     let response: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
     assert_eq!(
         response,
-        serde_json::json!({"data": {"hello": "patched consumer"}})
+        serde_json::json!({"data": {"hello": "lead consumer"}})
     );
 }
 

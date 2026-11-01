@@ -12,9 +12,6 @@ necrassrs-actix = { git = "https://github.com/Necrass-Dev/NecrassRs.git", versio
 miette = "7.6.0"
 necrassrs-build = { git = "https://github.com/Necrass-Dev/NecrassRs.git", version = "0.1.0" }
 
-[patch.crates-io]
-apollo-compiler = { git = "https://github.com/Necrass-Dev/NecrassRs.git", version = "1.33.0" }
-
 [workspace]
 
 [profile.dev]
