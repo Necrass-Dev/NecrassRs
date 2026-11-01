@@ -1,0 +1,12 @@
+Error: non-repeatable directive nonRepeatable can only be used once per location
+    ╭─[ 0096_schema_extensions.graphql:11:15 ]
+    │
+  8 │ schema @nonRepeatable {
+    │        ───────┬──────  
+    │               ╰──────── directive `@nonRepeatable` first called here
+    │ 
+ 11 │ extend schema @nonRepeatable
+    │               ───────┬──────  
+    │                      ╰──────── directive `@nonRepeatable` called again here
+────╯
+

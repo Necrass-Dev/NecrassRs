@@ -1,0 +1,46 @@
+Error: non-repeatable directive nonRepeatable can only be used once per location
+   ╭─[ 0080_directive_is_unique_with_extensions.graphql:2:24 ]
+   │
+ 3 │ type TestObject @nonRepeatable {
+   │                 ───────┬──────  
+   │                        ╰──────── directive `@nonRepeatable` first called here
+   │
+   ├─[ 0080_directive_is_unique_with_extensions.graphql:2:24 ]
+   │
+ 2 │ extend type TestObject @nonRepeatable
+   │                        ───────┬──────  
+   │                               ╰──────── directive `@nonRepeatable` called again here
+───╯
+Error: non-repeatable directive nonRepeatable can only be used once per location
+   ╭─[ 0080_directive_is_unique_with_extensions.graphql:6:24 ]
+   │
+ 3 │ type TestObject @nonRepeatable {
+   │                 ───────┬──────  
+   │                        ╰──────── directive `@nonRepeatable` first called here
+   │ 
+ 6 │ extend type TestObject @nonRepeatable
+   │                        ───────┬──────  
+   │                               ╰──────── directive `@nonRepeatable` called again here
+───╯
+Error: non-repeatable directive nonRepeatable can only be used once per location
+   ╭─[ 0080_directive_is_unique_with_extensions.graphql:9:22 ]
+   │
+ 8 │ scalar Scalar @nonRepeatable
+   │               ───────┬──────  
+   │                      ╰──────── directive `@nonRepeatable` first called here
+ 9 │ extend scalar Scalar @nonRepeatable @specifiedBy(url: "example.com")
+   │                      ───────┬──────  
+   │                             ╰──────── directive `@nonRepeatable` called again here
+───╯
+Error: non-repeatable directive nonRepeatable can only be used once per location
+    ╭─[ 0080_directive_is_unique_with_extensions.graphql:14:23 ]
+    │
+ 11 │ interface Intf @nonRepeatable {
+    │                ───────┬──────  
+    │                       ╰──────── directive `@nonRepeatable` first called here
+    │ 
+ 14 │ extend interface Intf @nonRepeatable
+    │                       ───────┬──────  
+    │                              ╰──────── directive `@nonRepeatable` called again here
+────╯
+

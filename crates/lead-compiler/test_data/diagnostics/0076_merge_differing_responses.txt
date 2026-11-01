@@ -1,0 +1,12 @@
+Error: operation must not select different types using the same name `someValue`
+    ╭─[ 0076_merge_differing_responses.graphql:42:5 ]
+    │
+ 39 │     someValue: nickname
+    │     ─────────┬─────────  
+    │              ╰─────────── `someValue` is selected from `Dog.nickname: String!` here
+    │ 
+ 42 │     someValue: meowVolume
+    │     ──────────┬──────────  
+    │               ╰──────────── `someValue` is selected from `Cat.meowVolume: Int!` here
+────╯
+

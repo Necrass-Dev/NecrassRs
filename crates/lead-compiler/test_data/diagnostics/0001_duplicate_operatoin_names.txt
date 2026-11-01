@@ -1,0 +1,12 @@
+Error: the operation `getName` is defined multiple times in the document
+   ╭─[ 0001_duplicate_operatoin_names.graphql:5:7 ]
+   │
+ 1 │ query getName {
+   │       ───┬───  
+   │          ╰───── previous definition of `getName` here
+   │ 
+ 5 │ query getName {
+   │       ───┬───  
+   │          ╰───── `getName` redefined here
+───╯
+

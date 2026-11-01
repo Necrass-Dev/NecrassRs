@@ -16,6 +16,7 @@ categories = [
 ]
 edition = "2021"
 readme = "README.md"
+autotests = false
 
 [lib]
 name = "lead_compiler"
@@ -35,4 +36,17 @@ typed-arena = "2.0"
 
 [dev-dependencies]
 expect-test = "1.4"
+pretty_assertions = "1.3.0"
 serde_json = "1.0"
+serial_test = "4.0.0"
+unindent = "0.2.3"
+
+[[test]]
+name = "main"
+
+[[test]]
+name = "public_api"
+
+# FileId is process-global, so these fixture tests run in their own executable.
+[[test]]
+name = "snapshot_tests"
