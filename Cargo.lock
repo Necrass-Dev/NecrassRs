@@ -970,6 +970,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dissimilar"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeda16ab4059c5fd2a83f2b9c9e9c981327b18aa8e3b313f7e6563799d4f093e"
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1009,6 +1015,16 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "expect-test"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63af43ff4431e848fb47472a920f14fa71c24de13255a5692e93d4e90302acb0"
+dependencies = [
+ "dissimilar",
+ "once_cell",
 ]
 
 [[package]]
@@ -1524,6 +1540,36 @@ name = "language-tags"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4345964bb142484797b161f473a503a434de77149dd8c7427788c6e13379388"
+
+[[package]]
+name = "lead-compiler"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "ariadne",
+ "expect-test",
+ "futures",
+ "indexmap",
+ "lead-parser",
+ "rowan",
+ "serde",
+ "serde_json",
+ "serde_json_bytes",
+ "thiserror 2.0.20",
+ "triomphe",
+ "typed-arena",
+]
+
+[[package]]
+name = "lead-parser"
+version = "0.1.0"
+dependencies = [
+ "expect-test",
+ "indexmap",
+ "memchr",
+ "rowan",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "libc"

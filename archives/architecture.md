@@ -3,7 +3,7 @@ title: "NecrassRs architecture and development plan"
 ---
 
 Date: 2026-09-17
-Updated: 2026-10-27
+Updated: 2026-11-01
 
 This document defines the target product structure, crate responsibilities, development and release practices, and consumer workflow. It distinguishes the current implementation from remaining design work. Some public APIs and package details remain subject to design.
 
@@ -52,7 +52,18 @@ At build time, use SDL parsing, schema validation, and the `Schema` model. At ru
 
 Static request validation does not establish that runtime variable coercion or custom scalar input validation has completed. Reuse `request::coerce_variable_values` for variables. Apollo Compiler 1.32.0's field-argument coercion implementation is crate-private; do not rely on it as a consumer API.
 
-### 3.2 No separate schema crate for now
+### 3.2 Staged Lead migration
+
+The workspace contains `lead-parser` and `lead-compiler` 0.1.0, derived from the
+maintained Apollo Parser 0.8.6 and Apollo Compiler 1.33.0 sources and corrections.
+Both are independently buildable and testable packages. `lead-compiler` uses the
+local `lead-parser` package through the workspace's path-and-version dependency.
+NecrassRs does not use Lead at this stage: its runtime, build tooling, templates,
+and consumers continue to resolve the maintained Apollo packages through the
+existing overrides. Keep both vendor trees and their patches until that consumer
+migration is complete.
+
+### 3.3 No separate schema crate for now
 
 The current architecture does not include `necrassrs-schema`. Do not copy Apollo's entire type, field, and argument model into local types or create a crate solely to wrap dependencies.
 
@@ -129,7 +140,7 @@ The build integration creates concrete resolver structs, an empty query-root mar
 
 Generate one `generated::dispatch::SchemaDispatcher` for the schema, rather than separate dispatcher types for each root. It stores the application-owned Query value and, when declared in SDL, the Mutation value via `SchemaDispatcher::new(query, mutation)`. It implements `necrassrs::Dispatcher<C>` with `C: Sync`, the matching generated root marker bound, and one `Resolver<Field, C>` bound per root field. It matches original SDL type/field coordinates, converts prepared arguments to the generated `Args`, invokes the resolver, converts successful results to `ResolvedValue`, preserving nested conversion errors until completion, and preserves `ResolverError` values. Unknown coordinates and invalid prepared arguments return errors without panicking. Subscription roots still produce a generation error.
 
-### 3.3 Adoption limits
+### 3.4 Adoption limits
 
 Use the GraphQL September 2025 specification as the reference for supported behavior. The greeting MVP's scope and completion criteria are already defined in [issue #1](https://github.com/Necrass-Dev/NecrassRs/issues/1). Neither dependency adoption nor the MVP implies complete GraphQL conformance.
 
@@ -158,7 +169,7 @@ Upstream release notes include fixes for interface implementation types and frag
 
 The prototype's Apollo Compiler 1.32.0 execution path exhibited incorrect nullable-list-item error propagation and a non-`Send` execution future. Its resolver-error boundary also lost application error codes and prefixed messages. The list behavior concerns specification correctness; `Send`, extension preservation, and exact MVP message wording are NecrassRs integration requirements. These findings do not disqualify Apollo's schema models and validation.
 
-### 3.4 Feasibility evidence and limits
+### 3.5 Feasibility evidence and limits
 
 A disposable experiment using unmodified Apollo Compiler 1.32.0 executed the greeting example without calling Apollo's executor. It reused document validation, operation selection, public variable coercion, and response error types. The caller parsed the fixed schema once and borrowed it during execution.
 
@@ -402,6 +413,8 @@ necrassrs/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── crates/
+│   ├── lead-compiler/
+│   ├── lead-parser/
 │   ├── necrassrs/
 │   ├── necrassrs-build/
 │   ├── necrassrs-axum/

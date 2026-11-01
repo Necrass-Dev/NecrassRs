@@ -1,0 +1,30 @@
+[package]
+name = "lead-parser"
+version = "0.1.0"
+authors = ["Irina Shestak <shestak.irina@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Necrass-Dev/NecrassRs"
+documentation = "https://docs.rs/lead-parser"
+description = "A parser for the GraphQL language."
+keywords = ["graphql", "parser", "graphql-tooling"]
+categories = [
+    "compilers",
+    "development-tools",
+    "parser-implementations",
+    "parsing",
+    "web-programming",
+]
+edition = "2021"
+readme = "README.md"
+
+[lib]
+name = "lead_parser"
+
+[dependencies]
+memchr = "2.6.1"
+rowan = "0.16.0"
+thiserror = "2.0.0"
+
+[dev-dependencies]
+expect-test = "1.4"
+indexmap = "2.0.0"
