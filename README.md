@@ -122,6 +122,7 @@ NecrassRs re-exports its public GraphQL schema, validation, JSON, and error type
 - [Axum server example](examples/axum-server/README.md): run a workspace example and explore requests, errors, and manual setup details.
 - [Actix server example](examples/actix-server/README.md): run generated resolvers through Actix Web with built-in GraphiQL.
 - [Personnel Management System](docs/src/content/docs/docs/guide/personnel-management.md): build Object, Interface, and Union result resolvers.
+- [Contributing](docs/src/content/docs/docs/guide/contributing.md): validate changes, inspect package archives, and follow the coordinated release process.
 - [Introspection and GraphiQL](docs/src/content/docs/docs/manual/graphiql.md): configure the development UI and introspection policy.
 
 To browse local API documentation from a checkout of this repository:

@@ -29,7 +29,12 @@ export default defineConfig({
         },
         {
           label: "Guide",
-          items: ["docs/installation", "docs/tutorial", "docs/personnel-management"],
+          items: [
+            "docs/installation",
+            "docs/tutorial",
+            "docs/personnel-management",
+            "docs/contributing",
+          ],
         },
         {
           label: "Manual",
