@@ -25,6 +25,10 @@ export default defineConfig({
               label: "What is NecrassRs?",
               slug: "docs",
             },
+            {
+              label: "Reed",
+              slug: "docs/reed",
+            },
           ],
         },
         {

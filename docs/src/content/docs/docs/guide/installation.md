@@ -6,10 +6,10 @@ description: Define a GraphQL API in SDL and build its Rust contracts with Necra
 ## Install the CLI
 
 Install Rust and Cargo using the [official Rust installation guide](https://rust-lang.org/tools/install/).
-Use a current stable toolchain. Then install the CLI from the Git repository:
+Use a current stable toolchain. Then install the CLI from crates.io:
 
 ```sh
-cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked
+cargo install necrassrs-cli --locked
 necrass --version
 ```
 
@@ -44,10 +44,9 @@ existing projects, nonempty directories, and symbolic-link targets are rejected.
 Use `necrass --help` and `necrass init --help` for command usage. Without a terminal,
 supply an explicit command; bare `necrass` prints help and exits with an error.
 
-The starter uses Git dependencies from the repository's default branch, including
-the Reed compiler packages used by NecrassRs. Cargo records the resolved revisions in the
-new project's `Cargo.lock` on the first build. Keep that lockfile for repeatable
-builds; later builds reuse it rather than following every new Git commit.
+The starter uses released NecrassRs packages from crates.io. Cargo records the
+resolved package versions in the new project's `Cargo.lock` on the first build.
+Keep that lockfile for repeatable builds.
 
 ## Run the server and send a request
 
@@ -114,5 +113,5 @@ Return `ResolverError` for ordinary application errors.
 - [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
 
 These pages follow the source checkout from which this site is built; they do not
-describe a versioned release. Rust API references are available locally with
-`cargo doc --workspace --no-deps --locked --open`.
+describe a versioned release. Use [docs.rs](https://docs.rs/necrassrs/) for the
+API reference of a published version.

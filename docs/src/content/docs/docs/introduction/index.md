@@ -1,5 +1,5 @@
 ---
-title: "What is NecrassRS?"
+title: "What is NecrassRs?"
 description: An SDL-first GraphQL server framework that turns your schema into Rust resolver contracts.
 ---
 
@@ -50,8 +50,9 @@ The generated API supports built-in and application-owned custom scalars, enum
 results, ordinary and OneOf input objects, owned Object results, Interface and
 Union results, nullable and list forms, recursive input and Object relationships,
 and generated query and mutation routing. Borrowed Object results and generated
-subscription routing remain unsupported. These pages describe this source
-checkout, not an older resolved Git dependency.
+subscription routing remain unsupported. These pages describe the current source
+checkout. Consult the published package's
+[docs.rs API reference](https://docs.rs/necrassrs/) when using a released version.
 :::
 
 ## Namesake
@@ -64,6 +65,7 @@ Special thanks to [XiNiHa](https://xiniha.dev/#about) for his contributions to N
 
 ## Next steps
 
+- [Reed](/docs/reed/): learn about the GraphQL compiler toolkit used by NecrassRs.
 - [Tutorial](/docs/tutorial/): build a GraphQL web server and send queries and
   mutations with GraphiQL or HTTP.
 - [Personnel Management System](/docs/personnel-management/): add Object,

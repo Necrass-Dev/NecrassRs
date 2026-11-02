@@ -24,14 +24,7 @@ mise exec -- pnpm lint
 mise exec -- pnpm fmt:check
 mise exec -- pnpm check
 mise exec -- pnpm build
-mise exec -- pnpm exec playwright install chromium
-mise exec -- pnpm test
 ```
-
-The browser check starts its own preview server on port 4322. It checks the
-scroll sequence in both directions, step controls, mobile layout, reduced
-motion, no-JavaScript content, documentation navigation, and local links. Browser
-screenshots are written to the ignored `test-results/` directory.
 
 Oxlint checks JavaScript, TypeScript, and Solid TSX. Oxfmt formats its supported
 languages, including TSX, CSS, JSON, YAML, TOML, and Markdown. Oxfmt 0.70 does not
