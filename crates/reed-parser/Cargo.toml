@@ -1,9 +1,9 @@
 [package]
 name = "reed-parser"
-version = "0.1.0"
+version.workspace = true
 authors = ["Irina Shestak <shestak.irina@gmail.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/Necrass-Dev/NecrassRs"
+repository.workspace = true
 documentation = "https://docs.rs/reed-parser"
 description = "A parser for the GraphQL language."
 keywords = ["graphql", "parser", "graphql-tooling"]
@@ -14,8 +14,12 @@ categories = [
     "parsing",
     "web-programming",
 ]
-edition = "2021"
+edition.workspace = true
 readme = "README.md"
+
+[lints.clippy]
+# Preserve the upstream control-flow structure after adopting the workspace edition.
+collapsible_if = "allow"
 
 [lib]
 name = "reed_parser"

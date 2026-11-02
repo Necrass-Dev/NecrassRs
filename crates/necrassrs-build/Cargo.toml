@@ -2,6 +2,14 @@
 name = "necrassrs-build"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/necrassrs-build"
+description = "Build-time GraphQL validation and Rust code generation for NecrassRs."
+readme = "README.md"
+keywords = ["graphql", "codegen", "build", "sdl"]
+categories = ["development-tools::build-utils", "web-programming"]
 
 [dependencies]
 reed-compiler.workspace = true

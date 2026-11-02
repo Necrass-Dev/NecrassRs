@@ -2,6 +2,14 @@
 name = "necrassrs"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/necrassrs"
+description = "SDL-first GraphQL execution and resolver contracts for Rust."
+readme = "README.md"
+keywords = ["graphql", "server", "execution", "sdl"]
+categories = ["web-programming"]
 
 [dependencies]
 reed-compiler.workspace = true

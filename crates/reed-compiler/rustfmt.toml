@@ -1,0 +1,2 @@
+# Preserve upstream formatting while adopting the workspace Rust edition.
+style_edition = "2021"

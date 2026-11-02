@@ -459,7 +459,7 @@ Official repository documentation is written in English. Agent workflow and AI-a
 - Consumers resolve dependencies with their own lockfiles. The repository lockfile does not pin consumer dependencies.
 - Use `path + version` for local package dependencies. Publish internal crates required as build or runtime dependencies of public packages.
 - Mark examples and integration packages `publish = false`.
-- Initially version and release the product packages together, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Release automation remains a separate decision.
+- Initially version and release all eight public Reed and NecrassRs packages together from the workspace version, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Release-plz prepares reviewed version and changelog updates; the initial registry publication remains a separately supervised release.
 - Define compatibility between `necrassrs-build` and `necrassrs`, including runtime contracts called by generated code. Publishing matching versions alone does not prevent incompatible consumer combinations. Validate the supported combination with the consumer example and use that combination in CLI templates.
 - Before release, verify packaging and consumer builds without relying on local-only paths.
 
