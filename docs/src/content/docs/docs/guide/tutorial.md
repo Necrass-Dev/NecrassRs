@@ -16,8 +16,8 @@ results, ordinary and OneOf input objects, owned Object results, Interface and
 Union results, nullable and list forms, recursive input and Object relationships,
 and generated query and mutation routing. Borrowed Object results and generated
 subscription routing remain unsupported. These examples describe this checkout;
-a previously resolved Git dependency must be updated before it contains these
-changes. NecrassRs uses the Reed compiler packages included in this repository.
+published package versions may differ. NecrassRs uses Reed for GraphQL parsing,
+models, and validation.
 
 ## 1. Create a project
 

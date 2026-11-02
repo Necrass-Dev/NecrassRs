@@ -60,8 +60,8 @@ Both are independently buildable and testable packages. `reed-compiler` uses the
 local `reed-parser` package through the workspace's path-and-version dependency.
 NecrassRs runtime and build tooling use the same workspace `reed-compiler` package,
 and generated consumers resolve those types through the NecrassRs packages without
-an Apollo override. The former Apollo source patches remain archived provenance;
-they are not active dependency wiring.
+an Apollo override. Reed's corrections are maintained in its source and regression
+tests; no Apollo source override is active.
 
 ### 3.3 No separate schema crate for now
 
@@ -251,7 +251,7 @@ A build-time `Schema` instance does not survive into the running server. The gen
 The complete workflow is:
 
 ```text
-cargo install --git https://github.com/Necrass-Dev/NecrassRs.git necrassrs-cli --locked
+cargo install necrassrs-cli --locked
   → Install the necrass executable
   → necrass init [PATH] [--name NAME] [--framework axum|actix]
   → Create a new consumer project without overwriting existing content
@@ -351,7 +351,7 @@ The starter begins with the single resolver entry shown above. Applications may 
 | `generated.rs`                            | Module that includes generated code from `OUT_DIR`                                                                                                                                |
 | Rust files in `OUT_DIR`                   | Automatically generated; not edited manually                                                                                                                                      |
 
-The initializer writes the application dependencies into its new manifest. Before registry publication, its NecrassRs dependencies use the same Git repository so a Git-installed CLI can create a buildable project. Cargo locks those dependencies to a commit when the consumer first builds. Manual integration of an existing project uses the following dependency locations:
+The initializer writes released NecrassRs dependencies into its new manifest, and Cargo records the resolved package versions in the consumer's lockfile. Manual integration of an existing project uses the following dependency locations:
 
 | Installation or manifest location | Contents                                                                                                                   |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -426,9 +426,6 @@ necrassrs/
 │   ├── axum-server/
 │   ├── actix-server/
 │   └── tutorial/
-├── tests/
-│   └── integration/
-│       └── Cargo.toml
 ├── docs/
 │   ├── package.json
 │   └── src/content/docs/docs/
@@ -437,16 +434,12 @@ necrassrs/
 │       └── manual/
 ├── archives/
 │   ├── architecture.md
-│   ├── integration.md
-│   ├── specs.md
-│   ├── apollo-compiler.md
-│   ├── default-cycle-comparison.md
-│   └── default-cycle-results.csv
+│   └── specs.md
 └── .github/
     └── workflows/
 ```
 
-Use a virtual workspace at the root. Keep unit tests with their crates and cross-package checks in a separate integration package. Maintain the example server as a real consumer package with a build script, Context, resolvers, and HTTP integration.
+Use a virtual workspace at the root. Keep unit and integration tests with their crates, and exercise cross-package behavior through generated consumers and the example packages. Maintain the example server as a real consumer package with a build script, Context, resolvers, and HTTP integration.
 
 Manage edition, MSRV, license, shared dependency declarations, and lint policy at the workspace root. Select the MSRV alongside dependency requirements. Keep build-tool and CLI dependencies out of the runtime.
 
@@ -458,8 +451,8 @@ Official repository documentation is written in English. Agent workflow and AI-a
 - Periodically test updated dependency resolutions in addition to locked builds.
 - Consumers resolve dependencies with their own lockfiles. The repository lockfile does not pin consumer dependencies.
 - Use `path + version` for local package dependencies. Publish internal crates required as build or runtime dependencies of public packages.
-- Mark examples and integration packages `publish = false`.
-- Initially version and release all eight public Reed and NecrassRs packages together from the workspace version, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Release-plz prepares reviewed version and changelog updates; the initial registry publication remains a separately supervised release.
+- Mark example packages `publish = false`.
+- Version and release all eight public Reed and NecrassRs packages together from the workspace version, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Release-plz prepares reviewed version and changelog updates and publishes merged releases through crates.io trusted publishing.
 - Define compatibility between `necrassrs-build` and `necrassrs`, including runtime contracts called by generated code. Publishing matching versions alone does not prevent incompatible consumer combinations. Validate the supported combination with the consumer example and use that combination in CLI templates.
 - Before release, verify packaging and consumer builds without relying on local-only paths.
 

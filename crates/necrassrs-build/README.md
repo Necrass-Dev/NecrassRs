@@ -13,7 +13,7 @@ fn main() -> Result<(), necrassrs_build::BuildError> {
 }
 ```
 
-Building can update resolver source files. Review generated declarations after changing SDL. See the [NecrassRs tutorial](https://necrass.rs/docs/guide/tutorial/) for the complete application setup and source ownership rules.
+Building can update resolver source files. Review generated declarations after changing SDL. See the [NecrassRs tutorial](https://necrass.rs/docs/tutorial/) for the complete application setup and source ownership rules.
 
 ## License
 
