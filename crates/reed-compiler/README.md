@@ -1,5 +1,6 @@
 <div align="center">
   <h1><code>reed-compiler</code></h1>
+  <img src="https://raw.githubusercontent.com/Necrass-Dev/NecrassRs/main/logo/reed.svg" alt="Reed logo" width="180">
 
   <p>
     <strong>A query-based compiler for the GraphQL query language.</strong>

@@ -265,7 +265,7 @@ impl Parser {
     ///
     /// This can be used to build an executable document from multiple source files.
     /// Errors (if any) are recorded in the builder and returned by
-    /// [`ExecutableDocumentBuilder::build`].
+    /// [`executable::ExecutableDocumentBuilder::build`].
     pub fn parse_into_executable_builder(
         &mut self,
         source_text: impl Into<String>,

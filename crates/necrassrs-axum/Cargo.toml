@@ -2,11 +2,19 @@
 name = "necrassrs-axum"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/necrassrs-axum"
+description = "Axum integration for NecrassRs GraphQL servers."
+readme = "README.md"
+keywords = ["graphql", "axum", "server", "web"]
+categories = ["web-programming::http-server"]
 
 [dependencies]
 axum = "0.8.9"
-necrassrs = { path = "../necrassrs", version = "0.1.0" }
-necrassrs-http = { path = "../necrassrs-http", version = "0.1.0" }
+necrassrs.workspace = true
+necrassrs-http.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
