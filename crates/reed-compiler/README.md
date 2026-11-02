@@ -200,10 +200,9 @@ at your option.
 
 Reed Compiler 0.1.0 is derived from Apollo Compiler 1.33.0 at upstream revision
 [`5ebcc40bdf6919843c122e9a76b241689edcd6ef`](https://github.com/apollographql/apollo-rs/tree/5ebcc40bdf6919843c122e9a76b241689edcd6ef/crates/apollo-compiler).
-The source corrections used to establish Reed are preserved in the historical
-[`apollo-compiler-1.33.0.patch`](../../archives/patches/apollo-compiler-1.33.0.patch).
-Package and crate paths, the parser dependency, documentation, workspace rustfmt
-layout, and regression tests are adapted for Reed; the compiler public API and
-module organization are retained.
+The source corrections used to establish Reed are maintained in this crate and
+its regression tests. Package and crate paths, the parser dependency,
+documentation, workspace rustfmt layout, and regression tests are adapted for
+Reed; the compiler public API and module organization are retained.
 
 [`salsa`]: https://docs.rs/salsa/latest/salsa/

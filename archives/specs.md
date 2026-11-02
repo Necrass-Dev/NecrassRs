@@ -211,8 +211,8 @@ Nested variable-default normalization is a separate defect within the parent iss
 
 ### Reed default and coercion verification
 
-Reed Compiler, whose [Apollo correction history](apollo-compiler.md) is archived, supplies
-schema default-cycle validation and nested variable-default coercion. Superseded
+Reed Compiler supplies schema default-cycle validation and nested variable-default
+coercion. Superseded
 NecrassRs variable normalization and active-default guards are removed. Legitimate
 executor argument coercion remains. These checks cover the released clauses below and their unchanged counterparts
 in the selected Working Draft. The #23 reference comparison is recorded below;
@@ -225,7 +225,7 @@ separate work. No complete G08/G09/G11 or next-edition conformance is claimed.
 | September 2025 §3.10 Input Coercion and §6.1.2 (required)                  | Reed variable and nested input-field defaults                 | `variable_defaults_are_coerced_by_reed`; `supplied_objects_apply_nested_defaults_without_replacing_null_or_values`                                                 | Passed directly through the compiler without wrapper repair                                                  |
 | September 2025 §3.11 List Input Coercion (required)                        | Singleton and nested-list defaults in the public variable API | The same direct API tests and retained execution default regressions                                                                                               | Passed locally                                                                                               |
 | September 2025 §6.4.1 (required; preserved boundary)                       | NecrassRs executor field-argument coercion                    | `input_object_defaults_and_single_value_list_coercion_are_applied`; finite-default reuse and existing alias/error/null propagation tests                           | Passed after removing only superseded guards                                                                 |
-| Cargo source selection (project integration requirement)                   | Workspace and external consumer roots, including CLI starter  | `consumer_root_resolves_reed_for_build_and_runtime`; `cyclic_defaults_fail_before_consumer_generation`; CLI generated-consumer check                               | Passed for local paths; historical Apollo verification is recorded in [the patch record](apollo-compiler.md) |
+| Cargo source selection (project integration requirement)                   | Workspace and external consumer roots, including CLI starter  | `consumer_root_resolves_reed_for_build_and_runtime`; `cyclic_defaults_fail_before_consumer_generation`; CLI generated-consumer check                               | Passed for local paths and generated consumers                                                                  |
 
 Validation: `cargo test --workspace --locked`, workspace all-target Clippy with
 warnings denied, and formatting pass. The root lockfile resolves the workspace
@@ -615,8 +615,8 @@ number; test identifiers are retained for lookup.
 On 2026-10-30, prerequisites #23, #25, and #27 were closed. The inventory above
 records the pinned differences, 25 focused dependency regressions, three
 clause-boundary tests, existing runtime/build evidence, and the generated-consumer
-introspection check. Compiler/parser source patches were synchronized and applied
-to pristine release sources successfully; see [Apollo provenance](apollo-compiler.md).
+introspection check. The Reed compiler and parser corrections were integrated and
+verified against the recorded upstream versions.
 
 Validation of the implementation at `5132020`:
 

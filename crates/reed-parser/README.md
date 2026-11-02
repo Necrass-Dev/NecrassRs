@@ -165,11 +165,10 @@ at your option.
 
 Reed Parser 0.1.0 is derived from Apollo Parser 0.8.6 at upstream revision
 [`e36ca6dceb668b4b0c703449beea39e75c16ead5`](https://github.com/apollographql/apollo-rs/tree/e36ca6dceb668b4b0c703449beea39e75c16ead5/crates/apollo-parser).
-The source corrections used to establish Reed are preserved in the historical
-[`apollo-parser-0.8.6.patch`](../../archives/patches/apollo-parser-0.8.6.patch).
-Package naming, documentation paths, fixture discovery, source item order needed
-by workspace lints, and regression tests are adapted for the Reed package; the
-parser module organization is retained. The
+The source corrections used to establish Reed are maintained in this crate and
+its regression tests. Package naming, documentation paths, fixture discovery,
+source item order needed by workspace lints, and regression tests are adapted
+for the Reed package; the parser module organization is retained. The
 restored upstream fixture corpus reclassifies operation descriptions and empty
 selection sets and updates Unicode diagnostics to match the maintained September
 2025 language corrections.
