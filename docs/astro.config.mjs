@@ -12,7 +12,7 @@ export default defineConfig({
     starlight({
       title: "NecrassRs",
       description: "Your schema leads. Rust delivers.",
-      logo: { src: "../logo/logo.svg" },
+      logo: { src: "../logo/necrassrs.svg" },
       social: [
         { icon: "github", label: "GitHub", href: "https://github.com/Necrass-Dev/NecrassRs" },
       ],
