@@ -1,5 +1,6 @@
 <div align="center">
   <h1><code>reed-parser</code></h1>
+  <img src="https://raw.githubusercontent.com/Necrass-Dev/NecrassRs/main/logo/reed.svg" alt="Reed logo" width="180">
 
   <p>
     <strong>A parser for the GraphQL language.</strong>
