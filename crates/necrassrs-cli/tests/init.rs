@@ -120,9 +120,7 @@ fn check_generated_consumer(framework: &str) {
     assert!(!source.contains("apollo-compiler"));
     let adapter = format!("necrassrs-{framework}");
     for package in ["necrassrs", adapter.as_str(), "necrassrs-build"] {
-        let git = format!(
-            "{package} = {{ git = \"https://github.com/Necrass-Dev/NecrassRs.git\", version = \"0.1.0\" }}"
-        );
+        let registry = format!("{package} = \"0.1.0\"");
         let path = workspace
             .join("crates")
             .join(package)
@@ -130,10 +128,10 @@ fn check_generated_consumer(framework: &str) {
             .unwrap();
         let local = format!("{package} = {{ path = {path:?}, version = \"0.1.0\" }}");
         assert!(
-            source.contains(&git),
-            "missing Git dependency for {package}"
+            source.contains(&registry),
+            "missing registry dependency for {package}"
         );
-        source = source.replace(&git, &local);
+        source = source.replace(&registry, &local);
     }
     fs::write(manifest, source).unwrap();
     fs::copy(workspace.join("Cargo.lock"), project.join("Cargo.lock")).unwrap();
