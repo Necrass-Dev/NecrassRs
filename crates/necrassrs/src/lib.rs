@@ -41,7 +41,10 @@ use serde::Serialize;
 mod execution;
 mod input;
 
-pub use execution::{Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options};
+pub use execution::{
+    Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options, subscribe,
+    subscribe_with_options,
+};
 
 /// A custom scalar conversion failure.
 pub type ScalarError = ResolverError;
@@ -383,11 +386,23 @@ impl ::core::fmt::Display for SubscriptionError {
 
 impl std::error::Error for SubscriptionError {}
 
+type BoxResponseStream<'a> = ::core::pin::Pin<
+    Box<dyn futures_util::Stream<Item = Result<Response, SubscriptionError>> + Send + 'a>,
+>;
+
 /// Ordered GraphQL response events from a subscription.
 pub struct ResponseStream<'a> {
-    stream: ::core::pin::Pin<
-        Box<dyn futures_util::Stream<Item = Result<Response, SubscriptionError>> + Send + 'a>,
-    >,
+    stream: Option<BoxResponseStream<'a>>,
+}
+
+impl<'a> ResponseStream<'a> {
+    pub(crate) fn from_stream(
+        stream: impl futures_util::Stream<Item = Result<Response, SubscriptionError>> + Send + 'a,
+    ) -> Self {
+        Self {
+            stream: Some(Box::pin(stream)),
+        }
+    }
 }
 
 impl futures_util::Stream for ResponseStream<'_> {
@@ -397,7 +412,14 @@ impl futures_util::Stream for ResponseStream<'_> {
         mut self: ::core::pin::Pin<&mut Self>,
         cx: &mut ::core::task::Context<'_>,
     ) -> ::core::task::Poll<Option<Self::Item>> {
-        self.stream.as_mut().poll_next(cx)
+        let Some(stream) = self.stream.as_mut() else {
+            return ::core::task::Poll::Ready(None);
+        };
+        let next = stream.as_mut().poll_next(cx);
+        if matches!(next, ::core::task::Poll::Ready(None | Some(Err(_)))) {
+            self.stream = None;
+        }
+        next
     }
 }
 

@@ -1,4 +1,4 @@
-use futures_util::future::join_all;
+use futures_util::{StreamExt, future::join_all, stream};
 use reed_compiler::{
     Name, Node, Schema,
     ast::{Type, Value},
@@ -12,8 +12,8 @@ use reed_compiler::{
 };
 
 use crate::{
-    Request, ResolvedObject, ResolvedValue, ResolverError, Response, ScalarError, ScalarLiteralMap,
-    SourceStream,
+    Request, ResolvedObject, ResolvedValue, ResolverError, Response, ResponseStream, ScalarError,
+    ScalarLiteralMap, SourceEvent, SourceStream, SubscriptionError,
     input::literal_to_json as input_literal_to_json,
     request::{PreparedRequest, prepare_request},
 };
@@ -185,6 +185,230 @@ where
         ExecutionOptions::default(),
     )
     .await
+}
+
+/// Validates a subscription request and creates its source stream.
+pub fn subscribe<'a, C, D>(
+    schema: &'a Valid<Schema>,
+    request: &Request,
+    dispatcher: &'a D,
+    context: &'a C,
+) -> impl Future<Output = Result<ResponseStream<'a>, Response>> + Send + 'a
+where
+    C: Sync,
+    D: Dispatcher<C> + Sync,
+{
+    subscribe_with_options(
+        schema,
+        request,
+        dispatcher,
+        context,
+        ExecutionOptions::default(),
+    )
+}
+
+/// Validates a subscription request and creates its source stream with server settings.
+pub fn subscribe_with_options<'a, C, D>(
+    schema: &'a Valid<Schema>,
+    request: &Request,
+    dispatcher: &'a D,
+    context: &'a C,
+    _options: ExecutionOptions,
+) -> impl Future<Output = Result<ResponseStream<'a>, Response>> + Send + 'a
+where
+    C: Sync,
+    D: Dispatcher<C> + Sync,
+{
+    let prepared = prepare_request(schema, request).map_err(Response::from);
+    async move {
+        let prepared = prepared?;
+        if !prepared.operation.is_subscription() {
+            return Err(Response::request_error(GraphQLError::new(
+                "Expected a subscription operation.",
+                prepared.operation.location(),
+                &prepared.document.sources,
+            )));
+        }
+        if let Err(error) = validate_custom_scalar_variables::<C, D>(schema, &prepared, dispatcher)
+        {
+            return Err(Response::request_error(*error));
+        }
+
+        let fields = collect_fields(schema, &prepared);
+        let Some((response_key, selected_fields)) = fields.first() else {
+            return Err(Response::request_error(GraphQLError::new(
+                "Subscription must select one root field.",
+                prepared.operation.location(),
+                &prepared.document.sources,
+            )));
+        };
+        let field = selected_fields[0];
+        let object_type = schema
+            .get_object(prepared.operation.selection_set.ty.as_str())
+            .expect("validated subscription root must be an object");
+        let definition = schema
+            .type_field(object_type.name.as_str(), field.name.as_str())
+            .expect("validated subscription selection must have a field definition");
+        let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
+        let arguments = coerce_argument_values(schema, &prepared, &path, field, definition)
+            .map_err(|error| Response::request_error(*error))?;
+        let source = dispatcher
+            .resolve_event_stream(
+                context,
+                FieldCoordinate {
+                    parent_type: object_type.name.as_str(),
+                    field: field.name.as_str(),
+                },
+                &arguments.values,
+                &arguments.literals,
+            )
+            .await
+            .map_err(|error| source_creation_error(&prepared, selected_fields, error))?;
+
+        let state = SubscriptionState {
+            schema,
+            prepared,
+            context,
+            source: Some(source),
+        };
+        Ok(ResponseStream::from_stream(stream::unfold(
+            state,
+            |mut state| async move {
+                let event = state.source.as_mut()?.next().await;
+                match event {
+                    None => None,
+                    Some(SourceEvent::SourceError(error)) => {
+                        state.source = None;
+                        Some((Err(SubscriptionError::Source(error)), state))
+                    }
+                    Some(event) => {
+                        let response = execute_subscription_event(
+                            state.schema,
+                            &state.prepared,
+                            state.context,
+                            event,
+                        )
+                        .await;
+                        Some((Ok(response), state))
+                    }
+                }
+            },
+        )))
+    }
+}
+
+struct SubscriptionState<'a, C> {
+    schema: &'a Valid<Schema>,
+    prepared: PreparedRequest,
+    context: &'a C,
+    source: Option<SourceStream<'a, ResolvedValue<C>>>,
+}
+
+fn source_creation_error(
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    error: ResolverError,
+) -> Response {
+    let ResolverError {
+        message,
+        extensions,
+    } = error;
+    let mut error = GraphQLError::new(
+        message,
+        fields[0].name.location(),
+        &prepared.document.sources,
+    );
+    error
+        .locations
+        .extend(fields[1..].iter().filter_map(|field| {
+            field
+                .name
+                .location()?
+                .line_column(&prepared.document.sources)
+        }));
+    error.extensions = extensions.unwrap_or_default();
+    Response::request_error(error)
+}
+
+async fn execute_subscription_event<C>(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    context: &C,
+    event: SourceEvent<ResolvedValue<C>>,
+) -> Response
+where
+    C: Sync,
+{
+    let fields = collect_fields(schema, prepared);
+    let (response_key, fields) = fields
+        .into_iter()
+        .next()
+        .expect("validated subscription must select one root field");
+    let field = fields[0];
+    let object_type = schema
+        .get_object(prepared.operation.selection_set.ty.as_str())
+        .expect("validated subscription root must be an object");
+    let definition = schema
+        .type_field(object_type.name.as_str(), field.name.as_str())
+        .expect("validated subscription selection must have a field definition");
+    let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
+    let mut errors = Vec::new();
+    let value = match event {
+        SourceEvent::Value(value) => value,
+        SourceEvent::FieldError(error) => {
+            errors.push(*subscription_field_error_to_graphql_error(
+                prepared, &fields, &path, error,
+            ));
+            if definition.ty.is_non_null() {
+                return Response::execution(None, errors);
+            }
+            ResolvedValue::Json(JsonValue::Null)
+        }
+        SourceEvent::SourceError(_) => unreachable!("source errors terminate before execution"),
+    };
+    let completed = complete_value(
+        schema,
+        prepared,
+        &fields,
+        &definition.ty,
+        value,
+        context,
+        &path,
+        &mut errors,
+    )
+    .await;
+    let data = match completed {
+        Ok(value) => Some(JsonMap::from_iter([(response_key.as_str().into(), value)])),
+        Err(PropagateNull) => None,
+    };
+    Response::execution(data, errors)
+}
+
+fn subscription_field_error_to_graphql_error(
+    prepared: &PreparedRequest,
+    fields: &[&Field],
+    path: &[ResponseDataPathSegment],
+    error: ResolverError,
+) -> Box<GraphQLError> {
+    let ResolverError {
+        message,
+        extensions,
+    } = error;
+    let location = |field: &Field| {
+        field
+            .alias
+            .as_ref()
+            .and_then(|alias| alias.location())
+            .or_else(|| field.name.location())
+    };
+    let mut error = new_execution_error(prepared, path, message, location(fields[0]));
+    error.locations.extend(
+        fields[1..]
+            .iter()
+            .filter_map(|field| location(field)?.line_column(&prepared.document.sources)),
+    );
+    error.extensions = extensions.unwrap_or_default();
+    error
 }
 
 /// Executes a request with server-owned settings.
