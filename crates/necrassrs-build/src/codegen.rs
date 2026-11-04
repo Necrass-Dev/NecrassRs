@@ -23,7 +23,7 @@ use reed_compiler::{
 ///
 /// # Errors
 ///
-/// Returns [`CodegenError`] for unsupported types or subscription roots.
+/// Returns [`CodegenError`] for unsupported schema types.
 /// Generated query and mutation contracts support built-in scalars, enums,
 /// ordinary input objects, lists, nullable wrappers, and owned Object results
 /// with nullable/list wrappers, leaf fields, recursive relationships, and
@@ -553,13 +553,21 @@ fn generate_resolvers(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Co
                 schema.schema_definition.location(),
             )
         })?;
-    let roots = std::iter::once(query).chain(
-        schema
-            .schema_definition
-            .mutation
-            .as_ref()
-            .and_then(|name| schema.get_object(name.as_str())),
-    );
+    let roots = std::iter::once(query)
+        .chain(
+            schema
+                .schema_definition
+                .mutation
+                .as_ref()
+                .and_then(|name| schema.get_object(name.as_str())),
+        )
+        .chain(
+            schema
+                .schema_definition
+                .subscription
+                .as_ref()
+                .and_then(|name| schema.get_object(name.as_str())),
+        );
     let resolvers = roots.map(|root| {
         let resolver_name = format_ident!("{}Resolver", rust_name(root.name.as_str()));
         quote! {
@@ -1037,13 +1045,6 @@ fn generate_object_dispatcher(
 }
 
 fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, CodegenError> {
-    if let Some(root) = schema.schema_definition.subscription.as_ref() {
-        return Err(CodegenError::new(
-            "Generated dispatch does not support subscription roots",
-            schema,
-            root.name.location(),
-        ));
-    }
     let query = schema
         .schema_definition
         .query
@@ -1061,9 +1062,21 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
         .mutation
         .as_ref()
         .and_then(|name| schema.get_object(name.as_str()));
+    let subscription = schema
+        .schema_definition
+        .subscription
+        .as_ref()
+        .and_then(|name| schema.get_object(name.as_str()));
     let mut roots = vec![(query, format_ident!("Q"), format_ident!("query"))];
     if let Some(mutation) = mutation {
         roots.push((mutation, format_ident!("M"), format_ident!("mutation")));
+    }
+    if let Some(subscription) = subscription {
+        roots.push((
+            subscription,
+            format_ident!("S"),
+            format_ident!("subscription"),
+        ));
     }
     let root_types = roots
         .iter()
@@ -1072,6 +1085,7 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
     let (object_dispatcher, object_bounds, object_types) =
         generate_object_dispatcher(schema, &root_types)?;
     let mut branches = Vec::new();
+    let mut source_branches = Vec::new();
     let mut dispatcher_bounds = object_bounds;
     for (root, generic, member) in &roots {
         let type_name = root.name.as_str();
@@ -1150,24 +1164,43 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                     (return_type, conversion)
                 };
 
-            dispatcher_bounds.push(quote! {
-                #generic: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
-            });
-
-            branches.push(quote! {
-                (#type_name, #field_name) => {
-                    let args = super::types::#object_name::#method_name::Args {
-                        #(#arguments)*
-                    };
-                    let value = <#generic as ::necrassrs::Resolver<#field_type, C>>::resolve(
-                        &self.#member,
-                        context,
-                        args,
-                    )
-                    .await?;
-                    Ok(#conversion)
-                }
-            });
+            if subscription.is_some_and(|subscription| subscription.name.as_str() == type_name) {
+                dispatcher_bounds.push(quote! {
+                    #generic: ::necrassrs::Subscriber<#field_type, C, Output = #return_type>
+                });
+                source_branches.push(quote! {
+                    (#type_name, #field_name) => {
+                        let args = super::types::#object_name::#method_name::Args {
+                            #(#arguments)*
+                        };
+                        let source = <#generic as ::necrassrs::Subscriber<#field_type, C>>::resolve(
+                            &self.#member,
+                            context,
+                            args,
+                        )
+                        .await?;
+                        Ok(source.map_values(move |value| #conversion))
+                    }
+                });
+            } else {
+                dispatcher_bounds.push(quote! {
+                    #generic: ::necrassrs::Resolver<#field_type, C, Output = #return_type>
+                });
+                branches.push(quote! {
+                    (#type_name, #field_name) => {
+                        let args = super::types::#object_name::#method_name::Args {
+                            #(#arguments)*
+                        };
+                        let value = <#generic as ::necrassrs::Resolver<#field_type, C>>::resolve(
+                            &self.#member,
+                            context,
+                            args,
+                        )
+                        .await?;
+                        Ok(#conversion)
+                    }
+                });
+            }
         }
     }
 
@@ -1247,6 +1280,36 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
             }
         }
     };
+    let source_dispatch = subscription.map(|_| {
+        quote! {
+            fn resolve_event_stream<'stream, 'call>(
+                &'stream self,
+                context: &'stream C,
+                coordinate: ::necrassrs::FieldCoordinate<'call>,
+                _arguments: &'call ::necrassrs::JsonMap,
+                _argument_literals: &'call ::necrassrs::ScalarLiteralMap,
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<
+                    ::necrassrs::SourceStream<'stream, ::necrassrs::ResolvedValue<C>>,
+                    ::necrassrs::ResolverError,
+                >,
+            > + ::core::marker::Send + 'call
+            where
+                'stream: 'call,
+            {
+                async move {
+                    match (coordinate.parent_type, coordinate.field) {
+                        #(#source_branches,)*
+                        _ => Err(::necrassrs::ResolverError::new(::std::format!(
+                            "Unknown subscription field {}.{}",
+                            coordinate.parent_type,
+                            coordinate.field,
+                        ))),
+                    }
+                }
+            }
+        }
+    });
     Ok(quote! {
         pub mod dispatch {
             #object_dispatcher
@@ -1321,6 +1384,8 @@ fn generate_dispatch(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Cod
                         ))),
                     }
                 }
+
+                #source_dispatch
             }
         }
     })
@@ -6395,6 +6460,70 @@ mod test {
 
                 let _ = generated::SDL;
                 let _ = SchemaDispatcher::new(Query);
+            }
+        "#;
+
+        assert_consumer(&format!("mod generated {{ {generated} }}"), consumer, true);
+    }
+
+    #[test]
+    fn generated_subscription_contract_and_dispatch_compile() {
+        let schema = Schema::parse_and_validate(
+            "type Query { ping: Int! } type Subscription { count: Int! }",
+            "schema.graphql",
+        )
+        .expect("the test schema must be valid");
+        let generated = super::generate(&schema).expect("subscription generation must succeed");
+        let consumer = r#"
+            use generated::{
+                dispatch::SchemaDispatcher,
+                fields,
+                resolvers::{QueryResolver, SubscriptionResolver},
+                types,
+            };
+            use necrassrs::{
+                Dispatcher, Resolver, ResolverError, SourceEvent, SourceStream, Subscriber,
+            };
+
+            struct Query;
+            struct Subscription;
+
+            impl QueryResolver<()> for Query {}
+            impl SubscriptionResolver<()> for Subscription {}
+
+            impl Resolver<fields::Query::ping, ()> for Query {
+                type Output = i32;
+
+                async fn resolve(
+                    &self,
+                    _: &(),
+                    _: types::Query::ping::Args,
+                ) -> Result<Self::Output, ResolverError> {
+                    Ok(1)
+                }
+            }
+
+            impl Subscriber<fields::Subscription::count, ()> for Subscription {
+                type Output = i32;
+
+                async fn resolve<'a>(
+                    &'a self,
+                    _: &'a (),
+                    _: types::Subscription::count::Args,
+                ) -> Result<SourceStream<'a, Self::Output>, ResolverError> {
+                    Ok(SourceStream::from_stream(futures::stream::iter([
+                        SourceEvent::Value(1),
+                    ])))
+                }
+            }
+
+            fn require_dispatcher(value: impl Dispatcher<()>) {
+                let _ = value;
+            }
+
+            fn main() {
+                let _ = generated::SDL;
+                require_dispatcher(SchemaDispatcher::new(Query, Subscription));
             }
         "#;
 
