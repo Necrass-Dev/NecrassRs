@@ -10,6 +10,9 @@ use syn::{
     spanned::Spanned,
 };
 
+#[path = "cases/subscriptions.rs"]
+mod subscriptions;
+
 #[test]
 fn collision_rendering_preserves_application_aliases_and_context_bounds() {
     let declarations = "pub type Result<T> = ::core::result::Result<T, necrassrs::ResolverError>;\npub trait Sync: ::core::marker::Sync { fn label(&self) -> String; }\nimpl Sync for () { fn label(&self) -> String { String::new() } }";

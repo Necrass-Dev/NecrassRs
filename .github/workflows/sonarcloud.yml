@@ -49,7 +49,27 @@ jobs:
         run: |
           mkdir -p target/llvm-cov
           cargo llvm-cov clean --workspace
-          cargo llvm-cov --workspace --lcov --output-path target/llvm-cov/lcov.info -- --test-threads=1 --skip generated_consumer_builds_and_rebuilds_without_the_cli
+          rm -rf target/cargo-consumer
+          # Instrument temporary consumer crates as well as workspace members.
+          cargo llvm-cov --workspace --locked --no-rustc-wrapper --no-report -- --test-threads=1 --skip generated_consumer_builds_and_rebuilds_without_the_cli
+          # Include consumer tests and build scripts outside llvm-cov's target directory.
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          target = Path("target/cargo-consumer/debug")
+          objects = sorted(
+              path for pattern in ("deps/*", "build/*/build-script-build")
+              for path in target.glob(pattern)
+              if path.is_file() and os.access(path, os.X_OK)
+          )
+          assert objects, "No consumer coverage binaries were collected"
+          Path("target/llvm-cov/consumer-objects.rsp").write_text(
+              "\n".join(json.dumps(f"-object={path}", ensure_ascii=False) for path in objects)
+          )
+          PY
+          LLVM_COV_FLAGS="@target/llvm-cov/consumer-objects.rsp" cargo llvm-cov report --lcov --output-path target/llvm-cov/lcov.info
 
       - name: Run SonarCloud scan
         if: ${{ env.SONAR_TOKEN != '' }}

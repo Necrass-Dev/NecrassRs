@@ -114,8 +114,10 @@ Return `necrassrs::ScalarError::new(message)` when a conversion fails.
 
 - Invalid custom scalar variables are rejected during variable coercion, before
   any field resolver runs.
-- Invalid argument literals become field execution errors with the applicable
-  response path and null propagation.
+- Invalid argument literals in queries and mutations become field execution
+  errors with the applicable response path and null propagation. Invalid
+  subscription root arguments fail source creation before a response stream is
+  returned; see [Subscriptions](/docs/subscriptions/#handle-errors-and-termination).
 - `serialize` failures are execution errors and follow the field's nullability.
 
 Conversion methods must be deterministic and side-effect-free. NecrassRs does

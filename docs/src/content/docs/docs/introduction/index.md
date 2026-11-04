@@ -49,8 +49,8 @@ developers to write the business logic in ordinary Rust resolver bodies.
 The generated API supports built-in and application-owned custom scalars, enum
 results, ordinary and OneOf input objects, owned Object results, Interface and
 Union results, nullable and list forms, recursive input and Object relationships,
-and generated query and mutation routing. Borrowed Object results and generated
-subscription routing remain unsupported. These pages describe the current source
+and generated query, mutation, and subscription routing. Borrowed Object results
+and subscription transports remain unsupported. These pages describe the current source
 checkout. Consult the published package's
 [docs.rs API reference](https://docs.rs/necrassrs/) when using a released version.
 :::
@@ -74,3 +74,5 @@ Special thanks to [XiNiHa](https://xiniha.dev/#about) for his contributions to N
   generated input types.
 - [Custom Scalars](/docs/custom-scalars/): define scalar storage, input
   coercion, output serialization, and regeneration behavior.
+- [Subscriptions](/docs/subscriptions/): create event sources, consume responses,
+  and handle errors and cancellation.

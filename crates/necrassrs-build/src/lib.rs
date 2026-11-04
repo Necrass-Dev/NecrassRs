@@ -382,18 +382,13 @@ mod tests {
         assert!(!schema_error.to_string().is_empty());
         assert!(schema_error.source().is_none());
 
-        let valid = Schema::parse_and_validate(
-            "schema { query: Query subscription: Subscription } \
-             type Query { value: String! } \
-             type Subscription { value: String! }",
-            "schema.graphql",
-        )
-        .unwrap();
+        let valid =
+            Schema::parse_and_validate("type Query { query: Query }", "schema.graphql").unwrap();
         let codegen_error = BuildError::Codegen(codegen::generate(&valid).unwrap_err());
         assert!(
             codegen_error
                 .to_string()
-                .contains("does not support subscription roots")
+                .contains("Unsupported return type at Query.query")
         );
         assert!(codegen_error.source().is_some());
     }

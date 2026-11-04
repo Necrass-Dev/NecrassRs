@@ -20,14 +20,12 @@
 //!
 //! # Current scope
 //!
-//! Generated query and mutation contracts support built-in scalar and enum results, ordinary
-//! and OneOf input objects, nullable/list forms, recursive input boxing, and owned
-//! Object results with nullable/list wrappers, recursive relationships, leaf fields,
-//! and abstract results. The runtime preserves Object parents, list-item conversion
-//! errors, and nullability during completion. Custom scalar conversion, borrowed
-//! Object results, and generated subscription routing remain unsupported.
-//! Runtime subscriptions are rejected. Schema introspection is enabled by default;
-//! use [`execute_with_options`] to disable it independently of any UI.
+//! Generated query, mutation, and subscription contracts support built-in and custom
+//! scalars, enum results, ordinary and OneOf input objects, nullable/list forms,
+//! recursive input boxing, owned Object results, and abstract results. The runtime
+//! preserves Object parents, list-item conversion errors, and nullability during
+//! completion. Borrowed Object results remain unsupported. Schema introspection is
+//! enabled by default; use [`execute_with_options`] to disable it independently of any UI.
 
 use reed_compiler::response::ExecutionResponse;
 pub use reed_compiler::{
@@ -41,7 +39,10 @@ use serde::Serialize;
 mod execution;
 mod input;
 
-pub use execution::{Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options};
+pub use execution::{
+    Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options, subscribe,
+    subscribe_with_options,
+};
 
 /// A custom scalar conversion failure.
 pub type ScalarError = ResolverError;
@@ -123,6 +124,7 @@ pub enum ResolvedValue<C = ()> {
 /// assert_eq!(error.message(), "User was not found");
 /// assert!(error.extensions().unwrap().contains_key("code"));
 /// ```
+#[derive(Debug)]
 pub struct ResolverError {
     message: String,
     extensions: Option<JsonMap>,
@@ -292,6 +294,242 @@ where
     ) -> impl ::core::future::Future<Output = ::core::result::Result<Self::Output, ResolverError>>
     + Send
     + 'a;
+}
+
+/// Creates a source stream for a generated subscription root field.
+pub trait Subscriber<F, C>: Send + Sync
+where
+    F: Field,
+    C: Sync,
+{
+    /// One source event's value for this field.
+    type Output: Send;
+
+    /// Creates the source stream with coerced arguments and request Context.
+    fn resolve<'a>(
+        &'a self,
+        context: &'a C,
+        args: F::Args,
+    ) -> impl ::core::future::Future<
+        Output = ::core::result::Result<SourceStream<'a, Self::Output>, ResolverError>,
+    > + Send
+    + 'a;
+}
+
+/// One item produced by a subscription source.
+pub enum SourceEvent<T> {
+    /// A value to complete into one response event.
+    Value(T),
+    /// A field failure for this event; later events may still succeed.
+    FieldError(ResolverError),
+    /// A terminal source failure.
+    SourceError(ResolverError),
+}
+
+/// A subscription source stream.
+pub struct SourceStream<'a, T> {
+    stream:
+        Option<::core::pin::Pin<Box<dyn futures_util::Stream<Item = SourceEvent<T>> + Send + 'a>>>,
+}
+
+impl<'a, T: Send + 'a> SourceStream<'a, T> {
+    /// Wraps a source stream without requiring it to be `Sync`, `Unpin`, or `'static`.
+    pub fn from_stream(
+        stream: impl futures_util::Stream<Item = SourceEvent<T>> + Send + 'a,
+    ) -> Self {
+        Self {
+            stream: Some(Box::pin(stream)),
+        }
+    }
+
+    /// Converts source values while preserving field and terminal source errors.
+    pub fn map_values<U: Send + 'a>(
+        self,
+        mut map: impl FnMut(T) -> U + Send + 'a,
+    ) -> SourceStream<'a, U> {
+        SourceStream::from_stream(futures_util::StreamExt::map(
+            self,
+            move |event| match event {
+                SourceEvent::Value(value) => SourceEvent::Value(map(value)),
+                SourceEvent::FieldError(error) => SourceEvent::FieldError(error),
+                SourceEvent::SourceError(error) => SourceEvent::SourceError(error),
+            },
+        ))
+    }
+}
+
+impl<T> futures_util::Stream for SourceStream<'_, T> {
+    type Item = SourceEvent<T>;
+
+    fn poll_next(
+        mut self: ::core::pin::Pin<&mut Self>,
+        cx: &mut ::core::task::Context<'_>,
+    ) -> ::core::task::Poll<Option<Self::Item>> {
+        let Some(stream) = self.stream.as_mut() else {
+            return ::core::task::Poll::Ready(None);
+        };
+        let next = stream.as_mut().poll_next(cx);
+        if matches!(
+            next,
+            ::core::task::Poll::Ready(None | Some(SourceEvent::SourceError(_)))
+        ) {
+            self.stream = None;
+        }
+        next
+    }
+}
+
+/// A terminal failure of a subscription response stream.
+#[derive(Debug)]
+pub enum SubscriptionError {
+    /// The application source stream failed.
+    Source(ResolverError),
+    /// The runtime terminated exceptionally.
+    Internal,
+}
+
+impl ::core::fmt::Display for SubscriptionError {
+    fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        match self {
+            Self::Source(error) => formatter.write_str(error.message()),
+            Self::Internal => formatter.write_str("Internal subscription error"),
+        }
+    }
+}
+
+impl std::error::Error for SubscriptionError {}
+
+type BoxResponseStream<'a> = ::core::pin::Pin<
+    Box<dyn futures_util::Stream<Item = Result<Response, SubscriptionError>> + Send + 'a>,
+>;
+
+/// Ordered GraphQL response events from a subscription.
+pub struct ResponseStream<'a> {
+    stream: Option<BoxResponseStream<'a>>,
+}
+
+impl<'a> ResponseStream<'a> {
+    pub(crate) fn from_stream(
+        stream: impl futures_util::Stream<Item = Result<Response, SubscriptionError>> + Send + 'a,
+    ) -> Self {
+        Self {
+            stream: Some(Box::pin(stream)),
+        }
+    }
+}
+
+impl futures_util::Stream for ResponseStream<'_> {
+    type Item = Result<Response, SubscriptionError>;
+
+    fn poll_next(
+        mut self: ::core::pin::Pin<&mut Self>,
+        cx: &mut ::core::task::Context<'_>,
+    ) -> ::core::task::Poll<Option<Self::Item>> {
+        let Some(stream) = self.stream.as_mut() else {
+            return ::core::task::Poll::Ready(None);
+        };
+        let next = stream.as_mut().poll_next(cx);
+        if matches!(next, ::core::task::Poll::Ready(None | Some(Err(_)))) {
+            self.stream = None;
+        }
+        next
+    }
+}
+
+#[cfg(test)]
+mod source_stream_tests {
+    use std::{
+        cell::Cell,
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Poll,
+    };
+
+    use futures_util::{StreamExt, stream};
+
+    use super::{ResolverError, SourceEvent, SourceStream};
+
+    struct DropCount<'a>(&'a AtomicUsize);
+
+    impl Drop for DropCount<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn send<T: Send>(value: T) -> T {
+        value
+    }
+
+    fn unpin<T: Unpin>(_: &T) {}
+
+    #[tokio::test]
+    async fn accepts_borrowing_non_sync_non_unpin_streams() {
+        let label = String::from("Sheri");
+        let borrowed = label.as_str();
+        let state = Cell::new(false);
+        let input = stream::unfold(state, move |state| async move {
+            if state.get() {
+                None
+            } else {
+                state.set(true);
+                Some((SourceEvent::Value(borrowed), state))
+            }
+        });
+        let mut source = send(SourceStream::from_stream(input));
+        unpin(&source);
+
+        assert!(matches!(
+            source.next().await,
+            Some(SourceEvent::Value("Sheri"))
+        ));
+        assert!(source.next().await.is_none());
+        assert!(source.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn releases_and_fuses_after_source_error() {
+        let drops = AtomicUsize::new(0);
+        let guard = DropCount(&drops);
+        let mut emitted = false;
+        let input = stream::poll_fn(move |_| {
+            let _keep_alive = &guard;
+            assert!(!emitted, "source polled after terminal failure");
+            emitted = true;
+            Poll::Ready(Some(SourceEvent::<()>::SourceError(ResolverError::new(
+                "closed",
+            ))))
+        });
+        let mut source = SourceStream::from_stream(input);
+
+        assert!(matches!(
+            source.next().await,
+            Some(SourceEvent::SourceError(_))
+        ));
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(source.next().await.is_none());
+        assert!(source.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn maps_values_without_changing_error_kinds() {
+        let mut source = SourceStream::from_stream(stream::iter([
+            SourceEvent::Value(7),
+            SourceEvent::FieldError(ResolverError::new("field")),
+            SourceEvent::SourceError(ResolverError::new("source")),
+        ]))
+        .map_values(|value| value.to_string());
+
+        assert!(matches!(source.next().await, Some(SourceEvent::Value(value)) if value == "7"));
+        assert!(matches!(
+            source.next().await,
+            Some(SourceEvent::FieldError(error)) if error.message() == "field"
+        ));
+        assert!(matches!(
+            source.next().await,
+            Some(SourceEvent::SourceError(error)) if error.message() == "source"
+        ));
+        assert!(source.next().await.is_none());
+    }
 }
 
 #[cfg(test)]

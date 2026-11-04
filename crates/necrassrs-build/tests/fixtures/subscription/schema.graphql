@@ -1,0 +1,19 @@
+schema {
+  query: RootQuery
+  mutation: RootMutation
+  subscription: Feed
+}
+
+scalar Token
+enum Status { PAID SHIPPED }
+input Filter { id: ID! states: [Status!]! note: String }
+type RootQuery { ping: Int! }
+type RootMutation { update: Int! }
+type Feed {
+  orderChanged(filter: Filter!, token: Token!): Order!
+  updates: Update!
+  count: Int!
+}
+type Order { id: ID! status: Status! label: String! }
+type Notice { text: String! }
+union Update = Order | Notice

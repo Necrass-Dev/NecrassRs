@@ -183,6 +183,28 @@ type Cat implements Pet {
 }
 
 #[test]
+fn subscription_allows_merged_root_fields_with_one_response_key() {
+    let input = r#"
+schema { query: Query subscription: Subscription }
+type Query { ping: Int }
+type Subscription { event: Int }
+
+subscription {
+  changed: event
+  ...More
+}
+
+fragment More on Subscription {
+  changed: event
+}
+"#;
+
+    Parser::new()
+        .parse_mixed_validate(input, "schema.graphql")
+        .unwrap();
+}
+
+#[test]
 fn it_validates_fields_in_operations() {
     let input = r#"
 query getProduct {

@@ -1,6 +1,7 @@
 use crate::ast;
 use crate::collections::HashMap;
 use crate::collections::HashSet;
+use crate::collections::IndexSet;
 use crate::executable;
 use crate::parser::SourceSpan;
 use crate::validation::diagnostics::DiagnosticData;
@@ -99,11 +100,11 @@ pub(crate) fn validate_subscription(
         return;
     }
 
-    let mut field_names = vec![];
+    let mut field_names = IndexSet::default();
 
     let walked = walk_selections(document, &operation.selection_set, |selection| {
         if let executable::Selection::Field(field) = selection {
-            field_names.push(field.name.clone());
+            field_names.insert(field.response_key().clone());
             if matches!(field.name.as_str(), "__type" | "__schema" | "__typename") {
                 diagnostics.push(
                     field.location(),
@@ -140,7 +141,7 @@ pub(crate) fn validate_subscription(
             operation.location(),
             executable::BuildError::SubscriptionUsesMultipleFields {
                 name: operation.name.clone(),
-                fields: field_names,
+                fields: field_names.into_iter().collect(),
             },
         );
     }
