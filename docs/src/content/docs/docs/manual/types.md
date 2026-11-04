@@ -10,8 +10,8 @@ web server example, follow the [Tutorial](/docs/tutorial/).
 The generated API currently supports built-in and custom scalar results, enum
 results, ordinary and OneOf input objects, owned Object results, Interface and
 Union results, nullable and list forms, recursive input and Object relationships,
-and generated query and mutation routing. Borrowed Object results and generated
-subscription routing remain unsupported.
+and generated query, mutation, and subscription routing. Borrowed Object results
+remain unsupported.
 
 ## Rust mappings
 
@@ -37,6 +37,11 @@ subscription routing remain unsupported.
 `GraphQLInput` is available from `necrassrs`. Generated field argument structs
 live at `generated::types::<Object>::<field>::Args`; generated enums and input
 objects live under `generated::types`.
+
+Subscription root fields use the same input and result mappings.
+`Subscriber::Output` is one event's field value; `Subscriber::resolve` returns
+`Result<SourceStream<'a, Self::Output>, ResolverError>`. See
+[Subscriptions](/docs/subscriptions/) for a complete source and response-stream example.
 
 List items have no undefined state. Input singleton coercion applies recursively:
 for `[[Int]]`, the input `3` becomes `[[3]]`. Enum literals are unquoted, as in
@@ -78,7 +83,7 @@ scalar results.
 | Interface `Person!`   | `generated::types::Person<Operator>`                         |
 | Union `SearchResult!` | `generated::types::SearchResult<Operator, Company, Faction>` |
 
-Every supported Query and Object field uses a
+Every supported Query, Mutation, and Object field uses a
 `necrassrs::Resolver<Field, Context>` implementation with an associated `Output`
 type. The generated query-root resolver trait is an empty marker for the Rust
 root type and Context. Recursive Object relationships are supported because each

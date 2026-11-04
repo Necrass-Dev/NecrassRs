@@ -14,10 +14,14 @@ The completed Axum project is available in
 The source checkout supports built-in and application-owned custom scalars, enum
 results, ordinary and OneOf input objects, owned Object results, Interface and
 Union results, nullable and list forms, recursive input and Object relationships,
-and generated query and mutation routing. Borrowed Object results and generated
-subscription routing remain unsupported. These examples describe this checkout;
+and generated query, mutation, and subscription routing. Borrowed Object results
+and subscription transports remain unsupported. These examples describe this checkout;
 published package versions may differ. NecrassRs uses Reed for GraphQL parsing,
 models, and validation.
+
+For subscription sources and runtime response streams, see
+[Subscriptions](/docs/subscriptions/). The HTTP server in this tutorial serves
+queries and mutations.
 
 ## 1. Create a project
 

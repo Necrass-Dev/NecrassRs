@@ -52,6 +52,22 @@ sequenceDiagram
 
 The execution core does not depend on an HTTP framework or on `necrassrs-http`. An adapter does not need to generate code or implement GraphQL execution. To configure introspection, the handler can call `execute_with_options`; see [GraphiQL](https://necrass.rs/docs/graphiql/).
 
+## Subscription transports
+
+The runtime supports subscriptions through `necrassrs::subscribe`, which returns
+a stream of GraphQL responses after creating the event source. See
+[Subscriptions](/docs/subscriptions/) for generated resolvers, a runnable console
+example, error handling, and cancellation.
+
+The current Axum and Actix adapters handle single-response HTTP execution. They
+do not provide WebSocket or Server-Sent Events (SSE) subscription transports.
+Serving a GraphiQL page does not add a subscription endpoint.
+
+A subscription transport must consume the response stream, encode its events,
+handle startup and terminal errors, and drop the stream when the client cancels
+or disconnects. The application owns authentication, Context lifetime, external
+producer buffers, and any reconnection or replay policy.
+
 ## Supported frameworks
 
 The following adapters are maintained in this repository:

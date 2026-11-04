@@ -45,6 +45,7 @@ export default defineConfig({
           items: [
             "docs/types",
             "docs/custom-scalars",
+            "docs/subscriptions",
             "docs/resolver-files",
             "docs/graphiql",
             "docs/integration",
