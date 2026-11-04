@@ -13,6 +13,7 @@ use reed_compiler::{
 
 use crate::{
     Request, ResolvedObject, ResolvedValue, ResolverError, Response, ScalarError, ScalarLiteralMap,
+    SourceStream,
     input::literal_to_json as input_literal_to_json,
     request::{PreparedRequest, prepare_request},
 };
@@ -76,6 +77,26 @@ pub trait Dispatcher<C> {
         _argument_literals: &'a ScalarLiteralMap,
     ) -> impl Future<Output = Result<ResolvedValue<C>, ResolverError>> + Send + 'a {
         self.resolve(context, coordinate, arguments)
+    }
+
+    /// Creates the source stream for a selected subscription root field.
+    fn resolve_event_stream<'stream, 'call>(
+        &'stream self,
+        _context: &'stream C,
+        _coordinate: FieldCoordinate<'call>,
+        _arguments: &'call JsonMap,
+        _argument_literals: &'call ScalarLiteralMap,
+    ) -> impl Future<Output = Result<SourceStream<'stream, ResolvedValue<C>>, ResolverError>>
+    + Send
+    + 'call
+    where
+        'stream: 'call,
+    {
+        async {
+            Err(ResolverError::new(
+                "Subscription sources are not supported.",
+            ))
+        }
     }
 }
 

@@ -123,6 +123,7 @@ pub enum ResolvedValue<C = ()> {
 /// assert_eq!(error.message(), "User was not found");
 /// assert!(error.extensions().unwrap().contains_key("code"));
 /// ```
+#[derive(Debug)]
 pub struct ResolverError {
     message: String,
     extensions: Option<JsonMap>,
@@ -294,6 +295,26 @@ where
     + 'a;
 }
 
+/// Creates a source stream for a generated subscription root field.
+pub trait Subscriber<F, C>: Send + Sync
+where
+    F: Field,
+    C: Sync,
+{
+    /// One source event's value for this field.
+    type Output: Send;
+
+    /// Creates the source stream with coerced arguments and request Context.
+    fn resolve<'a>(
+        &'a self,
+        context: &'a C,
+        args: F::Args,
+    ) -> impl ::core::future::Future<
+        Output = ::core::result::Result<SourceStream<'a, Self::Output>, ResolverError>,
+    > + Send
+    + 'a;
+}
+
 /// One item produced by a subscription source.
 pub enum SourceEvent<T> {
     /// A value to complete into one response event.
@@ -339,6 +360,44 @@ impl<T> futures_util::Stream for SourceStream<'_, T> {
             self.stream = None;
         }
         next
+    }
+}
+
+/// A terminal failure of a subscription response stream.
+#[derive(Debug)]
+pub enum SubscriptionError {
+    /// The application source stream failed.
+    Source(ResolverError),
+    /// The runtime terminated exceptionally.
+    Internal,
+}
+
+impl ::core::fmt::Display for SubscriptionError {
+    fn fmt(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        match self {
+            Self::Source(error) => formatter.write_str(error.message()),
+            Self::Internal => formatter.write_str("Internal subscription error"),
+        }
+    }
+}
+
+impl std::error::Error for SubscriptionError {}
+
+/// Ordered GraphQL response events from a subscription.
+pub struct ResponseStream<'a> {
+    stream: ::core::pin::Pin<
+        Box<dyn futures_util::Stream<Item = Result<Response, SubscriptionError>> + Send + 'a>,
+    >,
+}
+
+impl futures_util::Stream for ResponseStream<'_> {
+    type Item = Result<Response, SubscriptionError>;
+
+    fn poll_next(
+        mut self: ::core::pin::Pin<&mut Self>,
+        cx: &mut ::core::task::Context<'_>,
+    ) -> ::core::task::Poll<Option<Self::Item>> {
+        self.stream.as_mut().poll_next(cx)
     }
 }
 
