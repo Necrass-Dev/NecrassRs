@@ -67,6 +67,11 @@ Neither G14 nor the GraphQL type system requires a particular Rust struct layout
 | G20 | Execute the selected subscription for each source event and produce response events in order. | Event-specific root values; an execution error, including root null, can be followed by another event.           | [§6.2.3.2 Response Stream](https://spec.graphql.org/September2025/#sec-Subscription.Response-Stream), [§6.4.4 Handling Execution Errors](https://spec.graphql.org/September2025/#sec-Handling-Execution-Errors) |
 | G21 | Distinguish ordinary completion, source failure, and cancellation.                            | Normal exhaustion; exceptional termination; cancellation of the response stream propagates to its source stream. | [§6.2.3.2 Response Stream](https://spec.graphql.org/September2025/#sec-Subscription.Response-Stream), [§6.2.3.3 Unsubscribe](https://spec.graphql.org/September2025/#sec-Unsubscribe)                           |
 
+The [subscription design and RED checkpoint](subscription-design.md) records the
+accepted public contracts and executable consumer fixtures for G19–G21. The
+tests currently stop at missing runtime APIs or rejected subscription generation;
+their downstream behavioral assertions are not passing conformance evidence.
+
 ## Rust mappings directly supporting GraphQL requirements
 
 These retained choices implement G03/G05/G06/G07/G08/G09/G15. They are NecrassRs representations, not types or algorithms prescribed by GraphQL.
