@@ -36,6 +36,8 @@ jobs:
 
   release-pr:
     name: Prepare release PR
+    # Wait for publishing to finish before comparing against registry versions.
+    needs: release
     if: ${{ github.repository_owner == 'Necrass-Dev' }}
     runs-on: ubuntu-latest
     permissions:
