@@ -103,7 +103,9 @@ pub(crate) fn validate_subscription(
 
     let walked = walk_selections(document, &operation.selection_set, |selection| {
         if let executable::Selection::Field(field) = selection {
-            field_names.push(field.name.clone());
+            if !field_names.contains(field.response_key()) {
+                field_names.push(field.response_key().clone());
+            }
             if matches!(field.name.as_str(), "__type" | "__schema" | "__typename") {
                 diagnostics.push(
                     field.location(),
