@@ -220,6 +220,59 @@ fn subscription_sync_renames_untouched_stubs_without_migrating_bodies() {
 }
 
 #[test]
+fn subscription_sync_replaces_untouched_resolver_when_root_role_changes() {
+    let consumer = subscription_consumer(
+        "schema { query: Query mutation: Events } type Query { ping: Int! } type Events { tick: Int! }",
+    );
+    consumer.bootstrap();
+    fs::write(
+        consumer.directory.join("src/main.rs"),
+        EMPTY_MAIN.replace(
+            "fn main() {}",
+            "fn main() { let _ = generated::dispatch::SchemaDispatcher::new(resolvers::Query, resolvers::Events); }",
+        ),
+    )
+    .unwrap();
+    assert_success(&consumer.build());
+
+    consumer.schema(
+        "schema { query: Query subscription: Events } type Query { ping: Int! } type Events { tick: Int! }",
+    );
+    assert_success(&consumer.build());
+    assert_stub(resolve(subscriber(&consumer.ast(), "Events", "tick")));
+}
+
+#[test]
+fn subscription_sync_refuses_root_role_change_for_edited_resolver() {
+    let consumer = subscription_consumer(
+        "schema { query: Query mutation: Events } type Query { ping: Int! } type Events { tick: Int! }",
+    );
+    consumer.bootstrap();
+    let ast = consumer.ast();
+    let range = resolve(field_resolver_ref(&ast, "Events", "tick"))
+        .block
+        .span()
+        .byte_range();
+    let mut before = fs::read_to_string(consumer.resolvers()).unwrap();
+    before.replace_range(range, "{ Ok(1) }");
+    fs::write(consumer.resolvers(), &before).unwrap();
+    consumer.schema(
+        "schema { query: Query subscription: Events } type Query { ping: Int! } type Events { tick: Int! }",
+    );
+
+    let build = consumer.build();
+    assert!(!build.status.success());
+    assert!(
+        String::from_utf8_lossy(&build.stderr).contains(
+            "Cannot change application-written resolver Events.tick from Resolver to Subscriber automatically"
+        ),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert_eq!(before, fs::read_to_string(consumer.resolvers()).unwrap());
+}
+
+#[test]
 fn subscription_sync_refuses_deleting_or_renaming_edited_fields_before_writes() {
     for replacement in ["other: Int!", "newName: String! other: Int!"] {
         let consumer = subscription_consumer(

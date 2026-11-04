@@ -1130,6 +1130,7 @@ fn reconcile_external_children_in(
                 reconcile_stale_field_resolver(
                     implementation,
                     &coordinate,
+                    None,
                     &source,
                     source_offset,
                     &mut edits,
@@ -1140,6 +1141,22 @@ fn reconcile_external_children_in(
                 })?;
                 continue;
             };
+            if resolver.subscription != field_resolver_is_subscription(implementation) {
+                anchor.get_or_insert(implementation);
+                reconcile_stale_field_resolver(
+                    implementation,
+                    &coordinate,
+                    Some(resolver.subscription),
+                    &source,
+                    source_offset,
+                    &mut edits,
+                )
+                .map_err(|source| BuildError::ResolverSource {
+                    path: path.clone(),
+                    source,
+                })?;
+                continue;
+            }
             if let Some(first_path) = fields.get(&coordinate) {
                 return Err(BuildError::ResolverSource {
                     path: path.clone(),
@@ -1486,12 +1503,25 @@ fn reconcile_inline_modules<'a>(
                 reconcile_stale_field_resolver(
                     implementation,
                     &coordinate,
+                    None,
                     source,
                     source_offset,
                     edits,
                 )?;
                 continue;
             };
+            if resolver.subscription != field_resolver_is_subscription(implementation) {
+                anchor.get_or_insert(implementation);
+                reconcile_stale_field_resolver(
+                    implementation,
+                    &coordinate,
+                    Some(resolver.subscription),
+                    source,
+                    source_offset,
+                    edits,
+                )?;
+                continue;
+            }
             if let Some(first_path) = relocated_fields.get(&coordinate) {
                 return Err(syn::Error::new_spanned(
                     implementation,
@@ -1797,10 +1827,23 @@ fn reconcile_field_resolvers<'a>(
                 "Duplicate field resolver implementations are ambiguous",
             ));
         }
+        if let Some(resolver) = desired_fields.get(&coordinate)
+            && resolver.subscription != field_resolver_is_subscription(item)
+        {
+            reconcile_stale_field_resolver(
+                item,
+                &coordinate,
+                Some(resolver.subscription),
+                source,
+                source_offset,
+                edits,
+            )?;
+            continue;
+        }
         if let Some(resolver) = desired_fields.remove(&coordinate) {
             reconcile_field_resolver(item, resolver, scope, edits, true)?;
         } else {
-            reconcile_stale_field_resolver(item, &coordinate, source, source_offset, edits)?;
+            reconcile_stale_field_resolver(item, &coordinate, None, source, source_offset, edits)?;
         }
     }
     Ok(desired_fields)
@@ -1809,6 +1852,7 @@ fn reconcile_field_resolvers<'a>(
 fn reconcile_stale_field_resolver(
     implementation: &syn::ItemImpl,
     coordinate: &(String, String),
+    required_subscription: Option<bool>,
     source: &str,
     source_offset: usize,
     edits: &mut Vec<Edit>,
@@ -1833,13 +1877,28 @@ fn reconcile_stale_field_resolver(
         && resolve.attrs.is_empty()
         && !has_comments;
     if !generated_stub {
-        return Err(syn::Error::new_spanned(
-            resolve,
+        let message = if let Some(subscription) = required_subscription {
+            let current = if field_resolver_is_subscription(implementation) {
+                "Subscriber"
+            } else {
+                "Resolver"
+            };
+            let desired = if subscription {
+                "Subscriber"
+            } else {
+                "Resolver"
+            };
+            format!(
+                "Cannot change application-written resolver {}.{} from {current} to {desired} automatically",
+                coordinate.0, coordinate.1
+            )
+        } else {
             format!(
                 "Cannot remove application-written resolver {}.{} automatically",
                 coordinate.0, coordinate.1
-            ),
-        ));
+            )
+        };
+        return Err(syn::Error::new_spanned(resolve, message));
     }
     edits.push(Edit {
         range: implementation.span().byte_range(),
@@ -2673,6 +2732,14 @@ fn field_resolver_coordinate(implementation: &syn::ItemImpl) -> Option<(String, 
         return None;
     }
     Some((object.clone(), field.clone()))
+}
+
+fn field_resolver_is_subscription(implementation: &syn::ItemImpl) -> bool {
+    implementation
+        .trait_
+        .as_ref()
+        .and_then(|(_, path, _)| path.segments.last())
+        .is_some_and(|segment| segment.ident == "Subscriber")
 }
 
 fn item_type_name(item: &Item) -> Option<String> {
