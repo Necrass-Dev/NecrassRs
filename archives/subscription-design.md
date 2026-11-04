@@ -1,8 +1,8 @@
-# Subscription contracts and RED acceptance tests
+# Subscription contracts and acceptance tests
 
-Status: accepted design for [issue #29](https://github.com/Necrass-Dev/NecrassRs/issues/29),
-not implemented. This change adds tests and documentation only. Production
-runtime, code generation, and synchronization remain unchanged.
+Status: implemented for [issue #29](https://github.com/Necrass-Dev/NecrassRs/issues/29).
+The runtime, generated dispatch, resolver synchronization, and consumer fixtures
+implement and validate the contracts below.
 
 ## Specification boundary
 
@@ -128,7 +128,7 @@ in Query, Mutation, Subscription order, omitting absent roots without placeholde
   borrowed Object outputs. No Context factory, automatic replay/reconnect,
   acknowledgement, or transport framing is added.
 
-## RED test layout
+## Acceptance test layout
 
 [Cargo consumer cases](../crates/necrassrs-build/tests/cases/subscriptions.rs)
 reuse the existing `Consumer` harness. All acceptance tests assert successful
@@ -146,34 +146,22 @@ snapshots or ignored tests.
 | Source synchronization | Cold bootstrap, both subscription constructor forms, custom roots/Context, injective naming, retained bodies/output changes, additions, safe deletion/rename, edited-declaration protection, removed-argument protection, moved implementations |
 
 The runtime consumer disables code generation only in its temporary test crate
-so generator rejection does not mask the independent missing-runtime-API RED.
+so runtime contracts remain isolated from generated dispatch.
 The generated consumer first bootstraps from SDL without handwritten resolvers,
 then supplies application implementations and executes their contracts.
 
-Current blockers are missing runtime subscription APIs and generator rejection
-of subscription roots. Behavioral assertions remain unexecuted behind these
-compile/build failures. Fixture syntax checks are not compilation or conformance
-evidence. Internal exceptional-error cleanup still needs a reproducible runtime
-failure case when an implementation exists; do not introduce a public fault
+The runtime lifecycle checks, generated consumer execution checks, and source
+synchronization checks pass. Internal exceptional-error cleanup still needs a
+reproducible runtime failure case; do not introduce a public fault
 injection API or convert arbitrary panics merely to exercise it. Transport
 exchanges, load/performance measurements, and full subscription conformance
-remain outside this RED checkpoint.
+remain outside this acceptance scope.
 
-## Validation at this checkpoint
+## Validation
 
-- `cargo fmt --all -- --check`: passed. Standalone fixture Rust files also passed
-  an explicit `rustfmt --check --edition 2024` invocation because `include_str!`
-  does not make them Cargo formatting targets.
+- `cargo fmt --all -- --check`: passed.
+- `cargo test --workspace --locked`: passed, including all ten subscription
+  Cargo consumer cases, 16 runtime lifecycle checks, and three generated
+  consumer execution checks.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
-  This checks the harness, not the not-yet-compilable consumer fixtures.
-- `cargo test --workspace --locked`: failed at `cargo_build` with exactly the
-  nine new RED acceptance cases. Its other 38 tests passed (37 existing cases
-  and the new fixture-syntax check). Earlier test targets passed; Cargo stopped
-  before later workspace targets and doctests.
-- Eight RED cases stop at `Generated dispatch does not support subscription
-  roots`. The independent runtime case stops at absent subscription exports and
-  the absent `Dispatcher::resolve_event_stream` method (E0432/E0407/E0599).
-  Its 16 runtime checks and the generated consumer's three execution checks
-  have not executed. Their eventual type checking may expose further fixture
-  issues; no temporary implementation was added to make them compile.
-- No production source, dependency manifest, or root lockfile was changed.
+- No dependency manifest or root lockfile changed.

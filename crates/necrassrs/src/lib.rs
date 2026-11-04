@@ -20,14 +20,12 @@
 //!
 //! # Current scope
 //!
-//! Generated query and mutation contracts support built-in scalar and enum results, ordinary
-//! and OneOf input objects, nullable/list forms, recursive input boxing, and owned
-//! Object results with nullable/list wrappers, recursive relationships, leaf fields,
-//! and abstract results. The runtime preserves Object parents, list-item conversion
-//! errors, and nullability during completion. Custom scalar conversion, borrowed
-//! Object results, and generated subscription routing remain unsupported.
-//! Runtime subscriptions are rejected. Schema introspection is enabled by default;
-//! use [`execute_with_options`] to disable it independently of any UI.
+//! Generated query, mutation, and subscription contracts support built-in and custom
+//! scalars, enum results, ordinary and OneOf input objects, nullable/list forms,
+//! recursive input boxing, owned Object results, and abstract results. The runtime
+//! preserves Object parents, list-item conversion errors, and nullability during
+//! completion. Borrowed Object results remain unsupported. Schema introspection is
+//! enabled by default; use [`execute_with_options`] to disable it independently of any UI.
 
 use reed_compiler::response::ExecutionResponse;
 pub use reed_compiler::{
