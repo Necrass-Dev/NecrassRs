@@ -197,6 +197,7 @@ fn generate_types(schema: &Valid<Schema>) -> Result<impl quote::ToTokens, Codege
                 .map(|value| format_ident!("r#{}", rust_name(value.as_str())));
 
             named_types.push(quote! {
+                #[derive(Clone)]
                 pub enum #name {
                     #(#variants,)*
                 }
