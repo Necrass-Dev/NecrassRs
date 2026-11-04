@@ -39,7 +39,19 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                 .as_ref()
                 .and_then(|name| schema.get_object(name.as_str())),
         )
+        .chain(
+            schema
+                .schema_definition
+                .subscription
+                .as_ref()
+                .and_then(|name| schema.get_object(name.as_str())),
+        )
         .collect::<Vec<_>>();
+    let subscription_name = schema
+        .schema_definition
+        .subscription
+        .as_ref()
+        .map(|name| name.as_str());
     let root_types = roots
         .iter()
         .map(|root| root.name.as_str())
@@ -74,6 +86,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                             .collect(),
                         &field.ty,
                         &root_types,
+                        subscription_name == Some(root.name.as_str()),
                     )
                 })
                 .collect::<Result<Vec<_>, BuildError>>()?,
@@ -99,6 +112,7 @@ pub(crate) fn synchronize(schema: &Valid<Schema>, path: &Path) -> Result<(), Bui
                             .collect(),
                         &field.ty,
                         &root_types,
+                        false,
                     )
                 })
                 .collect::<Result<Vec<_>, BuildError>>()?,
@@ -2154,6 +2168,7 @@ struct FieldResolver {
     arguments: BTreeSet<String>,
     receiver: Type,
     output: Type,
+    subscription: bool,
 }
 
 impl FieldResolver {
@@ -2172,6 +2187,7 @@ fn field_resolver(
     arguments: BTreeSet<String>,
     ty: &GraphqlType,
     root_names: &[&str],
+    subscription: bool,
 ) -> Result<FieldResolver, BuildError> {
     let output = resolver_output_type(schema, object_name, field_name, ty, root_names)
         .map_err(BuildError::Codegen)?;
@@ -2182,6 +2198,7 @@ fn field_resolver(
         field: rust_ident(field_name),
         arguments,
         output: syn::parse2(output).expect("generated resolver output types must parse"),
+        subscription,
     })
 }
 
@@ -2576,6 +2593,34 @@ fn render_field_resolver(
         format!("<{parameters}>")
     };
     let where_clause = &generics.where_clause;
+    if resolver.subscription {
+        let mut stream_lifetime = "__necrassrs_stream".to_owned();
+        while generics
+            .lifetimes()
+            .any(|lifetime| lifetime.lifetime.ident == stream_lifetime)
+        {
+            stream_lifetime.push('_');
+        }
+        let stream_lifetime = format!("'{stream_lifetime}");
+        return format!(
+            "impl{} {framework}::Subscriber<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
+             \x20   type Output = {};\n\n\
+             \x20   async fn resolve<{stream_lifetime}>(\n\
+             \x20       &{stream_lifetime} self,\n\
+             \x20       _context: &{stream_lifetime} {},\n\
+             \x20       _args: crate::generated::types::{object}::{field}::Args,\n\
+             \x20   ) -> {result}<{framework}::SourceStream<{stream_lifetime}, Self::Output>, {framework}::ResolverError> {{\n\
+             \x20       ::core::unimplemented!()\n\
+             \x20   }}\n\
+             }}",
+            impl_generics,
+            scope.render_type(context),
+            scope.render_type(receiver),
+            quote!(#where_clause),
+            scope.render_type(output),
+            scope.render_type(context),
+        );
+    }
     format!(
         "impl{} {framework}::Resolver<crate::generated::fields::{object}::{field}, {}> for {} {}{{\n\
          \x20   type Output = {};\n\n\
@@ -2598,15 +2643,17 @@ fn render_field_resolver(
 
 fn field_resolver_coordinate(implementation: &syn::ItemImpl) -> Option<(String, String)> {
     let (_, trait_path, _) = implementation.trait_.as_ref()?;
-    let expected = ["necrassrs", "Resolver"];
-    if !trait_path
+    let trait_path = trait_path
         .segments
         .iter()
         .map(|segment| segment.ident.unraw().to_string())
-        .eq(expected.map(str::to_owned))
+        .collect::<Vec<_>>();
+    if !matches!(trait_path.as_slice(), [framework, trait_name]
+        if framework == "necrassrs" && matches!(trait_name.as_str(), "Resolver" | "Subscriber"))
     {
         return None;
     }
+    let (_, trait_path, _) = implementation.trait_.as_ref()?;
     let PathArguments::AngleBracketed(arguments) = &trait_path.segments.last()?.arguments else {
         return None;
     };
