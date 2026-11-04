@@ -343,6 +343,21 @@ impl<'a, T: Send + 'a> SourceStream<'a, T> {
             stream: Some(Box::pin(stream)),
         }
     }
+
+    /// Converts source values while preserving field and terminal source errors.
+    pub fn map_values<U: Send + 'a>(
+        self,
+        mut map: impl FnMut(T) -> U + Send + 'a,
+    ) -> SourceStream<'a, U> {
+        SourceStream::from_stream(futures_util::StreamExt::map(
+            self,
+            move |event| match event {
+                SourceEvent::Value(value) => SourceEvent::Value(map(value)),
+                SourceEvent::FieldError(error) => SourceEvent::FieldError(error),
+                SourceEvent::SourceError(error) => SourceEvent::SourceError(error),
+            },
+        ))
+    }
 }
 
 impl<T> futures_util::Stream for SourceStream<'_, T> {
@@ -494,6 +509,27 @@ mod source_stream_tests {
         ));
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert!(source.next().await.is_none());
+        assert!(source.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn maps_values_without_changing_error_kinds() {
+        let mut source = SourceStream::from_stream(stream::iter([
+            SourceEvent::Value(7),
+            SourceEvent::FieldError(ResolverError::new("field")),
+            SourceEvent::SourceError(ResolverError::new("source")),
+        ]))
+        .map_values(|value| value.to_string());
+
+        assert!(matches!(source.next().await, Some(SourceEvent::Value(value)) if value == "7"));
+        assert!(matches!(
+            source.next().await,
+            Some(SourceEvent::FieldError(error)) if error.message() == "field"
+        ));
+        assert!(matches!(
+            source.next().await,
+            Some(SourceEvent::SourceError(error)) if error.message() == "source"
+        ));
         assert!(source.next().await.is_none());
     }
 }
