@@ -294,6 +294,129 @@ where
     + 'a;
 }
 
+/// One item produced by a subscription source.
+pub enum SourceEvent<T> {
+    /// A value to complete into one response event.
+    Value(T),
+    /// A field failure for this event; later events may still succeed.
+    FieldError(ResolverError),
+    /// A terminal source failure.
+    SourceError(ResolverError),
+}
+
+/// A subscription source stream.
+pub struct SourceStream<'a, T> {
+    stream:
+        Option<::core::pin::Pin<Box<dyn futures_util::Stream<Item = SourceEvent<T>> + Send + 'a>>>,
+}
+
+impl<'a, T: Send + 'a> SourceStream<'a, T> {
+    /// Wraps a source stream without requiring it to be `Sync`, `Unpin`, or `'static`.
+    pub fn from_stream(
+        stream: impl futures_util::Stream<Item = SourceEvent<T>> + Send + 'a,
+    ) -> Self {
+        Self {
+            stream: Some(Box::pin(stream)),
+        }
+    }
+}
+
+impl<T> futures_util::Stream for SourceStream<'_, T> {
+    type Item = SourceEvent<T>;
+
+    fn poll_next(
+        mut self: ::core::pin::Pin<&mut Self>,
+        cx: &mut ::core::task::Context<'_>,
+    ) -> ::core::task::Poll<Option<Self::Item>> {
+        let Some(stream) = self.stream.as_mut() else {
+            return ::core::task::Poll::Ready(None);
+        };
+        let next = stream.as_mut().poll_next(cx);
+        if matches!(
+            next,
+            ::core::task::Poll::Ready(None | Some(SourceEvent::SourceError(_)))
+        ) {
+            self.stream = None;
+        }
+        next
+    }
+}
+
+#[cfg(test)]
+mod source_stream_tests {
+    use std::{
+        cell::Cell,
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Poll,
+    };
+
+    use futures_util::{StreamExt, stream};
+
+    use super::{ResolverError, SourceEvent, SourceStream};
+
+    struct DropCount<'a>(&'a AtomicUsize);
+
+    impl Drop for DropCount<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn send<T: Send>(value: T) -> T {
+        value
+    }
+
+    fn unpin<T: Unpin>(_: &T) {}
+
+    #[tokio::test]
+    async fn accepts_borrowing_non_sync_non_unpin_streams() {
+        let label = String::from("Sheri");
+        let borrowed = label.as_str();
+        let state = Cell::new(false);
+        let input = stream::unfold(state, move |state| async move {
+            if state.get() {
+                None
+            } else {
+                state.set(true);
+                Some((SourceEvent::Value(borrowed), state))
+            }
+        });
+        let mut source = send(SourceStream::from_stream(input));
+        unpin(&source);
+
+        assert!(matches!(
+            source.next().await,
+            Some(SourceEvent::Value("Sheri"))
+        ));
+        assert!(source.next().await.is_none());
+        assert!(source.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn releases_and_fuses_after_source_error() {
+        let drops = AtomicUsize::new(0);
+        let guard = DropCount(&drops);
+        let mut emitted = false;
+        let input = stream::poll_fn(move |_| {
+            let _keep_alive = &guard;
+            assert!(!emitted, "source polled after terminal failure");
+            emitted = true;
+            Poll::Ready(Some(SourceEvent::<()>::SourceError(ResolverError::new(
+                "closed",
+            ))))
+        });
+        let mut source = SourceStream::from_stream(input);
+
+        assert!(matches!(
+            source.next().await,
+            Some(SourceEvent::SourceError(_))
+        ));
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(source.next().await.is_none());
+        assert!(source.next().await.is_none());
+    }
+}
+
 #[cfg(test)]
 mod input_type_tests {
     use super::{GraphQLInput, Id};
