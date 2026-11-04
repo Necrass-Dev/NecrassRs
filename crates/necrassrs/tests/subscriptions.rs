@@ -111,52 +111,48 @@ impl Dispatcher<Context> for TestDispatcher {
         Ok(ResolvedValue::Json(42.into()))
     }
 
-    fn resolve_event_stream<'stream, 'call>(
+    async fn resolve_event_stream<'stream, 'call>(
         &'stream self,
         context: &'stream Context,
         coordinate: FieldCoordinate<'call>,
         arguments: &'call JsonMap,
         _argument_literals: &'call ScalarLiteralMap,
-    ) -> impl Future<Output = Result<SourceStream<'stream, ResolvedValue<Context>>, ResolverError>>
-    + Send
-    + 'call
+    ) -> Result<SourceStream<'stream, ResolvedValue<Context>>, ResolverError>
     where
         'stream: 'call,
     {
-        async move {
-            context.creates.fetch_add(1, Ordering::SeqCst);
-            let _creation = DropCount(&context.creation_drops);
-            if self.pending_creation {
-                future::pending::<()>().await;
-            }
-            if self.fail_creation {
-                return Err(
-                    ResolverError::new("Source unavailable").with_extension("code", "SOURCE_START")
-                );
-            }
-            if self.pending_source {
-                let guard = DropCount(&context.source_drops);
-                return Ok(SourceStream::from_stream(stream::poll_fn(move |_| {
-                    let _keep_alive = &guard;
-                    context.polls.fetch_add(1, Ordering::SeqCst);
-                    Poll::Pending
-                })));
-            }
-            assert_eq!(coordinate.parent_type, "Subscription");
-            if coordinate.field == "events" {
-                assert_eq!(
-                    arguments.get("id").and_then(|value| value.as_str()),
-                    Some("42")
-                );
-            }
-            let events = self
-                .events
-                .lock()
-                .unwrap()
-                .take()
-                .expect("source created more than once");
-            Ok(tracked_source(context, events))
+        context.creates.fetch_add(1, Ordering::SeqCst);
+        let _creation = DropCount(&context.creation_drops);
+        if self.pending_creation {
+            future::pending::<()>().await;
         }
+        if self.fail_creation {
+            return Err(
+                ResolverError::new("Source unavailable").with_extension("code", "SOURCE_START")
+            );
+        }
+        if self.pending_source {
+            let guard = DropCount(&context.source_drops);
+            return Ok(SourceStream::from_stream(stream::poll_fn(move |_| {
+                let _keep_alive = &guard;
+                context.polls.fetch_add(1, Ordering::SeqCst);
+                Poll::Pending
+            })));
+        }
+        assert_eq!(coordinate.parent_type, "Subscription");
+        if coordinate.field == "events" {
+            assert_eq!(
+                arguments.get("id").and_then(|value| value.as_str()),
+                Some("42")
+            );
+        }
+        let events = self
+            .events
+            .lock()
+            .unwrap()
+            .take()
+            .expect("source created more than once");
+        Ok(tracked_source(context, events))
     }
 }
 

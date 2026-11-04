@@ -137,7 +137,7 @@ snapshots or ignored tests.
 
 | Area | Fixture and checks |
 | --- | --- |
-| Runtime API and lifetimes | [Runtime consumer](../crates/necrassrs-build/tests/fixtures/subscription_runtime.rs): `Send`, borrowing, non-`Sync`/non-`Unpin` inputs, temporary argument maps, Request release, legacy Dispatcher compatibility |
+| Runtime API and lifetimes | [Runtime integration tests](../crates/necrassrs/tests/subscriptions.rs): `Send`, borrowing, non-`Sync`/non-`Unpin` inputs, temporary argument maps, Request release, legacy Dispatcher compatibility |
 | G19 / G17 | Invalid requests invoke no source or fields; source creation errors omit `data`; operation selection, variables, nested directives, and execution options |
 | G20 / G17 | Merged selections, aliases, event parents, field and root-null errors followed by success, scalar/list completion, error metadata and isolation |
 | Scheduling | Explicit pending/release polls prove concurrent siblings/list items, serial events, and independent subscriptions without timing comparisons |
@@ -145,10 +145,16 @@ snapshots or ignored tests.
 | Generated consumer | [SDL](../crates/necrassrs-build/tests/fixtures/subscription/schema.graphql), [resolvers](../crates/necrassrs-build/tests/fixtures/subscription/resolvers.rs), [execution checks](../crates/necrassrs-build/tests/fixtures/subscription/main.rs): typed inputs, custom scalar literal/variable distinction, owned and abstract outputs, existing query/mutation routing |
 | Source synchronization | Cold bootstrap, both subscription constructor forms, custom roots/Context, injective naming, retained bodies/output changes, additions, safe deletion/rename, edited-declaration protection, removed-argument protection, moved implementations |
 
-The runtime consumer disables code generation only in its temporary test crate
-so runtime contracts remain isolated from generated dispatch.
+The runtime lifecycle suite runs as ordinary `necrassrs` integration tests,
+independent of code generation and included in workspace coverage.
 The generated consumer first bootstraps from SDL without handwritten resolvers,
 then supplies application implementations and executes their contracts.
+
+The coverage job instruments temporary Cargo consumers and includes their test
+and build-script binaries when exporting LCOV. This preserves generated consumer
+and synchronization coverage even though those binaries use a separate target
+directory. Consumer artifacts are cleared before measurement to avoid stale
+coverage mappings.
 
 The runtime lifecycle checks, generated consumer execution checks, and source
 synchronization checks pass. Internal exceptional-error cleanup still needs a
@@ -160,8 +166,9 @@ remain outside this acceptance scope.
 ## Validation
 
 - `cargo fmt --all -- --check`: passed.
-- `cargo test --workspace --locked`: passed, including all ten subscription
+- `cargo test --workspace --locked`: passed, including all eleven subscription
   Cargo consumer cases, 16 runtime lifecycle checks, and three generated
   consumer execution checks.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
-- No dependency manifest or root lockfile changed.
+- The runtime tests reuse the existing `futures` dependency as a dev-dependency;
+  no dependency versions changed.

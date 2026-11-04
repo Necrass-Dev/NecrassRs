@@ -9,7 +9,6 @@ fn main() {}
 #[test]
 fn subscription_fixture_syntax_is_valid() {
     for source in [
-        include_str!("../fixtures/subscription_runtime.rs"),
         include_str!("../fixtures/subscription/resolvers.rs"),
         include_str!("../fixtures/subscription/scalars.rs"),
         include_str!("../fixtures/subscription/main.rs"),
@@ -86,21 +85,6 @@ fn implement_empty_source(consumer: &Consumer, field: &str) -> String {
     );
     fs::write(consumer.resolvers(), &source).unwrap();
     source
-}
-
-#[test]
-fn subscription_runtime_public_contract_and_lifecycle() {
-    let consumer = Consumer::new("type Query { ping: Int! }");
-    // Exercise runtime contracts even while subscription generation is unsupported.
-    fs::write(consumer.directory.join("build.rs"), "fn main() {}\n").unwrap();
-    fs::write(consumer.directory.join("src/main.rs"), "fn main() {}\n").unwrap();
-    fs::create_dir(consumer.directory.join("tests")).unwrap();
-    fs::write(
-        consumer.directory.join("tests/subscriptions.rs"),
-        include_str!("../fixtures/subscription_runtime.rs"),
-    )
-    .unwrap();
-    assert_success(&test_consumer(&consumer));
 }
 
 #[test]
