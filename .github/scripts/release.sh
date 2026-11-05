@@ -25,7 +25,8 @@ die() {
 }
 
 require_command() {
-  command -v "$1" >/dev/null || die "required command not found: $1"
+  local dependency=$1
+  command -v "$dependency" >/dev/null || die "required command not found: $dependency"
 }
 
 validate_tag() {
@@ -134,7 +135,7 @@ EOF
 
 registry_status() {
   local package=$1 version=$2 output=$3 status
-  status=$(curl --silent --show-error --location \
+  status=$(curl --silent --show-error --location --proto '=https' --proto-redir '=https' \
     --user-agent "$USER_AGENT" \
     --output "$output" \
     --write-out '%{http_code}' \
@@ -180,7 +181,7 @@ publish_packages() {
 github_release_status() {
   local tag=$1 output=$2 status repository=${GITHUB_REPOSITORY:-Necrass-Dev/NecrassRs}
   [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN is required to query GitHub releases"
-  status=$(curl --silent --show-error --location \
+  status=$(curl --silent --show-error --location --proto '=https' --proto-redir '=https' \
     --user-agent "$USER_AGENT" \
     --header "Accept: application/vnd.github+json" \
     --header "Authorization: Bearer $GH_TOKEN" \

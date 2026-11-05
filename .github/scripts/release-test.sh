@@ -90,14 +90,18 @@ cat >"$FAKE_BIN/curl" <<'EOF'
 set -euo pipefail
 output=
 url=
+proto=
+proto_redir=
 while (($#)); do
   case "$1" in
     --output) output=$2; shift 2 ;;
+    --proto) proto=$2; shift 2 ;;
+    --proto-redir) proto_redir=$2; shift 2 ;;
     http*) url=$1; shift ;;
     *) shift ;;
   esac
 done
-[[ -n "$output" && -n "$url" ]]
+[[ -n "$output" && -n "$url" && "$proto" == '=https' && "$proto_redir" == '=https' ]]
 if [[ "$url" == *api.github.com* ]]; then
   if [[ -f "$TEST_STATE/release" ]]; then
     printf '{"body":"Released without application-facing changes.\\n"}\n' >"$output"
