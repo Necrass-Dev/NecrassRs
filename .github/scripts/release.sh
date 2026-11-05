@@ -87,7 +87,8 @@ validate_release() {
 verify_packages() {
   local tag=$1 package archive package_dir
   validate_release "$tag"
-  cargo package --workspace --exclude axum-server --exclude actix-server --exclude tutorial --locked --no-verify
+  cargo package --workspace --exclude axum-server --exclude actix-server --exclude tutorial \
+    --locked --no-verify --allow-dirty
 
   mkdir -p "$TEMPORARY/packages" "$TEMPORARY/consumer/src"
 

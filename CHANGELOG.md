@@ -4,7 +4,7 @@ Changelog
 Version 0.2.0
 -------------
 
-To be released.
+Released on November 5, 2026.
 
  -  Changed NecrassRs releases to use one shared version tag and one set of
     product-level release notes for all eight public packages. This release
