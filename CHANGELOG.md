@@ -1,88 +1,52 @@
-# Changelog
+Changelog
+=========
 
-All notable changes to the public Reed and NecrassRs packages are recorded here.
+Version 0.2.0
+-------------
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and the packages follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+To be released.
 
-## [Unreleased]
-## `necrassrs-build` - [0.1.2](https://github.com/Necrass-Dev/NecrassRs/compare/necrassrs-build-v0.1.1...necrassrs-build-v0.1.2) - 2026-11-04
+ -  Changed NecrassRs releases to use one shared version tag and one set of
+    product-level release notes for all eight public packages. This release
+    changes release coordination only; applications upgrading from 0.1.2 do
+    not require source changes.  [[#86]]
 
-
-### Other
-
-
-- Include subscription and consumer execution in coverage
-
-- Distinguish resolver roles during synchronization
-
-- Synchronize subscription resolver sources
-
-- Make generated enums cloneable
-
-- Generate subscription dispatch contracts
-
-- Add subscription contract RED tests and design
-
-## `necrassrs` - [0.1.2](https://github.com/Necrass-Dev/NecrassRs/compare/necrassrs-v0.1.1...necrassrs-v0.1.2) - 2026-11-04
+[#86]: https://github.com/Necrass-Dev/NecrassRs/issues/86
 
 
-### Other
+Version 0.1.2
+-------------
+
+Released on November 4, 2026.
+
+ -  Added GraphQL subscription execution, including generated subscriber
+    contracts, source streams, response delivery, and resolver source
+    synchronization.
+ -  Made generated enum values cloneable so owned values can be delivered by
+    subscription streams.
+ -  Fixed validation of merged subscription root selections and their response
+    keys.
 
 
-- Include subscription and consumer execution in coverage
+Version 0.1.1
+-------------
 
-- Document implemented subscription support
+Released on November 2, 2026.
 
-- Map subscription source values
-
-- Execute subscription response streams
-
-- Add subscription runtime contracts
-
-- Add subscription source stream contract
-
-## `reed-compiler` - [0.1.2](https://github.com/Necrass-Dev/NecrassRs/compare/reed-compiler-v0.1.1...reed-compiler-v0.1.2) - 2026-11-04
+ -  Documented the public Reed Parser, Reed Compiler, and NecrassRs package
+    boundaries and removed obsolete Apollo migration records.
 
 
-### Other
+Version 0.1.0
+-------------
 
+Initial release.  Released on November 2, 2026.
 
-- Validate subscription response keys linearly
-
-- Allow merged subscription root selections
-
-## `necrassrs-build` - [0.1.1](https://github.com/Necrass-Dev/NecrassRs/compare/necrassrs-build-v0.1.0...necrassrs-build-v0.1.1) - 2026-11-02
-
-
-### Other
-
-
-- Document Reed and NecrassRs projects
-
-## `necrassrs` - [0.1.1](https://github.com/Necrass-Dev/NecrassRs/compare/necrassrs-v0.1.0...necrassrs-v0.1.1) - 2026-11-02
-
-
-### Other
-
-
-- Document Reed and NecrassRs projects
-
-## `reed-compiler` - [0.1.1](https://github.com/Necrass-Dev/NecrassRs/compare/reed-compiler-v0.1.0...reed-compiler-v0.1.1) - 2026-11-02
-
-
-### Other
-
-
-- Remove obsolete Apollo archive records
-
-## `reed-parser` - [0.1.1](https://github.com/Necrass-Dev/NecrassRs/compare/reed-parser-v0.1.0...reed-parser-v0.1.1) - 2026-11-02
-
-
-### Other
-
-
-- Remove obsolete Apollo archive records
-
-
-The initial 0.1.0 release is being prepared.
+ -  Added the Reed GraphQL parser and compiler packages used by NecrassRs.
+ -  Added SDL-first GraphQL query and mutation execution with generated Rust
+    contracts, editable resolver synchronization, custom scalar support,
+    composite results, input coercion, error propagation, and concurrent query
+    fields.
+ -  Added Axum and Actix Web adapters with GraphQL-over-HTTP negotiation,
+    request context isolation, introspection, and GraphiQL support.
+ -  Added the `necrass` initializer with Axum and Actix Web project templates.
