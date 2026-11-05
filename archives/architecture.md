@@ -3,7 +3,7 @@ title: "NecrassRs architecture and development plan"
 ---
 
 Date: 2026-09-17
-Updated: 2026-11-01
+Updated: 2026-11-05
 
 This document defines the target product structure, crate responsibilities, development and release practices, and consumer workflow. It distinguishes the current implementation from remaining design work. Some public APIs and package details remain subject to design.
 
@@ -452,9 +452,11 @@ Official repository documentation is written in English. Agent workflow and AI-a
 - Consumers resolve dependencies with their own lockfiles. The repository lockfile does not pin consumer dependencies.
 - Use `path + version` for local package dependencies. Publish internal crates required as build or runtime dependencies of public packages.
 - Mark example packages `publish = false`.
-- Version and release all eight public Reed and NecrassRs packages together from the workspace version, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Release-plz prepares reviewed version and changelog updates and publishes merged releases through crates.io trusted publishing.
+- Version and release all eight public Reed and NecrassRs packages together from the workspace version, including unchanged packages when necessary. This avoids independent release schedules and compatibility matrices at this stage. Maintainers select versions explicitly. During `0.x`, user-facing features and incompatible changes increment the minor version; compatible fixes and improvements increment the patch version.
+- Record user-visible changes as Sacho fragments. A reviewed release preparation pull request updates package versions, internal dependency requirements, `Cargo.lock`, and finalized product-level release notes. Existing released changelog sections are permanent. The tagged source contains the complete release state; CI does not infer versions, rewrite files, or create release commits.
+- Publish only from a stable workspace version tag without a `v` prefix. The tag-triggered workflow uses crates.io Trusted Publishing, publishes all eight packages in dependency order, and resumes safely after a partial publication by verifying and skipping package versions that already exist. Create one GitHub Release from the finalized Sacho notes only after every package is available.
 - Define compatibility between `necrassrs-build` and `necrassrs`, including runtime contracts called by generated code. Publishing matching versions alone does not prevent incompatible consumer combinations. Validate the supported combination with the consumer example and use that combination in CLI templates.
-- Before release, verify packaging and consumer builds without relying on local-only paths.
+- Before release, verify packaging and consumer builds from packaged sources rather than relying only on workspace paths.
 
 Reed Compiler currently follows the workspace toolchain policy. Check the NecrassRs MSRV separately when updating its upstream-derived dependencies.
 

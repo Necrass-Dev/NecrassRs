@@ -15,15 +15,15 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Necrass-Dev/NecrassRs"
 homepage = "https://necrass.rs"
 
 [workspace.dependencies]
-reed-compiler = { path = "crates/reed-compiler", version = "0.1.2" }
-reed-parser = { path = "crates/reed-parser", version = "0.1.2" }
-necrassrs = { path = "crates/necrassrs", version = "0.1.2" }
-necrassrs-http = { path = "crates/necrassrs-http", version = "0.1.2" }
+reed-compiler = { path = "crates/reed-compiler", version = "0.2.0" }
+reed-parser = { path = "crates/reed-parser", version = "0.2.0" }
+necrassrs = { path = "crates/necrassrs", version = "0.2.0" }
+necrassrs-http = { path = "crates/necrassrs-http", version = "0.2.0" }
 serde = { version = "1.0.229", features = ["derive"] }

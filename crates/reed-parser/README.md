@@ -36,7 +36,7 @@ Or add this to your `Cargo.toml` for a manual installation:
 ```toml
 # Just an example, change to the necessary package version.
 [dependencies]
-reed-parser = "0.1.0"
+reed-parser = "0.2.0"
 ```
 
 ## Rust versions
