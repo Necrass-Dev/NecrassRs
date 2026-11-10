@@ -757,6 +757,82 @@ async fn json_subscriptions_return_406_without_creating_a_source() {
 }
 
 #[tokio::test]
+async fn head_mutations_are_rejected_before_dispatch() {
+    let (app, state) = contract_app();
+    let response = app
+        .oneshot(
+            HttpRequest::builder()
+                .method("HEAD")
+                .uri("/graphql")
+                .header(header::ACCEPT, "application/json")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "query": "mutation { hello(name: \"Sheri\") }" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            response.status(),
+            state.dispatcher.calls.load(Ordering::SeqCst)
+        ),
+        (StatusCode::METHOD_NOT_ALLOWED, 0)
+    );
+    assert!(
+        response.headers()[header::ALLOW]
+            .to_str()
+            .unwrap()
+            .split(',')
+            .any(|method| method.trim() == "POST")
+    );
+}
+
+#[tokio::test]
+async fn sse_only_valid_requests_are_rejected_before_dispatch_on_json_routes() {
+    let cases = [
+        ("GET", "/graphql?query=%7Bhello(name%3A%22Sheri%22)%7D", ""),
+        ("POST", "/graphql", "{ hello(name: \"Sheri\") }"),
+        ("POST", "/graphql", "mutation { hello(name: \"Sheri\") }"),
+    ];
+    let mut observed = Vec::new();
+    for (method, uri, query) in cases {
+        let (app, state) = contract_app();
+        let body = if method == "GET" {
+            Body::empty()
+        } else {
+            Body::from(json!({ "query": query }).to_string())
+        };
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::ACCEPT, "text/event-stream")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        observed.push((
+            status,
+            state.dispatcher.calls.load(Ordering::SeqCst),
+            state.dispatcher.sources.load(Ordering::SeqCst),
+            body.is_empty(),
+        ));
+    }
+    assert_eq!(
+        observed,
+        vec![(StatusCode::NOT_ACCEPTABLE, 0, 0, true); cases.len()],
+        "GET query, POST query, and POST mutation must fail before execution"
+    );
+}
+
+#[tokio::test]
 async fn sse_only_transport_failures_preserve_status_with_an_empty_body() {
     let (app, state) = contract_app();
     for (content_type, body, expected_status) in [

@@ -870,6 +870,42 @@ async fn json_subscriptions_return_406_without_creating_a_source() {
 }
 
 #[actix_web::test]
+async fn sse_only_valid_requests_are_rejected_before_dispatch_on_json_routes() {
+    let cases = [
+        ("GET", "/graphql?query=%7Bhello(name%3A%22Sheri%22)%7D", ""),
+        ("POST", "/graphql", "{ hello(name: \"Sheri\") }"),
+        ("POST", "/graphql", "mutation { hello(name: \"Sheri\") }"),
+    ];
+    let mut observed = Vec::new();
+    for (method, uri, query) in cases {
+        let state = contract_state();
+        let app = test::init_service(contract_app(state.clone())).await;
+        let body = if method == "GET" {
+            String::new()
+        } else {
+            json!({ "query": query }).to_string()
+        };
+        let req = request_at(uri, method, Some("application/json"), None, body)
+            .insert_header((header::ACCEPT, "text/event-stream"))
+            .to_request();
+        let response = test::call_service(&app, req).await;
+        let status = response.status();
+        let body = test::read_body(response).await;
+        observed.push((
+            status,
+            state.dispatcher.calls.load(Ordering::SeqCst),
+            state.dispatcher.sources.load(Ordering::SeqCst),
+            body.is_empty(),
+        ));
+    }
+    assert_eq!(
+        observed,
+        vec![(StatusCode::NOT_ACCEPTABLE, 0, 0, true); cases.len()],
+        "GET query, POST query, and POST mutation must fail before execution"
+    );
+}
+
+#[actix_web::test]
 async fn sse_only_transport_failures_preserve_status_with_an_empty_body() {
     let state = contract_state();
     let app = test::init_service(contract_app(state.clone())).await;
