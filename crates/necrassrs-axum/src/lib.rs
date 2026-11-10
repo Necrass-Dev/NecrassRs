@@ -182,6 +182,13 @@ where
 
     async fn from_request(req: AxumRequest, state: &S) -> Result<Self, Self::Rejection> {
         let method = req.method().clone();
+        if method == Method::HEAD {
+            return Err((
+                StatusCode::METHOD_NOT_ALLOWED,
+                [(header::ALLOW, "GET, POST")],
+            )
+                .into_response());
+        }
         let body = if method == Method::GET {
             let Query(query) = Query::<RequestQuery>::try_from_uri(req.uri())
                 .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY.into_response())?;
