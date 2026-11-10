@@ -7,7 +7,7 @@
 //! # Handler integration
 //!
 //! ```
-//! use axum::{Router, extract::State, routing::post};
+//! use axum::{Router, extract::State, routing::get};
 //! use necrassrs::{Dispatcher, Schema, Valid};
 //! use necrassrs_axum::{GraphQLRequest, GraphQLResponse, negotiate_response};
 //! use std::sync::Arc;
@@ -25,20 +25,22 @@
 //! }
 //!
 //! fn app<D: Dispatcher<()> + Send + Sync + 'static>(state: Arc<App<D>>) -> Router {
-//!     Router::new().route("/graphql", post(graphql::<D>).route_layer(axum::middleware::from_fn(negotiate_response))).with_state(state)
+//!     Router::new().route("/graphql", get(graphql::<D>).post(graphql::<D>).route_layer(axum::middleware::from_fn(negotiate_response))).with_state(state)
 //! }
 //! ```
 //!
 //! # HTTP behavior
 //!
-//! Mount application-owned handlers with `post`. Request bodies are JSON with
-//! `query`, optional `variables`, and optional `operationName`. Axum accepts
+//! Mount application-owned handlers with `get` and `post`. GET requests use
+//! URL-encoded GraphQL parameters; POST bodies are JSON objects with `query`,
+//! optional `variables`, `operationName`, and `extensions`. Axum accepts
 //! `application/json` and JSON suffix media types. Its default 2 MiB body
 //! limit applies; an application can set a different `DefaultBodyLimit`.
 //!
 //! Malformed JSON receives 400, invalid JSON fields receive 422, unsupported
 //! content types receive 415, and oversized bodies receive 413. Route methods
-//! other than POST receive Axum's 405. GraphQL syntax errors receive 400;
+//! other than GET and POST receive Axum's 405. GET mutations receive 405.
+//! GraphQL syntax errors receive 400;
 //! other GraphQL request errors receive 422. Execution results, including
 //! domain errors, receive 200. Mount [`negotiate_response`] on GraphQL routes
 //! to negotiate responses using `Accept`. Extractor failures retain Axum's
@@ -46,12 +48,13 @@
 
 use axum::{
     Json,
-    extract::{FromRequest, Request as AxumRequest, rejection::JsonRejection},
-    http::{StatusCode, header},
+    body::Body,
+    extract::{FromRequest, Query, Request as AxumRequest},
+    http::{Method, StatusCode, header},
     middleware::Next,
     response::{Html, IntoResponse, Response as AxumResponse},
 };
-use necrassrs::{JsonMap, Request, Response};
+use necrassrs::{JsonMap, OperationType, Request, Response};
 use serde::Deserialize;
 
 #[derive(Clone, Copy)]
@@ -65,38 +68,51 @@ struct RuntimeResponse;
 /// Use `MethodRouter::route_layer` to preserve 405 responses for unsupported methods.
 ///
 /// ```
-/// use axum::{Router, middleware, routing::post};
+/// use axum::{Router, middleware, routing::get};
 /// use necrassrs_axum::negotiate_response;
 /// let app: Router = Router::new().route(
 ///     "/graphql",
-///     post(|| async { "replace with your GraphQL handler" })
+///     get(|| async { "replace with your GraphQL handler" })
+///         .post(|| async { "replace with your GraphQL handler" })
 ///         .route_layer(middleware::from_fn(negotiate_response)),
 /// );
 /// ```
-pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumResponse {
+pub async fn negotiate_response(mut request: AxumRequest, next: Next) -> AxumResponse {
+    if request.method() == Method::HEAD {
+        return next.run(request).await;
+    }
     let headers = request
         .headers()
         .get_all(header::ACCEPT)
         .iter()
         .map(|value| value.to_str())
         .collect::<Result<Vec<_>, _>>();
-    let selected = headers.ok().and_then(necrassrs_http::response_media_type);
-    let mut response = if let Some(media_type) = selected {
+    let selected = headers.ok().and_then(necrassrs_http::response_media_types);
+    let mut response = if let Some(selected) =
+        selected.filter(|selected| selected.json.is_some() || selected.event_stream)
+    {
+        if selected.json.is_none() {
+            request.extensions_mut().insert(SseOnly);
+        }
         let mut response = next.run(request).await;
         if response
             .extensions_mut()
             .remove::<RuntimeResponse>()
             .is_some()
+            && let Some(media_type) = selected.json
         {
-            // Keep non-2xx GraphQL results identifiable to legacy clients too.
-            let media_type = if response.status().is_success() {
-                media_type
-            } else {
+            let media_type = if !response.status().is_success() && selected.legacy_json {
                 necrassrs_http::GRAPHQL_JSON
+            } else {
+                media_type
             };
             response
                 .headers_mut()
                 .insert(header::CONTENT_TYPE, media_type.parse().unwrap());
+        }
+        if selected.json.is_none() && !response.status().is_success() {
+            *response.body_mut() = Body::empty();
+            response.headers_mut().remove(header::CONTENT_TYPE);
         }
         response
     } else {
@@ -107,6 +123,9 @@ pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumRespons
         .append(header::VARY, "Accept".parse().unwrap());
     response
 }
+
+#[derive(Clone, Copy)]
+struct SseOnly;
 
 /// A GraphiQL page configured to send requests to an application-owned endpoint.
 ///
@@ -132,11 +151,11 @@ pub fn graphiql_html(endpoint_url: &str) -> Html<String> {
     Html(include_str!("graphiql.html").replace("__NECRASSRS_ENDPOINT__", &endpoint_url))
 }
 
-/// A GraphQL request parsed from an Axum JSON request body.
+/// A GraphQL request parsed from GET parameters or an Axum JSON request body.
 ///
-/// Extracts `query`, optional `variables`, and optional `operationName`.
+/// Extracts `query`, optional `variables`, `operationName`, and `extensions`.
 /// GraphQL document validation happens during runtime execution, not extraction.
-/// This consumes the request body and should be the handler's last extractor.
+/// POST consumes the request body, so this should be the handler's last extractor.
 /// Extraction failures use Axum's JSON rejection responses.
 pub struct GraphQLRequest(
     /// Runtime request to pass to execution.
@@ -149,31 +168,102 @@ struct RequestBody {
     query: String,
     variables: Option<JsonMap>,
     operation_name: Option<String>,
+    #[serde(rename = "extensions")]
+    _extensions: Option<JsonMap>,
+    #[serde(flatten)]
+    _unknown: JsonMap,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestQuery {
+    query: String,
+    operation_name: Option<String>,
+    variables: Option<String>,
+    extensions: Option<String>,
 }
 
 impl<S> FromRequest<S> for GraphQLRequest
 where
     S: Send + Sync,
 {
-    type Rejection = JsonRejection;
+    type Rejection = AxumResponse;
 
     async fn from_request(req: AxumRequest, state: &S) -> Result<Self, Self::Rejection> {
-        let Json(body) = Json::<RequestBody>::from_request(req, state).await?;
-        let mut request = Request::new(body.query);
+        let method = req.method().clone();
+        if method == Method::HEAD {
+            return Err((
+                StatusCode::METHOD_NOT_ALLOWED,
+                [(header::ALLOW, "GET, POST")],
+            )
+                .into_response());
+        }
+        let sse_only = req.extensions().get::<SseOnly>().is_some();
+        let body = if method == Method::GET {
+            let Query(query) = Query::<RequestQuery>::try_from_uri(req.uri())
+                .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY.into_response())?;
+            RequestBody {
+                query: query.query,
+                variables: query
+                    .variables
+                    .as_deref()
+                    .map(parse_optional_map)
+                    .transpose()
+                    .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY.into_response())?
+                    .flatten(),
+                operation_name: query.operation_name.filter(|name| !name.is_empty()),
+                _extensions: query
+                    .extensions
+                    .as_deref()
+                    .map(parse_optional_map)
+                    .transpose()
+                    .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY.into_response())?
+                    .flatten(),
+                _unknown: JsonMap::new(),
+            }
+        } else {
+            Json::<RequestBody>::from_request(req, state)
+                .await
+                .map_err(IntoResponse::into_response)?
+                .0
+        };
+        let RequestBody {
+            query,
+            variables,
+            operation_name,
+            _extensions: _,
+            _unknown: _,
+        } = body;
+        let mut request = Request::new(query);
 
-        if let Some(variables) = body.variables {
+        if let Some(variables) = variables {
             request = request.with_variables(variables);
         }
-        if let Some(operation_name) = body.operation_name {
+        if let Some(operation_name) = operation_name {
             request = request.with_operation_name(operation_name);
         }
 
+        if method == Method::GET && request.operation_type() == Some(OperationType::Mutation) {
+            return Err((StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")]).into_response());
+        }
+        if sse_only {
+            return Err(StatusCode::NOT_ACCEPTABLE.into_response());
+        }
         Ok(Self(request))
+    }
+}
+
+fn parse_optional_map(value: &str) -> Result<Option<JsonMap>, serde_json::Error> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        serde_json::from_str(value)
     }
 }
 
 /// Converts a completed runtime response to an HTTP response.
 ///
+/// Subscriptions passed to single-response execution receive HTTP 406.
 /// Syntax errors receive HTTP 400, other request errors HTTP 422;
 /// execution responses receive HTTP 200,
 /// including responses with resolver errors or `data: null`. The content type
@@ -187,7 +277,9 @@ pub struct GraphQLResponse(
 
 impl IntoResponse for GraphQLResponse {
     fn into_response(self) -> AxumResponse {
-        let status = if self.0.is_syntax_error() {
+        let status = if self.0.requires_response_stream() {
+            StatusCode::NOT_ACCEPTABLE
+        } else if self.0.is_syntax_error() {
             StatusCode::BAD_REQUEST
         } else if self.0.is_request_error() {
             StatusCode::UNPROCESSABLE_ENTITY
@@ -224,7 +316,7 @@ mod tests {
                 StatusCode::UNPROCESSABLE_ENTITY,
             ),
         ] {
-            let mut request = AxumRequest::builder().uri("/graphql");
+            let mut request = AxumRequest::builder().method("POST").uri("/graphql");
             if let Some(content_type) = content_type {
                 request = request.header(header::CONTENT_TYPE, content_type);
             }
@@ -237,6 +329,7 @@ mod tests {
         }
 
         let request = AxumRequest::builder()
+            .method("POST")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(vec![b'x'; 2 * 1024 * 1024 + 1]))
             .unwrap();

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use actix_web::{
     App, Error, HttpRequest,
     body::MessageBody,
@@ -7,7 +9,7 @@ use actix_web::{
 };
 use necrassrs::{
     Dispatcher, ExecutionOptions, FieldCoordinate, JsonMap, JsonValue, ResolvedValue,
-    ResolverError, Schema, Valid, execute_with_options,
+    ResolverError, ScalarLiteralMap, Schema, SourceStream, Valid, execute_with_options,
 };
 use necrassrs_actix::{GraphQLRequest, GraphQLResponse, graphiql_html};
 use serde_json::{Value, json};
@@ -21,6 +23,8 @@ struct AppState {
 #[derive(Default)]
 struct GreetingDispatcher {
     barrier: Option<tokio::sync::Barrier>,
+    calls: AtomicUsize,
+    sources: AtomicUsize,
 }
 
 struct Context {
@@ -34,6 +38,7 @@ impl Dispatcher<Context> for GreetingDispatcher {
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
     ) -> Result<ResolvedValue<Context>, ResolverError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(matches!(coordinate.field, "hello" | "nullableHello"));
         let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
@@ -49,6 +54,20 @@ impl Dispatcher<Context> for GreetingDispatcher {
         Ok(ResolvedValue::Json(
             format!("{}, {name}", context.prefix).into(),
         ))
+    }
+
+    async fn resolve_event_stream<'stream, 'call>(
+        &'stream self,
+        _: &'stream Context,
+        _: FieldCoordinate<'call>,
+        _: &'call JsonMap,
+        _: &'call ScalarLiteralMap,
+    ) -> Result<SourceStream<'stream, ResolvedValue<Context>>, ResolverError>
+    where
+        'stream: 'call,
+    {
+        self.sources.fetch_add(1, Ordering::SeqCst);
+        Err(ResolverError::new("Source creation must not be reached"))
     }
 }
 
@@ -626,4 +645,347 @@ async fn json_configuration_preserves_body_limits_and_custom_errors() {
         test::read_body(response).await.as_ref(),
         b"custom JSON error"
     );
+}
+
+// Issue #30: expected HTTP contracts; implementations intentionally remain unchanged.
+
+fn contract_state() -> web::Data<AppState> {
+    let mut state = app_state();
+    state.schema = Schema::parse_and_validate(
+        "type Query { hello(name: String!): String! }
+         type Mutation { hello(name: String!): String! }
+         type Subscription { hello(name: String!): String! }",
+        "schema.graphql",
+    )
+    .unwrap();
+    web::Data::new(state)
+}
+
+fn contract_app(
+    state: web::Data<AppState>,
+) -> App<
+    impl ServiceFactory<
+        ServiceRequest,
+        Config = (),
+        Response = ServiceResponse,
+        Error = Error,
+        InitError = (),
+    >,
+> {
+    App::new().app_data(state).service(
+        web::resource("/graphql")
+            .route(web::get().to(graphql))
+            .route(web::post().to(graphql)),
+    )
+}
+
+#[actix_web::test]
+async fn array_envelopes_are_rejected_before_dispatch() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    let body = json!(["{ hello(name: \"Sheri\") }", null, null]).to_string();
+    let req = request_at("/graphql", "POST", Some("application/json"), None, body)
+        .insert_header((header::ACCEPT, "application/json"))
+        .to_request();
+    let response = test::call_service(&app, req).await;
+    let (status, _, _) = response_parts(response).await;
+    assert_eq!(
+        (status, state.dispatcher.calls.load(Ordering::SeqCst)),
+        (StatusCode::UNPROCESSABLE_ENTITY, 0)
+    );
+}
+
+#[actix_web::test]
+async fn non_object_extensions_are_rejected_before_dispatch() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    for extensions in [Value::Null, json!({}), json!({ "trace": true })] {
+        let req = request(
+            "POST",
+            Some("application/json"),
+            None,
+            json!({
+                "query": "{ hello(name: \"Sheri\") }",
+                "variables": null,
+                "operationName": null,
+                "extensions": extensions,
+                "unknown": true,
+            })
+            .to_string(),
+        )
+        .to_request();
+        let (status, _, body) = response_parts(test::call_service(&app, req).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "data": { "hello": "Hello, Sheri" } }));
+    }
+    state.dispatcher.calls.store(0, Ordering::SeqCst);
+    for extensions in [json!([]), json!(123), json!("invalid"), json!(true)] {
+        let body =
+            json!({ "query": "{ hello(name: \"Sheri\") }", "extensions": extensions }).to_string();
+        let req = request_at("/graphql", "POST", Some("application/json"), None, body)
+            .insert_header((header::ACCEPT, "application/json"))
+            .to_request();
+        let response = test::call_service(&app, req).await;
+        let (status, _, _) = response_parts(response).await;
+        assert_eq!(
+            (status, state.dispatcher.calls.load(Ordering::SeqCst)),
+            (StatusCode::UNPROCESSABLE_ENTITY, 0),
+            "{extensions}"
+        );
+    }
+}
+
+#[actix_web::test]
+async fn get_decodes_operation_variables_and_extensions() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    let uri = "/graphql?query=query+First%7Bhello(name%3A%22Skip%22)%7D+query+Second(%24name%3AString!)%7Bhello(name%3A%24name)%7D&operationName=Second&variables=%7B%22name%22%3A%22Tachibana+Sheri%2B%22%7D&extensions=%7B%22trace%22%3Atrue%7D";
+    let req = request_at(uri, "GET", None::<&str>, None, "")
+        .insert_header((header::ACCEPT, "application/json"))
+        .to_request();
+    let response = test::call_service(&app, req).await;
+    let (status, media_type, body) = response_parts(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        media_type.as_deref().unwrap().split(';').next(),
+        Some("application/json")
+    );
+    assert_eq!(
+        body,
+        json!({ "data": { "hello": "Hello, Tachibana Sheri+" } })
+    );
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 1);
+}
+
+#[actix_web::test]
+async fn get_normalizes_empty_optional_parameters() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    let uri =
+        "/graphql?query=%7Bhello(name%3A%22Sheri%22)%7D&operationName=&variables=&extensions=";
+    let req = request_at(uri, "GET", None::<&str>, None, "")
+        .insert_header((header::ACCEPT, "application/json"))
+        .to_request();
+    let response = test::call_service(&app, req).await;
+    let (status, _, body) = response_parts(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "data": { "hello": "Hello, Sheri" } }));
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 1);
+}
+
+#[actix_web::test]
+async fn get_mutations_are_rejected_before_dispatch_even_with_a_json_body() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    let uri = "/graphql?query=mutation+Update%7Bhello(name%3A%22Sheri%22)%7D&operationName=Update";
+    // A JSON body must not bypass the safe-method restriction.
+    let body =
+        json!({ "query": "mutation Update { hello(name: \"Sheri\") }", "operationName": "Update" })
+            .to_string();
+    let req = request_at(uri, "GET", Some("application/json"), None, body)
+        .insert_header((header::ACCEPT, "application/json"))
+        .to_request();
+    let response = test::call_service(&app, req).await;
+    assert_eq!(
+        (
+            response.status(),
+            state.dispatcher.calls.load(Ordering::SeqCst)
+        ),
+        (StatusCode::METHOD_NOT_ALLOWED, 0)
+    );
+    assert!(
+        response
+            .headers()
+            .get(header::ALLOW)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(',')
+            .any(|method| method.trim() == "POST")
+    );
+}
+
+#[actix_web::test]
+async fn request_errors_preserve_negotiated_json_for_clients_supporting_both_types() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    for (query, expected_status) in [
+        ("{", StatusCode::BAD_REQUEST),
+        ("{ missing }", StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        let body = json!({ "query": query }).to_string();
+        let req = request_at("/graphql", "POST", Some("application/json"), None, body)
+            .insert_header((
+                header::ACCEPT,
+                "application/json;q=1, application/graphql-response+json;q=0.1",
+            ))
+            .to_request();
+        let response = test::call_service(&app, req).await;
+        let (status, media_type, body) = response_parts(response).await;
+        assert_eq!(status, expected_status);
+        assert_eq!(
+            media_type.as_deref().unwrap().split(';').next(),
+            Some("application/json")
+        );
+        assert!(body.get("data").is_none());
+        assert!(
+            body["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty())
+        );
+        assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[actix_web::test]
+async fn json_subscriptions_return_406_without_creating_a_source() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    for accept in ["application/json", "application/graphql-response+json"] {
+        let body = json!({ "query": "subscription { hello(name: \"Sheri\") }" }).to_string();
+        let req = request_at("/graphql", "POST", Some("application/json"), None, body)
+            .insert_header((header::ACCEPT, accept))
+            .to_request();
+        let response = test::call_service(&app, req).await;
+        let (status, media_type, body) = response_parts(response).await;
+        assert_eq!(
+            (
+                status,
+                state.dispatcher.sources.load(Ordering::SeqCst),
+                state.dispatcher.calls.load(Ordering::SeqCst)
+            ),
+            (StatusCode::NOT_ACCEPTABLE, 0, 0)
+        );
+        assert_eq!(
+            media_type.as_deref().unwrap().split(';').next(),
+            Some("application/graphql-response+json")
+        );
+        assert!(body.get("data").is_none());
+        assert!(
+            body["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty())
+        );
+    }
+}
+
+#[actix_web::test]
+async fn unsupported_methods_preserve_405_regardless_of_accept() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    let mut observed = Vec::new();
+    for method in ["HEAD", "PUT", "DELETE", "OPTIONS"] {
+        for accept in [
+            "application/json",
+            "text/html",
+            "application/json;q=invalid",
+        ] {
+            let req = request(method, None, None, "")
+                .insert_header((header::ACCEPT, accept))
+                .to_request();
+            let response = test::call_service(&app, req).await;
+            observed.push((method, accept, response.status()));
+        }
+    }
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.dispatcher.sources.load(Ordering::SeqCst), 0);
+    assert!(
+        observed
+            .iter()
+            .all(|(_, _, status)| *status == StatusCode::METHOD_NOT_ALLOWED),
+        "Unsupported methods must retain 405: {observed:?}"
+    );
+}
+
+#[actix_web::test]
+async fn sse_only_get_mutations_preserve_405_and_allow() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    let mut observed = Vec::new();
+    for accept in [
+        "application/json",
+        "text/event-stream",
+        "text/event-stream, application/json;q=0",
+    ] {
+        let req = request_at(
+            "/graphql?query=mutation%7Bhello(name%3A%22Sheri%22)%7D",
+            "GET",
+            None,
+            None,
+            "",
+        )
+        .insert_header((header::ACCEPT, accept))
+        .to_request();
+        let response = test::call_service(&app, req).await;
+        let status = response.status();
+        let allows_post = response
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|method| method.trim() == "POST"));
+        let body = test::read_body(response).await;
+        observed.push((status, allows_post, body.is_empty()));
+    }
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.dispatcher.sources.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        observed,
+        vec![(StatusCode::METHOD_NOT_ALLOWED, true, true); 3]
+    );
+}
+
+#[actix_web::test]
+async fn sse_only_valid_requests_are_rejected_before_dispatch_on_json_routes() {
+    let cases = [
+        ("GET", "/graphql?query=%7Bhello(name%3A%22Sheri%22)%7D", ""),
+        ("POST", "/graphql", "{ hello(name: \"Sheri\") }"),
+        ("POST", "/graphql", "mutation { hello(name: \"Sheri\") }"),
+    ];
+    let mut observed = Vec::new();
+    for (method, uri, query) in cases {
+        let state = contract_state();
+        let app = test::init_service(contract_app(state.clone())).await;
+        let body = if method == "GET" {
+            String::new()
+        } else {
+            json!({ "query": query }).to_string()
+        };
+        let req = request_at(uri, method, Some("application/json"), None, body)
+            .insert_header((header::ACCEPT, "text/event-stream"))
+            .to_request();
+        let response = test::call_service(&app, req).await;
+        let status = response.status();
+        let body = test::read_body(response).await;
+        observed.push((
+            status,
+            state.dispatcher.calls.load(Ordering::SeqCst),
+            state.dispatcher.sources.load(Ordering::SeqCst),
+            body.is_empty(),
+        ));
+    }
+    assert_eq!(
+        observed,
+        vec![(StatusCode::NOT_ACCEPTABLE, 0, 0, true); cases.len()],
+        "GET query, POST query, and POST mutation must fail before execution"
+    );
+}
+
+#[actix_web::test]
+async fn sse_only_transport_failures_preserve_status_with_an_empty_body() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    for (content_type, body, expected_status) in [
+        ("application/json", "{", StatusCode::BAD_REQUEST),
+        ("application/json", "{}", StatusCode::UNPROCESSABLE_ENTITY),
+        ("text/plain", "{}", StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    ] {
+        let req = request_at("/graphql", "POST", Some(content_type), None, body)
+            .insert_header((header::ACCEPT, "text/event-stream"))
+            .to_request();
+        let response = test::call_service(&app, req).await;
+        assert_eq!(response.status(), expected_status, "{content_type} {body}");
+        assert!(test::read_body(response).await.is_empty());
+        assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(state.dispatcher.sources.load(Ordering::SeqCst), 0);
+    }
 }

@@ -31,7 +31,7 @@ The target directory must be new or empty. After initialization, ordinary builds
 
 Run `necrass` without arguments in a terminal to choose the project directory, package name, and HTTP framework interactively. Explicit `init` commands do not prompt: Axum is the default, and `necrass init my-api --framework actix` selects Actix Web. Use `necrass --help` or `necrass init --help` for usage. Without a terminal, supply an explicit command.
 
-Open [GraphiQL](http://127.0.0.1:3000/graphql) and run `{ hello(name: "Sheri") }`. The response is `{"data":{"hello":"Hello, Sheri"}}`.
+Open [GraphiQL](http://127.0.0.1:3000/graphiql) and run `{ hello(name: "Sheri") }`. The response is `{"data":{"hello":"Hello, Sheri"}}`.
 
 Follow the [installation and first-request guide](https://necrass.rs/docs/installation/) for prerequisites, interactive setup, framework selection, and curl examples. See [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/) for deployment settings.
 

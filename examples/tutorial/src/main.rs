@@ -1,10 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use axum::{
-    Router,
-    extract::State,
-    routing::{get, post},
-};
+use axum::{Router, extract::State, routing::get};
 use necrassrs::{Schema, Valid};
 use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
 
@@ -44,9 +40,11 @@ fn app() -> Router {
     Router::new()
         .route(
             "/graphql",
-            post(graphql).route_layer(axum::middleware::from_fn(negotiate_response)),
+            get(graphql)
+                .post(graphql)
+                .route_layer(axum::middleware::from_fn(negotiate_response)),
         )
-        .route("/graphql", get(|| async { graphiql_html("/graphql") }))
+        .route("/graphiql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }
 
@@ -114,5 +112,46 @@ mod tests {
         let (status, response) = execute(&app, "mutation { increment(by: 1) }").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response, json!({ "data": { "increment": 6 } }));
+    }
+
+    #[tokio::test]
+    async fn graphiql_page_uses_a_separate_ui_route() {
+        let response = app()
+            .oneshot(Request::get("/graphiql").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let html = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = std::str::from_utf8(&html).unwrap();
+        assert!(html.contains("data-endpoint=\"/graphql\""));
+    }
+
+    #[tokio::test]
+    async fn graphql_get_returns_query_data_instead_of_graphiql() {
+        let response = app()
+            .oneshot(
+                Request::get("/graphql?query=%7B__typename%7D")
+                    .header(header::ACCEPT, "application/graphql-response+json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next(),
+            Some("application/graphql-response+json"),
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, json!({ "data": { "__typename": "Query" } }));
     }
 }

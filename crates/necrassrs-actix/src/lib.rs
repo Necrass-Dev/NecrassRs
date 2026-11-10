@@ -1,6 +1,7 @@
 //! Actix extraction and response conversion for application-owned GraphQL handlers.
 //!
-//! JSON syntax errors receive 400, invalid request fields 422, unsupported
+//! GET query parameters and POST JSON objects are supported. GET mutations
+//! receive 405. JSON syntax errors receive 400, invalid request fields 422, unsupported
 //! content types 415, and oversized bodies 413. Configure body limits through
 //! `web::JsonConfig`. Custom JSON error handlers remain effective.
 //! GraphQL syntax errors receive 400 and other request errors 422. All execution
@@ -13,10 +14,10 @@ use actix_web::{
     FromRequest, HttpRequest, HttpResponse, Responder,
     body::BoxBody,
     error::{InternalError, JsonPayloadError},
-    http::{StatusCode, header},
+    http::{Method, StatusCode, header},
     web::Html,
 };
-use necrassrs::{JsonMap, Request, Response};
+use necrassrs::{JsonMap, OperationType, Request, Response};
 use serde::Deserialize;
 
 /// Returns the built-in GraphiQL page for an application-selected endpoint.
@@ -34,11 +35,11 @@ pub fn graphiql_html(endpoint_url: &str) -> Html {
     Html::new(include_str!("graphiql.html").replace("__NECRASSRS_ENDPOINT__", &endpoint_url))
 }
 
-/// A GraphQL request parsed from an Actix JSON request body.
+/// A GraphQL request parsed from GET parameters or an Actix JSON request body.
 ///
-/// Extracts `query`, optional `variables`, and optional `operationName`.
+/// Extracts `query`, optional `variables`, `operationName`, and `extensions`.
 /// GraphQL document validation happens during runtime execution, not extraction.
-/// This consumes the request body; other extractors must not consume it again.
+/// POST consumes the request body; other extractors must not consume it again.
 /// Standard JSON extraction errors are mapped to the adapter's HTTP status codes.
 /// Custom `JsonConfig` handlers returning other error types retain their behavior.
 pub struct GraphQLRequest(
@@ -52,6 +53,19 @@ struct RequestBody {
     query: String,
     variables: Option<JsonMap>,
     operation_name: Option<String>,
+    #[serde(rename = "extensions")]
+    _extensions: Option<JsonMap>,
+    #[serde(flatten)]
+    _unknown: JsonMap,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestQuery {
+    query: String,
+    operation_name: Option<String>,
+    variables: Option<String>,
+    extensions: Option<String>,
 }
 
 impl FromRequest for GraphQLRequest {
@@ -62,11 +76,46 @@ impl FromRequest for GraphQLRequest {
         req: &actix_web::HttpRequest,
         payload: &mut actix_web::dev::Payload,
     ) -> Self::Future {
-        let negotiation = negotiated_media_type(req);
+        let negotiation = negotiated_media_types(req);
+        let method = req.method().clone();
+        if method == Method::GET {
+            let query = actix_web::web::Query::<RequestQuery>::from_query(req.query_string())
+                .map(|query| query.into_inner())
+                .map_err(|error| error.to_string());
+            return Box::pin(async move {
+                let negotiation = negotiation?;
+                let query =
+                    query.map_err(|error| invalid_request(error, negotiation.json.is_none()))?;
+                let body = RequestBody {
+                    query: query.query,
+                    variables: query
+                        .variables
+                        .as_deref()
+                        .map(parse_optional_map)
+                        .transpose()
+                        .map_err(|error| {
+                            invalid_request(error.to_string(), negotiation.json.is_none())
+                        })?
+                        .flatten(),
+                    operation_name: query.operation_name.filter(|name| !name.is_empty()),
+                    _extensions: query
+                        .extensions
+                        .as_deref()
+                        .map(parse_optional_map)
+                        .transpose()
+                        .map_err(|error| {
+                            invalid_request(error.to_string(), negotiation.json.is_none())
+                        })?
+                        .flatten(),
+                    _unknown: JsonMap::new(),
+                };
+                finish_request(method, body, negotiation.json.is_none())
+            });
+        }
         let extraction = actix_web::web::Json::<RequestBody>::from_request(req, payload);
 
         Box::pin(async move {
-            negotiation?;
+            let negotiation = negotiation?;
             let body = extraction
                 .await
                 .map_err(|error| {
@@ -75,31 +124,91 @@ impl FromRequest for GraphQLRequest {
                         Some(JsonPayloadError::Deserialize(cause)) if cause.is_data() => {
                             StatusCode::UNPROCESSABLE_ENTITY
                         }
+                        Some(_) if negotiation.json.is_none() => {
+                            error.as_response_error().status_code()
+                        }
                         _ => return error,
                     };
-                    let response = HttpResponse::build(status)
-                        .content_type("text/plain; charset=utf-8")
-                        .body(error.to_string());
+                    let mut response = HttpResponse::build(status);
+                    let response = if negotiation.json.is_none() {
+                        response.finish()
+                    } else {
+                        response
+                            .content_type("text/plain; charset=utf-8")
+                            .body(error.to_string())
+                    };
                     InternalError::from_response(error, response).into()
                 })?
                 .into_inner();
-            let mut request = Request::new(body.query);
-
-            if let Some(variables) = body.variables {
-                request = request.with_variables(variables);
-            }
-            if let Some(operation_name) = body.operation_name {
-                request = request.with_operation_name(operation_name);
-            }
-
-            Ok(Self(request))
+            finish_request(method, body, negotiation.json.is_none())
         })
     }
+}
+
+fn finish_request(
+    method: Method,
+    body: RequestBody,
+    sse_only: bool,
+) -> Result<GraphQLRequest, actix_web::Error> {
+    let RequestBody {
+        query,
+        variables,
+        operation_name,
+        _extensions: _,
+        _unknown: _,
+    } = body;
+    let mut request = Request::new(query);
+    if let Some(variables) = variables {
+        request = request.with_variables(variables);
+    }
+    if let Some(operation_name) = operation_name {
+        request = request.with_operation_name(operation_name);
+    }
+    if method == Method::GET && request.operation_type() == Some(OperationType::Mutation) {
+        return Err(InternalError::from_response(
+            "Mutations require POST",
+            HttpResponse::MethodNotAllowed()
+                .insert_header((header::ALLOW, "POST"))
+                .finish(),
+        )
+        .into());
+    }
+    if sse_only {
+        return Err(InternalError::from_response(
+            "SSE transport is not available on this route",
+            HttpResponse::NotAcceptable()
+                .insert_header((header::VARY, "Accept"))
+                .finish(),
+        )
+        .into());
+    }
+    Ok(GraphQLRequest(request))
+}
+
+fn parse_optional_map(value: &str) -> Result<Option<JsonMap>, serde_json::Error> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        serde_json::from_str(value)
+    }
+}
+
+fn invalid_request(message: String, empty: bool) -> actix_web::Error {
+    let mut response = HttpResponse::UnprocessableEntity();
+    let response = if empty {
+        response.finish()
+    } else {
+        response
+            .content_type("text/plain; charset=utf-8")
+            .body(message.clone())
+    };
+    InternalError::from_response(message, response).into()
 }
 
 /// Converts a runtime response to JSON with HTTP 200 for execution results,
 /// including partial data and root-null results with errors.
 ///
+/// Subscriptions passed to single-response execution receive 406.
 /// GraphQL syntax errors receive 400; other request errors receive 422.
 /// The response media type is selected from the request's `Accept` preferences.
 pub struct GraphQLResponse(
@@ -111,21 +220,28 @@ impl Responder for GraphQLResponse {
     type Body = BoxBody;
 
     fn respond_to(self, req: &HttpRequest) -> HttpResponse<Self::Body> {
-        let media_type = match negotiated_media_type(req) {
-            Ok(media_type) => media_type,
+        let negotiation = match negotiated_media_types(req) {
+            Ok(negotiation) => negotiation,
             Err(error) => return error.error_response(),
         };
-        let status = if self.0.is_syntax_error() {
+        let status = if self.0.requires_response_stream() {
+            StatusCode::NOT_ACCEPTABLE
+        } else if self.0.is_syntax_error() {
             StatusCode::BAD_REQUEST
         } else if self.0.is_request_error() {
             StatusCode::UNPROCESSABLE_ENTITY
         } else {
             StatusCode::OK
         };
-        let media_type = if status.is_success() {
-            media_type
-        } else {
+        let Some(media_type) = negotiation.json else {
+            return HttpResponse::build(status)
+                .insert_header((header::VARY, "Accept"))
+                .finish();
+        };
+        let media_type = if !status.is_success() && negotiation.legacy_json {
             necrassrs_http::GRAPHQL_JSON
+        } else {
+            media_type
         };
         HttpResponse::build(status)
             .insert_header((header::VARY, "Accept"))
@@ -134,7 +250,9 @@ impl Responder for GraphQLResponse {
     }
 }
 
-fn negotiated_media_type(req: &HttpRequest) -> Result<&'static str, actix_web::Error> {
+fn negotiated_media_types(
+    req: &HttpRequest,
+) -> Result<necrassrs_http::ResponseMediaTypes, actix_web::Error> {
     let headers = req
         .headers()
         .get_all(header::ACCEPT)
@@ -142,7 +260,8 @@ fn negotiated_media_type(req: &HttpRequest) -> Result<&'static str, actix_web::E
         .collect::<Result<Vec<_>, _>>();
     headers
         .ok()
-        .and_then(necrassrs_http::response_media_type)
+        .and_then(necrassrs_http::response_media_types)
+        .filter(|selected| selected.json.is_some() || selected.event_stream)
         .ok_or_else(|| {
             InternalError::from_response(
                 "No acceptable GraphQL response media type",

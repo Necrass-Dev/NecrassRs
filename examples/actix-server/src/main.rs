@@ -27,7 +27,11 @@ fn configure(cfg: &mut web::ServiceConfig) {
     .service(
         web::resource("/graphql")
             .route(web::post().to(graphql))
-            .route(web::get().to(|| async { graphiql_html("/graphql") })),
+            .route(web::get().to(graphql)),
+    )
+    .route(
+        "/graphiql",
+        web::get().to(|| async { graphiql_html("/graphql") }),
     );
 }
 
@@ -40,6 +44,10 @@ async fn main() -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[path = "../../http_contract.rs"]
+mod http_contract;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use actix_web::{
@@ -47,6 +55,31 @@ mod tests {
         test,
     };
     use serde_json::{Value, json};
+
+    #[actix_web::test]
+    async fn http_method_and_transport_errors_over_tcp() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = HttpServer::new(|| {
+            App::new()
+                .configure(configure)
+                .app_data(web::JsonConfig::default().limit(128))
+        })
+        .workers(1)
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        let server = actix_web::rt::spawn(server);
+        let result = actix_web::rt::task::spawn_blocking(move || {
+            // Actix maps URI overflow to 400 in its HTTP/1 parser before application dispatch.
+            http_contract::check_method_and_transport_errors(address, 400);
+        })
+        .await;
+        handle.stop(false).await;
+        server.await.unwrap().unwrap();
+        result.unwrap();
+    }
 
     #[actix_web::test]
     async fn generated_resolvers_accept_literals_variables_and_operation_names() {
@@ -106,10 +139,10 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn built_in_graphiql_and_introspection_share_the_endpoint() {
+    async fn built_in_graphiql_uses_a_separate_ui_route() {
         let app = test::init_service(App::new().configure(configure)).await;
         let request = test::TestRequest::get()
-            .uri("/graphql")
+            .uri("/graphiql")
             .insert_header((header::ACCEPT, "text/html"))
             .to_request();
         let response = test::call_service(&app, request).await;
@@ -136,5 +169,29 @@ mod tests {
             body,
             json!({ "data": { "__schema": { "queryType": { "name": "Query" } } } })
         );
+    }
+
+    #[actix_web::test]
+    async fn graphql_get_returns_query_data_instead_of_graphiql() {
+        let app = test::init_service(App::new().configure(configure)).await;
+        let request = test::TestRequest::get()
+            .uri("/graphql?query=%7B__typename%7D")
+            .insert_header((header::ACCEPT, "application/graphql-response+json"))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next(),
+            Some("application/graphql-response+json"),
+        );
+        let body: Value = test::read_body_json(response).await;
+        assert_eq!(body, json!({ "data": { "__typename": "Query" } }));
     }
 }

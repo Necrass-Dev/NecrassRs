@@ -1,10 +1,6 @@
 use std::sync::Arc;
 
-use axum::{
-    Router,
-    extract::State,
-    routing::{get, post},
-};
+use axum::{Router, extract::State, routing::get};
 use necrassrs::{Schema, Valid};
 use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
 
@@ -33,9 +29,11 @@ fn app() -> Router {
     Router::new()
         .route(
             "/graphql",
-            post(graphql).route_layer(axum::middleware::from_fn(negotiate_response)),
+            get(graphql)
+                .post(graphql)
+                .route_layer(axum::middleware::from_fn(negotiate_response)),
         )
-        .route("/graphql", get(|| async { graphiql_html("/graphql") }))
+        .route("/graphiql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }
 
@@ -46,6 +44,10 @@ async fn main() -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[path = "../../http_contract.rs"]
+mod http_contract;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::{
@@ -54,6 +56,29 @@ mod tests {
     };
     use serde_json::{Value, json};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn http_method_and_transport_errors_over_tcp() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app().layer(axum::extract::DefaultBodyLimit::max(128)),
+            )
+            .await
+            .unwrap();
+        });
+        let result = tokio::task::spawn_blocking(move || {
+            http_contract::check_method_and_transport_errors(address, 414);
+        })
+        .await;
+        server.abort();
+        let _ = server.await;
+        result.unwrap();
+    }
 
     async fn post(app: &Router, request: Value) -> (StatusCode, Value) {
         let response = app
@@ -196,9 +221,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn graphiql_page_uses_the_existing_endpoint() {
+    async fn graphiql_page_uses_a_separate_ui_route() {
         let response = app()
-            .oneshot(Request::get("/graphql").body(Body::empty()).unwrap())
+            .oneshot(Request::get("/graphiql").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -209,5 +234,30 @@ mod tests {
         let html = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = std::str::from_utf8(&html).unwrap();
         assert!(html.contains("data-endpoint=\"/graphql\""));
+    }
+
+    #[tokio::test]
+    async fn graphql_get_returns_query_data_instead_of_graphiql() {
+        let response = app()
+            .oneshot(
+                Request::get("/graphql?query=%7B__typename%7D")
+                    .header(header::ACCEPT, "application/graphql-response+json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next(),
+            Some("application/graphql-response+json"),
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, json!({ "data": { "__typename": "Query" } }));
     }
 }

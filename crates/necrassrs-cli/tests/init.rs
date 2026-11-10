@@ -73,7 +73,7 @@ fn init_creates_project_at_explicit_path_and_name() {
     }
     let main = fs::read_to_string(project.join("src/main.rs")).unwrap();
     assert!(main.contains("graphiql_html(\"/graphql\")"));
-    assert!(main.contains(".route(\"/graphql\", get("));
+    assert!(main.contains(".route(\"/graphiql\", get("));
 
     let manifest = fs::read(project.join("Cargo.toml")).unwrap();
     let repeated = Command::new(env!("CARGO_BIN_EXE_necrass"))
@@ -84,6 +84,26 @@ fn init_creates_project_at_explicit_path_and_name() {
         .unwrap();
     assert!(!repeated.status.success());
     assert_eq!(fs::read(project.join("Cargo.toml")).unwrap(), manifest);
+}
+
+#[test]
+fn actix_init_uses_a_separate_graphiql_route() {
+    let directory = TestDirectory::new();
+    let project = directory.0.join("actix-api");
+    let output = Command::new(env!("CARGO_BIN_EXE_necrass"))
+        .arg("init")
+        .arg(&project)
+        .args(["--framework", "actix"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let main = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(main.contains("\"/graphiql\""));
+    assert!(main.contains("graphiql_html(\"/graphql\")"));
 }
 
 #[test]
@@ -120,13 +140,13 @@ fn check_generated_consumer(framework: &str) {
     assert!(!source.contains("apollo-compiler"));
     let adapter = format!("necrassrs-{framework}");
     for package in ["necrassrs", adapter.as_str(), "necrassrs-build"] {
-        let registry = format!("{package} = \"0.2.0\"");
+        let registry = format!("{package} = \"0.2.1\"");
         let path = workspace
             .join("crates")
             .join(package)
             .canonicalize()
             .unwrap();
-        let local = format!("{package} = {{ path = {path:?}, version = \"0.2.0\" }}");
+        let local = format!("{package} = {{ path = {path:?}, version = \"0.2.1\" }}");
         assert!(
             source.contains(&registry),
             "missing registry dependency for {package}"

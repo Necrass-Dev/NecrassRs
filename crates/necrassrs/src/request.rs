@@ -1,6 +1,6 @@
 use reed_compiler::{
     ExecutableDocument, Node,
-    ast::Document,
+    ast::{Definition, Document, OperationType},
     executable::Operation,
     request::coerce_variable_values,
     response::{GraphQLError, JsonMap},
@@ -51,6 +51,28 @@ impl Request {
     pub fn with_variables(mut self, variables: JsonMap) -> Self {
         self.variables = variables;
         self
+    }
+
+    /// Returns the selected operation type when syntax and operation selection are unambiguous.
+    ///
+    /// Schema validation and variable coercion remain part of execution.
+    pub fn operation_type(&self) -> Option<OperationType> {
+        let document = Document::parse(self.document.as_str(), "request.graphql").ok()?;
+        let mut operations = document.definitions.iter().filter_map(|definition| {
+            let Definition::OperationDefinition(operation) = definition else {
+                return None;
+            };
+            match self.operation_name.as_deref() {
+                Some(name) if operation.name.as_deref() == Some(name) => Some(operation),
+                Some(_) => None,
+                None => Some(operation),
+            }
+        });
+        let operation = operations.next()?;
+        operations
+            .next()
+            .is_none()
+            .then_some(operation.operation_type)
     }
 }
 
@@ -186,6 +208,21 @@ mod tests {
         let errors = prepare_request(&schema, &request).unwrap_err();
 
         assert_eq!(errors.errors.len(), 1);
+    }
+
+    #[test]
+    fn reports_only_an_unambiguously_selected_operation_type() {
+        assert_eq!(
+            Request::new("query First { first } mutation Second { second }")
+                .with_operation_name("Second")
+                .operation_type(),
+            Some(OperationType::Mutation)
+        );
+        assert_eq!(
+            Request::new("query First { first } query Second { second }").operation_type(),
+            None
+        );
+        assert_eq!(Request::new("query {").operation_type(), None);
     }
 
     #[test]

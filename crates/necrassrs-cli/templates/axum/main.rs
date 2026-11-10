@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::State,
-    routing::{get, post},
+    routing::get,
 };
 use necrassrs::{Schema, Valid};
 use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
@@ -31,8 +31,13 @@ fn app() -> Router {
         dispatcher: generated::dispatch::SchemaDispatcher::new(resolvers::Query),
     });
     Router::new()
-        .route("/graphql", post(graphql).route_layer(axum::middleware::from_fn(negotiate_response)))
-        .route("/graphql", get(|| async { graphiql_html("/graphql") }))
+        .route(
+            "/graphql",
+            get(graphql)
+                .post(graphql)
+                .route_layer(axum::middleware::from_fn(negotiate_response)),
+        )
+        .route("/graphiql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
 }
 

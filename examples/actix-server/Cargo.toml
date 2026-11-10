@@ -11,11 +11,11 @@ doc = false
 
 [dependencies]
 actix-web = "4"
-necrassrs = { path = "../../crates/necrassrs", version = "0.2.0" }
-necrassrs-actix = { path = "../../crates/necrassrs-actix", version = "0.2.0" }
+necrassrs = { path = "../../crates/necrassrs", version = "0.2.1" }
+necrassrs-actix = { path = "../../crates/necrassrs-actix", version = "0.2.1" }
 
 [build-dependencies]
-necrassrs-build = { path = "../../crates/necrassrs-build", version = "0.2.0" }
+necrassrs-build = { path = "../../crates/necrassrs-build", version = "0.2.1" }
 
 [dev-dependencies]
 serde_json = "1.0"
