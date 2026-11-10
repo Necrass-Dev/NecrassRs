@@ -72,7 +72,7 @@ mod tests {
             .unwrap();
         });
         let result = tokio::task::spawn_blocking(move || {
-            http_contract::check_method_and_transport_errors(address);
+            http_contract::check_method_and_transport_errors(address, 414);
         })
         .await;
         server.abort();

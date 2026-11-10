@@ -72,7 +72,8 @@ mod tests {
         let handle = server.handle();
         let server = actix_web::rt::spawn(server);
         let result = actix_web::rt::task::spawn_blocking(move || {
-            http_contract::check_method_and_transport_errors(address);
+            // Actix maps URI overflow to 400 in its HTTP/1 parser before application dispatch.
+            http_contract::check_method_and_transport_errors(address, 400);
         })
         .await;
         handle.stop(false).await;

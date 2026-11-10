@@ -8,6 +8,8 @@
     `necrassrs_http::response_media_types<'a>(headers: impl IntoIterator<Item = &'a str>) -> Option<ResponseMediaTypes>`
     with `json: Option<&'static str>`, `legacy_json: bool`, and
     `event_stream: bool` fields, plus the `EVENT_STREAM` media-type constant.
-    SSE-only transport failures retain their error status with an empty body;
-    SSE event delivery and WebSocket transport are not implemented by this
-    change.  [[#30]]
+    Method failures take precedence over response negotiation. SSE-only
+    transport failures retain their error status with an empty body. Native
+    oversized-URI parser errors remain framework-owned: Axum returns 414 and
+    Actix returns 400 before application dispatch. SSE event delivery and
+    WebSocket transport are not implemented by this change.  [[#30]]

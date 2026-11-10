@@ -184,20 +184,21 @@ curl -i http://127.0.0.1:3000/graphql \
 
 ### Status and error contract
 
-| Condition                                                             | HTTP status | Response behavior                  |
-| --------------------------------------------------------------------- | ----------- | ---------------------------------- |
-| Successful execution                                                  | 200         | GraphQL `data`                     |
-| Execution errors, including partial data or `data: null`              | 200         | GraphQL `data` and `errors`        |
-| GraphQL document syntax error                                         | 400         | GraphQL `errors`, no `data`        |
-| GraphQL validation, operation selection, or variable coercion failure | 422         | GraphQL `errors`, no `data`        |
-| Malformed JSON body                                                   | 400         | Framework extraction error         |
-| Missing or incorrectly typed request fields                           | 422         | Framework extraction error         |
-| Non-object JSON envelope or non-object `extensions`                   | 422         | Framework extraction error         |
-| Missing or unsupported request Content-Type                           | 415         | Framework extraction error         |
-| Body exceeds configured JSON limit                                    | 413         | Framework extraction error         |
-| No acceptable response media type or invalid Accept                   | 406         | Empty HTTP error response          |
-| Selected mutation over GET                                            | 405         | Empty response, with `Allow: POST` |
-| Subscription limited to ordinary JSON                                 | 406         | GraphQL `errors`, no `data`        |
+| Condition                                                             | HTTP status           | Response behavior                  |
+| --------------------------------------------------------------------- | --------------------- | ---------------------------------- |
+| Successful execution                                                  | 200                   | GraphQL `data`                     |
+| Execution errors, including partial data or `data: null`              | 200                   | GraphQL `data` and `errors`        |
+| GraphQL document syntax error                                         | 400                   | GraphQL `errors`, no `data`        |
+| GraphQL validation, operation selection, or variable coercion failure | 422                   | GraphQL `errors`, no `data`        |
+| Malformed JSON body                                                   | 400                   | Framework extraction error         |
+| Missing or incorrectly typed request fields                           | 422                   | Framework extraction error         |
+| Non-object JSON envelope or non-object `extensions`                   | 422                   | Framework extraction error         |
+| Missing or unsupported request Content-Type                           | 415                   | Framework extraction error         |
+| Body exceeds configured JSON limit                                    | 413                   | Framework extraction error         |
+| URI exceeds the framework parser limit                                | Axum: 414; Actix: 400 | Framework parser error             |
+| No acceptable response media type or invalid Accept                   | 406                   | Empty HTTP error response          |
+| Selected mutation over GET                                            | 405                   | Empty response, with `Allow: POST` |
+| Subscription limited to ordinary JSON                                 | 406                   | GraphQL `errors`, no `data`        |
 
 The runtime distinguishes Reed AST parsing failures from validation failures without interpreting diagnostic messages. `Response::is_syntax_error()` exposes that distinction to adapters; the classification is not serialized into GraphQL responses. Manually constructed `Response::request_error(s)` values remain general request errors.
 

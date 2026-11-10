@@ -78,6 +78,9 @@ struct RuntimeResponse;
 /// );
 /// ```
 pub async fn negotiate_response(mut request: AxumRequest, next: Next) -> AxumResponse {
+    if request.method() == Method::HEAD {
+        return next.run(request).await;
+    }
     let headers = request
         .headers()
         .get_all(header::ACCEPT)
@@ -240,12 +243,11 @@ where
             request = request.with_operation_name(operation_name);
         }
 
-        if sse_only {
-            return Err(StatusCode::NOT_ACCEPTABLE.into_response());
-        }
-
         if method == Method::GET && request.operation_type() == Some(OperationType::Mutation) {
             return Err((StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")]).into_response());
+        }
+        if sse_only {
+            return Err(StatusCode::NOT_ACCEPTABLE.into_response());
         }
         Ok(Self(request))
     }

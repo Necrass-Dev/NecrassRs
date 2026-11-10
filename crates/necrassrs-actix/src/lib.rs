@@ -150,15 +150,6 @@ fn finish_request(
     body: RequestBody,
     sse_only: bool,
 ) -> Result<GraphQLRequest, actix_web::Error> {
-    if sse_only {
-        return Err(InternalError::from_response(
-            "SSE transport is not available on this route",
-            HttpResponse::NotAcceptable()
-                .insert_header((header::VARY, "Accept"))
-                .finish(),
-        )
-        .into());
-    }
     let RequestBody {
         query,
         variables,
@@ -178,6 +169,15 @@ fn finish_request(
             "Mutations require POST",
             HttpResponse::MethodNotAllowed()
                 .insert_header((header::ALLOW, "POST"))
+                .finish(),
+        )
+        .into());
+    }
+    if sse_only {
+        return Err(InternalError::from_response(
+            "SSE transport is not available on this route",
+            HttpResponse::NotAcceptable()
+                .insert_header((header::VARY, "Accept"))
                 .finish(),
         )
         .into());
