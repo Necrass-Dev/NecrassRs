@@ -1,10 +1,10 @@
 Changelog
 =========
 
-Unreleased
-----------
+Version 0.2.1
+-------------
 
-To be released.
+Released on November 10, 2026.
 
  -  Added GET query support to the Axum and Actix adapters, including
     URL-encoded variables and operation selection. GET mutations return 405

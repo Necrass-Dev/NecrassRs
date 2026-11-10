@@ -42,7 +42,7 @@ Or add this to your `Cargo.toml` for a manual installation:
 ```toml
 # Just an example, change to the necessary package version.
 [dependencies]
-reed-compiler = "0.2.0"
+reed-compiler = "0.2.1"
 ```
 
 ## Rust versions

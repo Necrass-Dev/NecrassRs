@@ -140,13 +140,13 @@ fn check_generated_consumer(framework: &str) {
     assert!(!source.contains("apollo-compiler"));
     let adapter = format!("necrassrs-{framework}");
     for package in ["necrassrs", adapter.as_str(), "necrassrs-build"] {
-        let registry = format!("{package} = \"0.2.0\"");
+        let registry = format!("{package} = \"0.2.1\"");
         let path = workspace
             .join("crates")
             .join(package)
             .canonicalize()
             .unwrap();
-        let local = format!("{package} = {{ path = {path:?}, version = \"0.2.0\" }}");
+        let local = format!("{package} = {{ path = {path:?}, version = \"0.2.1\" }}");
         assert!(
             source.contains(&registry),
             "missing registry dependency for {package}"
