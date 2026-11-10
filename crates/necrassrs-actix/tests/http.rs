@@ -870,6 +870,71 @@ async fn json_subscriptions_return_406_without_creating_a_source() {
 }
 
 #[actix_web::test]
+async fn unsupported_methods_preserve_405_regardless_of_accept() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    let mut observed = Vec::new();
+    for method in ["HEAD", "PUT", "DELETE", "OPTIONS"] {
+        for accept in [
+            "application/json",
+            "text/html",
+            "application/json;q=invalid",
+        ] {
+            let req = request(method, None, None, "")
+                .insert_header((header::ACCEPT, accept))
+                .to_request();
+            let response = test::call_service(&app, req).await;
+            observed.push((method, accept, response.status()));
+        }
+    }
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.dispatcher.sources.load(Ordering::SeqCst), 0);
+    assert!(
+        observed
+            .iter()
+            .all(|(_, _, status)| *status == StatusCode::METHOD_NOT_ALLOWED),
+        "Unsupported methods must retain 405: {observed:?}"
+    );
+}
+
+#[actix_web::test]
+async fn sse_only_get_mutations_preserve_405_and_allow() {
+    let state = contract_state();
+    let app = test::init_service(contract_app(state.clone())).await;
+    let mut observed = Vec::new();
+    for accept in [
+        "application/json",
+        "text/event-stream",
+        "text/event-stream, application/json;q=0",
+    ] {
+        let req = request_at(
+            "/graphql?query=mutation%7Bhello(name%3A%22Sheri%22)%7D",
+            "GET",
+            None,
+            None,
+            "",
+        )
+        .insert_header((header::ACCEPT, accept))
+        .to_request();
+        let response = test::call_service(&app, req).await;
+        let status = response.status();
+        let allows_post = response
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|method| method.trim() == "POST"));
+        let body = test::read_body(response).await;
+        observed.push((status, allows_post, body.is_empty()));
+    }
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.dispatcher.sources.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        observed,
+        vec![(StatusCode::METHOD_NOT_ALLOWED, true, true); 3]
+    );
+}
+
+#[actix_web::test]
 async fn sse_only_valid_requests_are_rejected_before_dispatch_on_json_routes() {
     let cases = [
         ("GET", "/graphql?query=%7Bhello(name%3A%22Sheri%22)%7D", ""),

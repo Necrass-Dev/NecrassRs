@@ -44,6 +44,10 @@ async fn main() -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[path = "../../http_contract.rs"]
+mod http_contract;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use actix_web::{
@@ -51,6 +55,30 @@ mod tests {
         test,
     };
     use serde_json::{Value, json};
+
+    #[actix_web::test]
+    async fn http_method_and_transport_errors_over_tcp() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = HttpServer::new(|| {
+            App::new()
+                .configure(configure)
+                .app_data(web::JsonConfig::default().limit(128))
+        })
+        .workers(1)
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        let server = actix_web::rt::spawn(server);
+        let result = actix_web::rt::task::spawn_blocking(move || {
+            http_contract::check_method_and_transport_errors(address);
+        })
+        .await;
+        handle.stop(false).await;
+        server.await.unwrap().unwrap();
+        result.unwrap();
+    }
 
     #[actix_web::test]
     async fn generated_resolvers_accept_literals_variables_and_operation_names() {

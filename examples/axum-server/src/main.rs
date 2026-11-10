@@ -44,6 +44,10 @@ async fn main() -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[path = "../../http_contract.rs"]
+mod http_contract;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::{
@@ -52,6 +56,29 @@ mod tests {
     };
     use serde_json::{Value, json};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn http_method_and_transport_errors_over_tcp() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app().layer(axum::extract::DefaultBodyLimit::max(128)),
+            )
+            .await
+            .unwrap();
+        });
+        let result = tokio::task::spawn_blocking(move || {
+            http_contract::check_method_and_transport_errors(address);
+        })
+        .await;
+        server.abort();
+        let _ = server.await;
+        result.unwrap();
+    }
 
     async fn post(app: &Router, request: Value) -> (StatusCode, Value) {
         let response = app

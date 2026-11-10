@@ -757,6 +757,77 @@ async fn json_subscriptions_return_406_without_creating_a_source() {
 }
 
 #[tokio::test]
+async fn unsupported_methods_preserve_405_regardless_of_accept() {
+    let (app, state) = contract_app();
+    let mut observed = Vec::new();
+    for method in ["HEAD", "PUT", "DELETE", "OPTIONS"] {
+        for accept in [
+            "application/json",
+            "text/html",
+            "application/json;q=invalid",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .method(method)
+                        .uri("/graphql")
+                        .header(header::ACCEPT, accept)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            observed.push((method, accept, response.status()));
+        }
+    }
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.dispatcher.sources.load(Ordering::SeqCst), 0);
+    assert!(
+        observed
+            .iter()
+            .all(|(_, _, status)| *status == StatusCode::METHOD_NOT_ALLOWED),
+        "Unsupported methods must retain 405: {observed:?}"
+    );
+}
+
+#[tokio::test]
+async fn sse_only_get_mutations_preserve_405_and_allow() {
+    let (app, state) = contract_app();
+    let mut observed = Vec::new();
+    for accept in [
+        "application/json",
+        "text/event-stream",
+        "text/event-stream, application/json;q=0",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::get("/graphql?query=mutation%7Bhello(name%3A%22Sheri%22)%7D")
+                    .header(header::ACCEPT, accept)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let allows_post = response
+            .headers()
+            .get(header::ALLOW)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|method| method.trim() == "POST"));
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        observed.push((status, allows_post, body.is_empty()));
+    }
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.dispatcher.sources.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        observed,
+        vec![(StatusCode::METHOD_NOT_ALLOWED, true, true); 3]
+    );
+}
+
+#[tokio::test]
 async fn head_mutations_are_rejected_before_dispatch() {
     let (app, state) = contract_app();
     let response = app
