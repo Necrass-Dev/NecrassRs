@@ -4,6 +4,19 @@
 pub const GRAPHQL_JSON: &str = "application/graphql-response+json";
 /// The legacy JSON response media type.
 pub const JSON: &str = "application/json";
+/// The Server-Sent Events response media type.
+pub const EVENT_STREAM: &str = "text/event-stream";
+
+/// Supported response representations accepted by a request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResponseMediaTypes {
+    /// The preferred ordinary JSON representation, if one is acceptable.
+    pub json: Option<&'static str>,
+    /// Whether only legacy JSON, not GraphQL JSON, is acceptable.
+    pub legacy_json: bool,
+    /// Whether Server-Sent Events are acceptable.
+    pub event_stream: bool,
+}
 
 /// Selects a supported response media type from all `Accept` header values.
 ///
@@ -11,8 +24,18 @@ pub const JSON: &str = "application/json";
 /// Equal quality prefers GraphQL JSON. Missing headers preserve legacy JSON.
 /// Invalid headers and requests accepting neither type return `None`.
 pub fn response_media_type<'a>(headers: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
+    response_media_types(headers)?.json
+}
+
+/// Negotiates ordinary JSON and Server-Sent Events response representations.
+///
+/// `None` indicates malformed preferences. A result with neither JSON nor SSE
+/// indicates that the request accepts no supported representation.
+pub fn response_media_types<'a>(
+    headers: impl IntoIterator<Item = &'a str>,
+) -> Option<ResponseMediaTypes> {
     let mut present = false;
-    let mut scores = [None, None];
+    let mut scores = [None, None, None];
     for header in headers {
         present = true;
         let ranges = split_unquoted(header, ',');
@@ -52,26 +75,36 @@ pub fn response_media_type<'a>(headers: impl IntoIterator<Item = &'a str>) -> Op
         }
     }
     if !present {
-        return Some(JSON);
+        return Some(ResponseMediaTypes {
+            json: Some(JSON),
+            legacy_json: true,
+            event_stream: false,
+        });
     }
     let graphql = scores[0].map_or(0, |(_, _, quality)| quality);
     let json = scores[1].map_or(0, |(_, _, quality)| quality);
-    match (graphql, json) {
+    let json = match (graphql, json) {
         (0, 0) => None,
         _ if graphql >= json => Some(GRAPHQL_JSON),
         _ => Some(JSON),
-    }
+    };
+    Some(ResponseMediaTypes {
+        json,
+        legacy_json: scores[1].is_some_and(|(_, _, quality)| quality > 0) && graphql == 0,
+        event_stream: scores[2].is_some_and(|(_, _, quality)| quality > 0),
+    })
 }
 
 fn media_range_scores(
     range: &mime::Mime,
     parameters: usize,
     quality: u16,
-) -> [Option<(u8, usize, u16)>; 2] {
-    [GRAPHQL_JSON, JSON].map(|candidate| {
+) -> [Option<(u8, usize, u16)>; 3] {
+    [GRAPHQL_JSON, JSON, EVENT_STREAM].map(|candidate| {
         let specificity = match range.essence_str() {
             exact if exact == candidate => 2,
-            "application/*" => 1,
+            "application/*" if candidate.starts_with("application/") => 1,
+            "text/*" if candidate.starts_with("text/") => 1,
             "*/*" => 0,
             _ => return None,
         };
@@ -165,6 +198,34 @@ mod tests {
         assert_eq!(
             response_media_type(["application/json;q=0.5", GRAPHQL_JSON]),
             Some(GRAPHQL_JSON)
+        );
+    }
+
+    #[test]
+    fn distinguishes_legacy_json_and_event_stream_support() {
+        assert_eq!(
+            response_media_types([JSON]),
+            Some(ResponseMediaTypes {
+                json: Some(JSON),
+                legacy_json: true,
+                event_stream: false,
+            })
+        );
+        assert_eq!(
+            response_media_types(["application/json;q=1, application/graphql-response+json;q=0.1"]),
+            Some(ResponseMediaTypes {
+                json: Some(JSON),
+                legacy_json: false,
+                event_stream: false,
+            })
+        );
+        assert_eq!(
+            response_media_types([EVENT_STREAM]),
+            Some(ResponseMediaTypes {
+                json: None,
+                legacy_json: false,
+                event_stream: true,
+            })
         );
     }
 }

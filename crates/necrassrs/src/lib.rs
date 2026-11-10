@@ -30,7 +30,7 @@
 use reed_compiler::response::ExecutionResponse;
 pub use reed_compiler::{
     Schema,
-    ast::Value as ScalarLiteral,
+    ast::{OperationType, Value as ScalarLiteral},
     response::{GraphQLError, JsonMap, JsonValue},
     validation::Valid,
 };
@@ -174,6 +174,8 @@ enum ResponseKind {
         errors: Vec<GraphQLError>,
         #[serde(skip)]
         syntax_error: bool,
+        #[serde(skip)]
+        response_stream_required: bool,
     },
     Execution(ExecutionResponse),
 }
@@ -198,6 +200,20 @@ impl Response {
         )
     }
 
+    /// Whether a validated subscription was passed to single-response execution.
+    ///
+    /// HTTP adapters use this to reject ordinary JSON delivery before creating a
+    /// subscription source. Streaming transports should call [`subscribe`] instead.
+    pub fn requires_response_stream(&self) -> bool {
+        matches!(
+            self.0,
+            ResponseKind::RequestError {
+                response_stream_required: true,
+                ..
+            }
+        )
+    }
+
     /// Constructs a response for one error that prevented execution.
     pub fn request_error(error: GraphQLError) -> Self {
         Self::request_errors(vec![error])
@@ -210,6 +226,15 @@ impl Response {
         Self(ResponseKind::RequestError {
             errors,
             syntax_error: false,
+            response_stream_required: false,
+        })
+    }
+
+    fn response_stream_required(error: GraphQLError) -> Self {
+        Self(ResponseKind::RequestError {
+            errors: vec![error],
+            syntax_error: false,
+            response_stream_required: true,
         })
     }
 
@@ -226,6 +251,7 @@ impl From<request::RequestError> for Response {
         Self(ResponseKind::RequestError {
             errors: error.errors,
             syntax_error: error.syntax_error,
+            response_stream_required: false,
         })
     }
 }

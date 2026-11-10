@@ -27,7 +27,11 @@ fn configure(cfg: &mut web::ServiceConfig) {
     .service(
         web::resource("/graphql")
             .route(web::post().to(graphql))
-            .route(web::get().to(|| async { graphiql_html("/graphql") })),
+            .route(web::get().to(graphql)),
+    )
+    .route(
+        "/graphiql",
+        web::get().to(|| async { graphiql_html("/graphql") }),
     );
 }
 

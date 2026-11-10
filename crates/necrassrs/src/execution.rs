@@ -444,10 +444,9 @@ where
         return Response::request_error(*error);
     }
 
-    // TODO: Temporary unsupported-feature contract
     if prepared.operation.is_subscription() {
-        return Response::request_error(GraphQLError::new(
-            "Subscription operations are not supported.",
+        return Response::response_stream_required(GraphQLError::new(
+            "Subscription operations require a response stream.",
             prepared.operation.location(),
             &prepared.document.sources,
         ));
@@ -3771,10 +3770,8 @@ mod tests {
         assert_eq!(hello["type"]["ofType"]["name"], "String");
     }
 
-    // TODO: Temporary unsupported-feature contract: remove this rejection test when
-    // subscription execution is implemented and replace it with response-stream tests.
     #[tokio::test(flavor = "current_thread")]
-    async fn unsupported_subscription_is_rejected_before_dispatch() {
+    async fn single_response_execution_rejects_subscriptions_before_dispatch() {
         let schema = Schema::parse_and_validate(
             "type Query { hello: String } type Subscription { hello: String }",
             "schema.graphql",
@@ -3783,14 +3780,25 @@ mod tests {
         let request = Request::new("subscription { hello }");
         let dispatcher = CountingDispatcher(AtomicUsize::new(0));
 
-        let response = to_value(super::execute(&schema, &request, &dispatcher, &()).await).unwrap();
+        let response = super::execute(&schema, &request, &dispatcher, &()).await;
 
         assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+        assert!(response.requires_response_stream());
+        let response = to_value(response).unwrap();
         assert!(response.get("data").is_none());
         assert!(
             response["errors"]
                 .as_array()
                 .is_some_and(|errors| !errors.is_empty())
         );
+
+        let invalid = super::execute(
+            &schema,
+            &Request::new("subscription { missing }"),
+            &dispatcher,
+            &(),
+        )
+        .await;
+        assert!(!invalid.requires_response_stream());
     }
 }

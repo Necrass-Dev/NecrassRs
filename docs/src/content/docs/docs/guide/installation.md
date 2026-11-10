@@ -57,8 +57,9 @@ cd my-api
 cargo run
 ```
 
-Both starters serve GraphQL on POST `/graphql` and GraphiQL on GET `/graphql` at
-`http://127.0.0.1:3000`. Open [GraphiQL](http://127.0.0.1:3000/graphql) and run:
+Both starters serve GraphQL on GET and POST `/graphql` and GraphiQL on GET
+`/graphiql` at `http://127.0.0.1:3000`. Open
+[GraphiQL](http://127.0.0.1:3000/graphiql) and run:
 
 ```graphql
 {

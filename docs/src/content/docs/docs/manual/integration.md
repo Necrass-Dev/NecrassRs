@@ -8,10 +8,10 @@ NecrassRs integrates with backend frameworks through HTTP adapters. An adapter c
 
 Applications own routing, middleware, shared state, and per-request Context construction. Register a GraphQL handler on an application-chosen route; the adapter extracts its request and converts its response.
 
-For a JSON POST request, the flow is:
+For a GET query or JSON POST request, the flow is:
 
 1. The framework routes the request to your GraphQL endpoint and applies application middleware.
-2. The adapter checks response media-type preferences and extracts the JSON body into a `necrassrs::Request`.
+2. The adapter checks response media-type preferences and extracts GET parameters or the JSON body into a `necrassrs::Request`.
 3. Your handler constructs Context and calls `necrassrs::execute` with the validated schema, request, dispatcher, and Context.
 4. The execution core parses and validates the GraphQL document, selects an operation, coerces variables, and invokes resolvers through the dispatcher.
 5. The adapter serializes the returned `necrassrs::Response` and sets the HTTP status and response headers.
@@ -28,12 +28,12 @@ sequenceDiagram
     participant Core as Execution core<br/>(necrassrs)
     participant Resolvers as Dispatcher and resolvers<br/>(generated::dispatch<br/>src/resolvers.rs)
 
-    Client->>Adapter: POST GraphQL endpoint
-    Adapter->>Adapter: necrassrs-http::response_media_type(Accept)
+    Client->>Adapter: GET or POST GraphQL endpoint
+    Adapter->>Adapter: Negotiate JSON and SSE support
     alt No acceptable response type
         Adapter-->>Client: 406 Not Acceptable
     else Response type accepted
-        Adapter->>Adapter: Extract JSON body
+        Adapter->>Adapter: Extract GET parameters or JSON body
         Adapter->>App: necrassrs::Request
         App->>App: Construct request Context
         App->>Core: execute(schema, request, dispatcher, context)
@@ -109,17 +109,17 @@ async fn graphql(
 }
 ```
 
-Place `GraphQLRequest` last in the handler's extractors because it consumes the body. Configure body limits with Axum's `DefaultBodyLimit`.
+Place `GraphQLRequest` last in the handler's extractors because POST extraction consumes the body. Configure body limits with Axum's `DefaultBodyLimit`.
 
 Attach `negotiate_response` using the GraphQL method router's `route_layer`. This applies negotiation only to registered methods and preserves 405 responses for unsupported methods regardless of `Accept`. It keeps the existing `GraphQLRequest(request)` and `GraphQLResponse(response)` handler API:
 
 ```rust
-use axum::{Router, middleware, routing::{get, post}};
+use axum::{Router, middleware, routing::get};
 use necrassrs_axum::{graphiql_html, negotiate_response};
 
 let app = Router::new()
-    .route("/graphql", post(graphql).route_layer(middleware::from_fn(negotiate_response)))
-    .route("/graphql", get(|| async { graphiql_html("/graphql") }))
+    .route("/graphql", get(graphql).post(graphql).route_layer(middleware::from_fn(negotiate_response)))
+    .route("/graphiql", get(|| async { graphiql_html("/graphql") }))
     .with_state(state);
 ```
 
@@ -148,13 +148,17 @@ async fn graphql(
 }
 
 fn configure(cfg: &mut web::ServiceConfig) {
-    cfg.service(web::resource("/graphql").route(web::post().to(graphql)));
+    cfg.service(
+        web::resource("/graphql")
+            .route(web::get().to(graphql))
+            .route(web::post().to(graphql)),
+    );
 }
 ```
 
 Register `configure` on your `App` and attach state with `.app_data(web::Data::new(state))`. Consume the body only once: other handler extractors must not read it again.
 
-Both adapters also provide an optional `graphiql_html` helper. Register it on an application-owned GET route separately from GraphQL POST execution; see [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/).
+Both adapters also provide an optional `graphiql_html` helper. Register it on an application-owned GET route separately from GraphQL execution; see [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/).
 
 ## HTTP behavior
 
@@ -166,8 +170,8 @@ The following contract describes the maintained adapters. Use it as the compatib
 - Prefer `Accept: application/graphql-response+json`; `application/json` remains supported for legacy clients.
 - Quality weights (`q`), multiple header values, media-range wildcards, and specific `q=0` exclusions are respected. Equal quality prefers GraphQL JSON.
 - Missing `Accept` preserves the JSON preference. An invalid header or no acceptable supported media type returns 406 before GraphQL execution.
-- Negotiated runtime responses include `Vary: Accept`. Successful HTTP responses use the selected media type. Runtime request-error responses use `application/graphql-response+json`, including for legacy JSON clients, to distinguish them from intermediary HTTP errors.
-- Non-GraphQL extraction failures retain framework error bodies; they are not labeled `application/graphql-response+json`.
+- Negotiated runtime responses include `Vary: Accept`. Successful HTTP responses use the selected media type. A non-2xx GraphQL response switches to `application/graphql-response+json` only for a legacy client that accepts JSON but not GraphQL JSON; explicit preferences for both types remain effective.
+- Non-GraphQL extraction failures retain framework error bodies when ordinary JSON is acceptable. SSE-only transport failures retain their status with an empty body.
 
 For example:
 
@@ -180,18 +184,20 @@ curl -i http://127.0.0.1:3000/graphql \
 
 ### Status and error contract
 
-| Condition                                                             | HTTP status | Response behavior                            |
-| --------------------------------------------------------------------- | ----------- | -------------------------------------------- |
-| Successful execution                                                  | 200         | GraphQL `data`                               |
-| Execution errors, including partial data or `data: null`              | 200         | GraphQL `data` and `errors`                  |
-| GraphQL document syntax error                                         | 400         | GraphQL `errors`, no `data`                  |
-| GraphQL validation, operation selection, or variable coercion failure | 422         | GraphQL `errors`, no `data`                  |
-| Malformed JSON body                                                   | 400         | Framework extraction error                   |
-| Missing or incorrectly typed request fields                           | 422         | Framework extraction error                   |
-| Missing or unsupported request Content-Type                           | 415         | Framework extraction error                   |
-| Body exceeds configured JSON limit                                    | 413         | Framework extraction error                   |
-| No acceptable response media type or invalid Accept                   | 406         | Empty HTTP error response                    |
-| Unsupported method on a POST-only resource                            | 405         | Framework route response, with `Allow: POST` |
+| Condition                                                             | HTTP status | Response behavior                  |
+| --------------------------------------------------------------------- | ----------- | ---------------------------------- |
+| Successful execution                                                  | 200         | GraphQL `data`                     |
+| Execution errors, including partial data or `data: null`              | 200         | GraphQL `data` and `errors`        |
+| GraphQL document syntax error                                         | 400         | GraphQL `errors`, no `data`        |
+| GraphQL validation, operation selection, or variable coercion failure | 422         | GraphQL `errors`, no `data`        |
+| Malformed JSON body                                                   | 400         | Framework extraction error         |
+| Missing or incorrectly typed request fields                           | 422         | Framework extraction error         |
+| Non-object JSON envelope or non-object `extensions`                   | 422         | Framework extraction error         |
+| Missing or unsupported request Content-Type                           | 415         | Framework extraction error         |
+| Body exceeds configured JSON limit                                    | 413         | Framework extraction error         |
+| No acceptable response media type or invalid Accept                   | 406         | Empty HTTP error response          |
+| Selected mutation over GET                                            | 405         | Empty response, with `Allow: POST` |
+| Subscription limited to ordinary JSON                                 | 406         | GraphQL `errors`, no `data`        |
 
 The runtime distinguishes Reed AST parsing failures from validation failures without interpreting diagnostic messages. `Response::is_syntax_error()` exposes that distinction to adapters; the classification is not serialized into GraphQL responses. Manually constructed `Response::request_error(s)` values remain general request errors.
 
@@ -209,13 +215,13 @@ Use these implementations as references:
 
 ### Extract the request
 
-Use your framework's JSON parser and body-limit configuration. Read a required string `query`, an optional object `variables`, and an optional string `operationName`. The maintained adapters also accept `null` for either optional field and treat it as absent. Reject malformed JSON, missing or incorrectly typed fields, unsupported content types, and oversized bodies using the [status contract](#status-and-error-contract).
+Use your framework's JSON parser and body-limit configuration. A POST body must be an object containing a required string `query`, optional object `variables` and `extensions`, and an optional string `operationName`; ignore unknown properties. The maintained adapters accept `null` for optional fields and treat it as absent. For GET, URL-decode `query` and `operationName`, parse `variables` and `extensions` as JSON objects, and normalize empty optional parameters as absent. Reject malformed JSON, missing or incorrectly typed fields, unsupported content types, and oversized bodies using the [status contract](#status-and-error-contract).
 
 Construct `Request::new(query)`, then call `with_variables(variables)` and `with_operation_name(operation_name)` when those values are present. Use `necrassrs::JsonMap` for variables. Request construction does not validate GraphQL; pass the request to execution and let the runtime handle document validation and coercion.
 
 ### Negotiate the response type
 
-Depend directly on `necrassrs-http` to reuse `response_media_type`. Pass all `Accept` header values as strings, preserving multiple values. An empty iterator means the header is absent and selects `application/json`. A malformed value or `None` result must produce 406 before GraphQL execution. Reject header values that cannot be read as strings rather than treating them as missing.
+Depend directly on `necrassrs-http` to reuse `response_media_types`. Pass all `Accept` header values as strings, preserving multiple values. An empty iterator means the header is absent and selects legacy `application/json`. Reject malformed values and requests that accept neither JSON nor SSE before GraphQL execution. `response_media_type` remains available when only ordinary JSON negotiation is needed.
 
 Negotiation needs access to the incoming headers. If your framework's response conversion interface cannot access the request, select the type in route middleware or carry it from extraction to response conversion. Apply negotiation to the GraphQL execution route, preserving framework method rejections and separate HTML routes.
 
@@ -223,11 +229,12 @@ Negotiation needs access to the incoming headers. If your framework's response c
 
 Let the application handler call `execute` or `execute_with_options`; it owns the schema, dispatcher, and Context. Convert the returned `Response` using its public classification methods:
 
-1. `is_syntax_error()` selects 400.
-2. Otherwise, `is_request_error()` selects 422.
-3. All execution responses select 200, including partial data and `data: null` with errors.
+1. `requires_response_stream()` selects 406 for ordinary JSON delivery.
+2. Otherwise, `is_syntax_error()` selects 400.
+3. Otherwise, `is_request_error()` selects 422.
+4. All execution responses select 200, including partial data and `data: null` with errors.
 
-Serialize `Response` directly with Serde. For a 200 response, use the negotiated media type. For runtime request errors, use `necrassrs_http::GRAPHQL_JSON`. Include `Vary: Accept` without discarding existing values. Keep framework extraction errors separate from GraphQL response serialization.
+Serialize `Response` directly with Serde. Use the negotiated media type, switching a non-2xx response to `necrassrs_http::GRAPHQL_JSON` only when `ResponseMediaTypes::legacy_json` is true. Include `Vary: Accept` without discarding existing values. Keep framework extraction errors separate from GraphQL response serialization.
 
 Do not classify responses by matching diagnostic text, counting errors, or checking whether `data` is null. Those approaches lose the distinction between request and execution errors. Leave resolver errors, field paths, and null propagation to the runtime.
 
@@ -243,7 +250,7 @@ A reusable adapter does not automatically become a CLI option. To add a maintain
 
 These behaviors and acceptance cases are informed by [GraphQL-over-HTTP revision 3903e680](https://github.com/graphql/graphql-over-http/blob/3903e68045982cb6710880bf03527aa0e9331667/spec/GraphQLOverHTTP.md). This is a draft reference, not a claim of complete HTTP conformance or the final acceptance baseline for #18.
 
-The current fixtures and starter expose GraphQL execution through POST. GET query extraction, GET mutation handling, subscription transports, and the remaining #18 conformance matrix are outside this implementation. A GraphiQL GET page is not a GraphQL GET execution endpoint. Body limits remain framework configuration, not a GraphQL-mandated byte count.
+The maintained adapters and starters expose queries through GET and ordinary operations through POST. They reject GET mutations and subscriptions limited to ordinary JSON before resolver or source dispatch. WebSocket and SSE framing remain separate transport work; body limits remain framework configuration, not a GraphQL-mandated byte count.
 
 Run the focused checks with:
 

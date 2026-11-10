@@ -165,12 +165,12 @@ cargo run
 ```
 
 Leave the server running in this terminal. The CLI starter listens on `127.0.0.1:3000` and serves
-GraphQL requests through POST `/graphql`. GET `/graphql` opens GraphiQL, an
-interactive interface for exploring the schema and sending queries.
+GraphQL requests through GET and POST `/graphql`. GET `/graphiql` opens GraphiQL,
+an interactive interface for exploring the schema and sending queries.
 
 ### Query with GraphiQL
 
-Open [http://127.0.0.1:3000/graphql](http://127.0.0.1:3000/graphql) in your browser.
+Open [http://127.0.0.1:3000/graphiql](http://127.0.0.1:3000/graphiql) in your browser.
 Paste this query into the editor and click the execute button:
 
 ```graphql
@@ -335,7 +335,11 @@ fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::resource("/graphql")
             .route(web::post().to(graphql))
-            .route(web::get().to(|| async { graphiql_html("/graphql") })),
+            .route(web::get().to(graphql)),
+    )
+    .route(
+        "/graphiql",
+        web::get().to(|| async { graphiql_html("/graphql") }),
     );
 }
 
