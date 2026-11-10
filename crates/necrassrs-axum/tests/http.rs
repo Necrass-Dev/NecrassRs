@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use axum::{
     Router,
@@ -8,8 +11,8 @@ use axum::{
     routing::{get, post},
 };
 use necrassrs::{
-    Dispatcher, FieldCoordinate, JsonMap, JsonValue, ResolvedValue, ResolverError, Schema, Valid,
-    execute,
+    Dispatcher, FieldCoordinate, JsonMap, JsonValue, ResolvedValue, ResolverError,
+    ScalarLiteralMap, Schema, SourceStream, Valid, execute,
 };
 use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
 use serde_json::{Value, json};
@@ -20,7 +23,11 @@ struct AppState {
     dispatcher: GreetingDispatcher,
 }
 
-struct GreetingDispatcher;
+#[derive(Default)]
+struct GreetingDispatcher {
+    calls: AtomicUsize,
+    sources: AtomicUsize,
+}
 
 struct Context {
     prefix: String,
@@ -33,6 +40,7 @@ impl Dispatcher<Context> for GreetingDispatcher {
         coordinate: FieldCoordinate<'a>,
         arguments: &'a JsonMap,
     ) -> Result<ResolvedValue<Context>, ResolverError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(matches!(coordinate.field, "hello" | "nullableHello"));
         let name = arguments.get("name").and_then(JsonValue::as_str).unwrap();
 
@@ -44,6 +52,20 @@ impl Dispatcher<Context> for GreetingDispatcher {
         Ok(ResolvedValue::Json(
             format!("{}, {name}", context.prefix).into(),
         ))
+    }
+
+    async fn resolve_event_stream<'stream, 'call>(
+        &'stream self,
+        _: &'stream Context,
+        _: FieldCoordinate<'call>,
+        _: &'call JsonMap,
+        _: &'call ScalarLiteralMap,
+    ) -> Result<SourceStream<'stream, ResolvedValue<Context>>, ResolverError>
+    where
+        'stream: 'call,
+    {
+        self.sources.fetch_add(1, Ordering::SeqCst);
+        Err(ResolverError::new("Source creation must not be reached"))
     }
 }
 
@@ -79,7 +101,7 @@ fn app_at(endpoint: &str) -> Router {
         )
         .with_state(Arc::new(AppState {
             schema,
-            dispatcher: GreetingDispatcher,
+            dispatcher: GreetingDispatcher::default(),
         }))
 }
 
@@ -485,4 +507,281 @@ async fn unacceptable_response_type_is_rejected_before_body_extraction() {
     assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
     assert_eq!(response.headers().get(header::VARY).unwrap(), "Accept");
     assert!(response.headers().get(header::CONTENT_TYPE).is_none());
+}
+
+// Issue #30: expected HTTP contracts; implementations intentionally remain unchanged.
+
+fn contract_app() -> (Router, Arc<AppState>) {
+    let state = Arc::new(AppState {
+        schema: Schema::parse_and_validate(
+            "type Query { hello(name: String!): String! }
+             type Mutation { hello(name: String!): String! }
+             type Subscription { hello(name: String!): String! }",
+            "schema.graphql",
+        )
+        .unwrap(),
+        dispatcher: GreetingDispatcher::default(),
+    });
+    let app = Router::new()
+        .route(
+            "/graphql",
+            get(graphql)
+                .post(graphql)
+                .route_layer(axum::middleware::from_fn(negotiate_response)),
+        )
+        .with_state(state.clone());
+    (app, state)
+}
+
+#[tokio::test]
+async fn array_envelopes_are_rejected_before_dispatch() {
+    let (app, state) = contract_app();
+    let body = json!(["{ hello(name: \"Sheri\") }", null, null]).to_string();
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/graphql")
+        .header(header::ACCEPT, "application/json")
+        .header(header::CONTENT_TYPE, "application/json");
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    let (status, _, _) = response_parts(response).await;
+    assert_eq!(
+        (status, state.dispatcher.calls.load(Ordering::SeqCst)),
+        (StatusCode::UNPROCESSABLE_ENTITY, 0)
+    );
+}
+
+#[tokio::test]
+async fn non_object_extensions_are_rejected_before_dispatch() {
+    let (app, state) = contract_app();
+    for extensions in [Value::Null, json!({}), json!({ "trace": true })] {
+        let (status, _, body) = send(
+            &app,
+            "POST",
+            Some("application/json"),
+            None,
+            json!({
+                "query": "{ hello(name: \"Sheri\") }",
+                "variables": null,
+                "operationName": null,
+                "extensions": extensions,
+                "unknown": true,
+            })
+            .to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "data": { "hello": "Hello, Sheri" } }));
+    }
+    state.dispatcher.calls.store(0, Ordering::SeqCst);
+    for extensions in [json!([]), json!(123), json!("invalid"), json!(true)] {
+        let body =
+            json!({ "query": "{ hello(name: \"Sheri\") }", "extensions": extensions }).to_string();
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header(header::ACCEPT, "application/json")
+            .header(header::CONTENT_TYPE, "application/json");
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let (status, _, _) = response_parts(response).await;
+        assert_eq!(
+            (status, state.dispatcher.calls.load(Ordering::SeqCst)),
+            (StatusCode::UNPROCESSABLE_ENTITY, 0),
+            "{extensions}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn get_decodes_operation_variables_and_extensions() {
+    let (app, state) = contract_app();
+    let uri = "/graphql?query=query+First%7Bhello(name%3A%22Skip%22)%7D+query+Second(%24name%3AString!)%7Bhello(name%3A%24name)%7D&operationName=Second&variables=%7B%22name%22%3A%22Tachibana+Sheri%2B%22%7D&extensions=%7B%22trace%22%3Atrue%7D";
+    let request = HttpRequest::builder()
+        .method("GET")
+        .uri(uri)
+        .header(header::ACCEPT, "application/json");
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from("")).unwrap())
+        .await
+        .unwrap();
+    let (status, media_type, body) = response_parts(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        media_type.as_deref().unwrap().split(';').next(),
+        Some("application/json")
+    );
+    assert_eq!(
+        body,
+        json!({ "data": { "hello": "Hello, Tachibana Sheri+" } })
+    );
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn get_normalizes_empty_optional_parameters() {
+    let (app, state) = contract_app();
+    let uri =
+        "/graphql?query=%7Bhello(name%3A%22Sheri%22)%7D&operationName=&variables=&extensions=";
+    let request = HttpRequest::builder()
+        .method("GET")
+        .uri(uri)
+        .header(header::ACCEPT, "application/json");
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from("")).unwrap())
+        .await
+        .unwrap();
+    let (status, _, body) = response_parts(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "data": { "hello": "Hello, Sheri" } }));
+    assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn get_mutations_are_rejected_before_dispatch_even_with_a_json_body() {
+    let (app, state) = contract_app();
+    let uri = "/graphql?query=mutation+Update%7Bhello(name%3A%22Sheri%22)%7D&operationName=Update";
+    // A JSON body must not bypass the safe-method restriction.
+    let body =
+        json!({ "query": "mutation Update { hello(name: \"Sheri\") }", "operationName": "Update" })
+            .to_string();
+    let request = HttpRequest::builder()
+        .method("GET")
+        .uri(uri)
+        .header(header::ACCEPT, "application/json")
+        .header(header::CONTENT_TYPE, "application/json");
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            response.status(),
+            state.dispatcher.calls.load(Ordering::SeqCst)
+        ),
+        (StatusCode::METHOD_NOT_ALLOWED, 0)
+    );
+    assert!(
+        response
+            .headers()
+            .get(header::ALLOW)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(',')
+            .any(|method| method.trim() == "POST")
+    );
+}
+
+#[tokio::test]
+async fn request_errors_preserve_negotiated_json_for_clients_supporting_both_types() {
+    let (app, state) = contract_app();
+    for (query, expected_status) in [
+        ("{", StatusCode::BAD_REQUEST),
+        ("{ missing }", StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        let body = json!({ "query": query }).to_string();
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header(
+                header::ACCEPT,
+                "application/json;q=1, application/graphql-response+json;q=0.1",
+            )
+            .header(header::CONTENT_TYPE, "application/json");
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let (status, media_type, body) = response_parts(response).await;
+        assert_eq!(status, expected_status);
+        assert_eq!(
+            media_type.as_deref().unwrap().split(';').next(),
+            Some("application/json")
+        );
+        assert!(body.get("data").is_none());
+        assert!(
+            body["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty())
+        );
+        assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn json_subscriptions_return_406_without_creating_a_source() {
+    let (app, state) = contract_app();
+    for accept in ["application/json", "application/graphql-response+json"] {
+        let body = json!({ "query": "subscription { hello(name: \"Sheri\") }" }).to_string();
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header(header::ACCEPT, accept)
+            .header(header::CONTENT_TYPE, "application/json");
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        let (status, media_type, body) = response_parts(response).await;
+        assert_eq!(
+            (
+                status,
+                state.dispatcher.sources.load(Ordering::SeqCst),
+                state.dispatcher.calls.load(Ordering::SeqCst)
+            ),
+            (StatusCode::NOT_ACCEPTABLE, 0, 0)
+        );
+        assert_eq!(
+            media_type.as_deref().unwrap().split(';').next(),
+            Some("application/graphql-response+json")
+        );
+        assert!(body.get("data").is_none());
+        assert!(
+            body["errors"]
+                .as_array()
+                .is_some_and(|errors| !errors.is_empty())
+        );
+    }
+}
+
+#[tokio::test]
+async fn sse_only_transport_failures_preserve_status_with_an_empty_body() {
+    let (app, state) = contract_app();
+    for (content_type, body, expected_status) in [
+        ("application/json", "{", StatusCode::BAD_REQUEST),
+        ("application/json", "{}", StatusCode::UNPROCESSABLE_ENTITY),
+        ("text/plain", "{}", StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    ] {
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header(header::ACCEPT, "text/event-stream")
+            .header(header::CONTENT_TYPE, content_type);
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected_status, "{content_type} {body}");
+        assert!(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(state.dispatcher.sources.load(Ordering::SeqCst), 0);
+    }
 }

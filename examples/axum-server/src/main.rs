@@ -196,9 +196,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn graphiql_page_uses_the_existing_endpoint() {
+    async fn graphiql_page_uses_a_separate_ui_route() {
         let response = app()
-            .oneshot(Request::get("/graphql").body(Body::empty()).unwrap())
+            .oneshot(Request::get("/graphiql").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -209,5 +209,30 @@ mod tests {
         let html = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let html = std::str::from_utf8(&html).unwrap();
         assert!(html.contains("data-endpoint=\"/graphql\""));
+    }
+
+    #[tokio::test]
+    async fn graphql_get_returns_query_data_instead_of_graphiql() {
+        let response = app()
+            .oneshot(
+                Request::get("/graphql?query=%7B__typename%7D")
+                    .header(header::ACCEPT, "application/graphql-response+json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next(),
+            Some("application/graphql-response+json"),
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, json!({ "data": { "__typename": "Query" } }));
     }
 }

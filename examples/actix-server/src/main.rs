@@ -106,10 +106,10 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn built_in_graphiql_and_introspection_share_the_endpoint() {
+    async fn built_in_graphiql_uses_a_separate_ui_route() {
         let app = test::init_service(App::new().configure(configure)).await;
         let request = test::TestRequest::get()
-            .uri("/graphql")
+            .uri("/graphiql")
             .insert_header((header::ACCEPT, "text/html"))
             .to_request();
         let response = test::call_service(&app, request).await;
@@ -136,5 +136,29 @@ mod tests {
             body,
             json!({ "data": { "__schema": { "queryType": { "name": "Query" } } } })
         );
+    }
+
+    #[actix_web::test]
+    async fn graphql_get_returns_query_data_instead_of_graphiql() {
+        let app = test::init_service(App::new().configure(configure)).await;
+        let request = test::TestRequest::get()
+            .uri("/graphql?query=%7B__typename%7D")
+            .insert_header((header::ACCEPT, "application/graphql-response+json"))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next(),
+            Some("application/graphql-response+json"),
+        );
+        let body: Value = test::read_body_json(response).await;
+        assert_eq!(body, json!({ "data": { "__typename": "Query" } }));
     }
 }
