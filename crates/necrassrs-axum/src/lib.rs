@@ -77,7 +77,7 @@ struct RuntimeResponse;
 ///         .route_layer(middleware::from_fn(negotiate_response)),
 /// );
 /// ```
-pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumResponse {
+pub async fn negotiate_response(mut request: AxumRequest, next: Next) -> AxumResponse {
     let headers = request
         .headers()
         .get_all(header::ACCEPT)
@@ -88,6 +88,9 @@ pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumRespons
     let mut response = if let Some(selected) =
         selected.filter(|selected| selected.json.is_some() || selected.event_stream)
     {
+        if selected.json.is_none() {
+            request.extensions_mut().insert(SseOnly);
+        }
         let mut response = next.run(request).await;
         if response
             .extensions_mut()
@@ -117,6 +120,9 @@ pub async fn negotiate_response(request: AxumRequest, next: Next) -> AxumRespons
         .append(header::VARY, "Accept".parse().unwrap());
     response
 }
+
+#[derive(Clone, Copy)]
+struct SseOnly;
 
 /// A GraphiQL page configured to send requests to an application-owned endpoint.
 ///
@@ -189,6 +195,7 @@ where
             )
                 .into_response());
         }
+        let sse_only = req.extensions().get::<SseOnly>().is_some();
         let body = if method == Method::GET {
             let Query(query) = Query::<RequestQuery>::try_from_uri(req.uri())
                 .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY.into_response())?;
@@ -231,6 +238,10 @@ where
         }
         if let Some(operation_name) = operation_name {
             request = request.with_operation_name(operation_name);
+        }
+
+        if sse_only {
+            return Err(StatusCode::NOT_ACCEPTABLE.into_response());
         }
 
         if method == Method::GET && request.operation_type() == Some(OperationType::Mutation) {

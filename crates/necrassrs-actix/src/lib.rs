@@ -109,7 +109,7 @@ impl FromRequest for GraphQLRequest {
                         .flatten(),
                     _unknown: JsonMap::new(),
                 };
-                finish_request(method, body)
+                finish_request(method, body, negotiation.json.is_none())
             });
         }
         let extraction = actix_web::web::Json::<RequestBody>::from_request(req, payload);
@@ -140,12 +140,25 @@ impl FromRequest for GraphQLRequest {
                     InternalError::from_response(error, response).into()
                 })?
                 .into_inner();
-            finish_request(method, body)
+            finish_request(method, body, negotiation.json.is_none())
         })
     }
 }
 
-fn finish_request(method: Method, body: RequestBody) -> Result<GraphQLRequest, actix_web::Error> {
+fn finish_request(
+    method: Method,
+    body: RequestBody,
+    sse_only: bool,
+) -> Result<GraphQLRequest, actix_web::Error> {
+    if sse_only {
+        return Err(InternalError::from_response(
+            "SSE transport is not available on this route",
+            HttpResponse::NotAcceptable()
+                .insert_header((header::VARY, "Accept"))
+                .finish(),
+        )
+        .into());
+    }
     let RequestBody {
         query,
         variables,
