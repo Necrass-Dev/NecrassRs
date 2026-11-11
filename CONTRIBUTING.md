@@ -35,6 +35,8 @@ expectation.
 
 ## Write changelog fragments
 
+### Set up Sacho
+
 The repository pins Sacho in [`mise.toml`](mise.toml). Install the repository
 tools and confirm the version from the repository root:
 
@@ -47,22 +49,96 @@ sacho --version
 Initialization leaves the tracked project files intact and registers Sacho's
 changelog merge driver in the local Git configuration.
 
-Create one fragment for each user-visible change, using a short topic name
-rather than an issue or pull request number:
+Run commands from the repository root. If mise is not activated in your shell,
+use `mise exec -- sacho <command>`. Follow the repository pin rather than a
+globally installed version. See the upstream
+[everyday workflow](https://sacho.dev/guide/everyday-workflow),
+[sections](https://sacho.dev/concepts/sections), and
+[command reference](https://sacho.dev/reference/commands).
+
+| File | Responsibility |
+| --- | --- |
+| `sacho.toml` | Fragment locations, issue links, sections, and coverage policy. |
+| `changes.d/**/*.md` | Editable source entries for the next release. |
+| `changes.d/next` | Maintainer-selected next version; managed with `sacho next`. |
+| `CHANGELOG.md` | Generated unreleased output and permanent released history. |
+
+Fragments are the source of truth. Do not hand-edit the generated unreleased
+region in `CHANGELOG.md`; edit the fragments and regenerate it instead.
+Released sections are permanent.
+
+### Choose the crate section
+
+Use one changelog section per public crate, with the crate name as both the
+section ID and the displayed heading. All eight sections belong to the same
+release version; they do not introduce separate release schedules.
+
+| Section ID | Fragment directory | User-facing changes |
+| --- | --- | --- |
+| `necrassrs` | `changes.d/necrassrs/` | Execution, resolver contracts, inputs, outputs, and subscriptions. |
+| `necrassrs-build` | `changes.d/necrassrs-build/` | SDL code generation, Cargo integration, and resolver synchronization. |
+| `necrassrs-http` | `changes.d/necrassrs-http/` | Shared HTTP media-type negotiation and transport utilities. |
+| `necrassrs-axum` | `changes.d/necrassrs-axum/` | Axum request extraction, responses, and GraphiQL integration. |
+| `necrassrs-actix` | `changes.d/necrassrs-actix/` | Actix Web request extraction, responses, and GraphiQL integration. |
+| `necrassrs-cli` | `changes.d/necrassrs-cli/` | The `necrass` command, starter templates, installation, and CLI binaries. |
+| `reed-compiler` | `changes.d/reed-compiler/` | Schema and executable models, validation, and compiler APIs. |
+| `reed-parser` | `changes.d/reed-parser/` | GraphQL parsing, syntax trees, and parser diagnostics. |
+
+These eight sections are explicitly configured in `sacho.toml`, in the order
+shown above. Select the exact crate name when adding or previewing entries;
+omitting `--section` or using an unknown name is an error:
 
 ```sh
-sacho add clearer-errors
+sacho add --section necrassrs-cli prebuilt-binaries
+sacho preview --section necrassrs-cli
 ```
 
-Edit the generated Markdown file in `changes.d/`. A fragment contains exactly
-one top-level unordered list. Describe the behavior that users will receive and
+This creates `changes.d/necrassrs-cli/prebuilt-binaries.md`. Section IDs are
+crate names, not categories such as `Added` or `Fixed`. Examples and the
+documentation website do not get separate sections; describe user-visible
+changes under the affected public crate.
+
+For changes spanning crates, write the relevant user impact in each affected
+crate's fragment. For example, describe a shared HTTP negotiation fix under
+`necrassrs-http` and any changed adapter behavior under the corresponding
+adapter. Do not copy the same paragraph into every section or invent entries
+for crates whose internal implementation changed without a user-visible effect.
+
+Section `paths` rules associate source changes with the required section during
+coverage checks; they do not choose a section automatically for `sacho add`.
+A fragment in another section cannot satisfy a section-specific requirement.
+Each crate's manifest and `src/` are covered, along with the CLI templates.
+The existing repository-wide `[check].paths` rules remain enabled; changes
+to the root `Cargo.toml` can be covered by a fragment in any relevant section.
+Use the exemption described below for commits with no user-visible effect.
+
+### Write for users
+
+Name each fragment after the change, not an issue or pull request number. A
+fragment contains exactly one top-level unordered list; related changes may
+share a fragment. Start entries with a verb such as `Added`, `Changed`,
+`Deprecated`, `Fixed`, or `Removed`. Describe the behavior users receive and
 what they need to do when upgrading. Include public API signatures and migration
 instructions when they change. For generated APIs, identify the generated Rust
 contract and explain the corresponding resolver implementation change.
 
-Do not record implementation steps or intermediate designs that do not ship. If
-a change evolves before release, update its existing fragment. If the
-user-visible change is removed, delete its fragment and run `sacho sync`.
+For example, a fragment can describe a behavior and link to its issue:
+
+```markdown
+ -  Added GET query support to the Axum adapter. Register the GraphQL handler
+    for GET as well as POST to enable it. [[#30]]
+```
+
+Include the relevant issue or PR references. The `#` shortcut is defined in
+`sacho.toml`; Sacho expands it to an issue link. Keep the fragment with the
+implementation in every covered commit. When a later commit changes the
+behavior, update the existing fragment in that commit rather than adding a
+duplicate entry.
+
+Do not record implementation steps or intermediate designs that do not ship.
+If an unreleased feature is removed, remove its entry and run `sacho sync`.
+
+### Format, preview, and check
 
 Format, inspect, and validate fragments before committing:
 
@@ -70,10 +146,29 @@ Format, inspect, and validate fragments before committing:
 sacho fmt
 sacho preview
 sacho check
-sacho check --staged
 ```
 
-Documentation-only, test-only, and internal changes do not require a fragment.
+`fmt` formats fragments and refreshes the materialized unreleased region.
+Review both kinds of changes. `preview` prints the upcoming release without
+writing files; `show <version>` reads an already released section instead.
+Use `sync` when only the generated region is stale. Inspect hand edits before
+using `sync --force`, which permits discarding them. `check --fix` repairs
+mechanical formatting and synchronization problems, not missing explanations.
+
+Stage the implementation, its fragments, and the generated changelog together,
+then run `sacho check --staged`. Only index contents count for staged coverage;
+an unstaged fragment does not cover a staged source change.
+
+| Check | Purpose |
+| --- | --- |
+| `sacho check` | Validate fragments, formatting, links, the next-version file, and generated output. |
+| `sacho check --staged` | Also enforce coverage for the staged Git changes. |
+| `sacho check --base <base-sha>` | Also enforce coverage separately for each commit after the PR base. |
+
+### Changes without a fragment
+
+Documentation-only, test-only, and internal changes with no user-visible
+behavior change do not require a fragment.
 When a covered source change has no user-visible effect, add this trailer to the
 commit message:
 
@@ -83,10 +178,9 @@ Changelog: none
 
 CI runs `sacho check --base` commit by commit. An exemption applies only to the
 commit containing the trailer. `sacho check --staged` cannot apply exemptions
-because the commit message does not exist yet.
-
-Do not edit the materialized unreleased section in `CHANGELOG.md` directly.
-Edit its fragments and run `sacho sync` instead. Released sections are permanent.
+because the commit message does not exist yet. Adding a fragment in a later
+commit does not cover an earlier undocumented commit. Use the same base SHA as
+the PR check and ensure the local history contains that revision.
 
 ## Select versions
 
@@ -94,6 +188,10 @@ The eight public Reed and NecrassRs packages use one workspace version and are
 released together, including unchanged packages. Maintainers select each
 version explicitly; commit messages and API compatibility tools do not select
 it.
+
+`sacho next` labels the changelog; it does not update Cargo manifests, templates,
+or the lockfile. Sacho accepts version labels as text, while this repository
+requires a stable `major.minor.patch` release version without a `v` prefix.
 
 During `0.x` development:
 
@@ -109,6 +207,13 @@ must match the prepared workspace version.
 Prepare releases in a pull request. The tagged source must already contain the
 complete release; CI does not change versions or commit files.
 
+**Known limitation:** Finalizing a release deletes consumed fragments, which
+can make the current PR coverage check reject their earlier commits despite
+the finalized notes. [Issue #89](https://github.com/Necrass-Dev/NecrassRs/issues/89)
+tracks this separately from section adoption. Do not bypass the failure by
+disabling coverage, exempting user-visible commits, or restoring duplicate
+unreleased notes.
+
 1. Choose the release version and set it with `sacho next <version>`.
 2. Update the workspace version, every internal `path + version` requirement,
    example dependencies, CLI template dependencies, affected package examples,
@@ -117,7 +222,10 @@ complete release; CI does not change versions or commit files.
    implementation history, combine duplicate entries, and make migrations
    explicit.
 4. Finalize the notes with `sacho release <version> --date YYYY-MM-DD`. Commit
-   the released changelog and consumed fragments with the version changes.
+   the released changelog, deletion of the consumed fragments and
+   `changes.d/next`, and version changes together. An explicit version must
+   agree with `changes.d/next` when that file contains a version. Always supply
+   the reviewed release date instead of relying on the local calendar.
 5. Run the workspace baseline and the release checks:
 
    ```sh
@@ -125,8 +233,20 @@ complete release; CI does not change versions or commit files.
    .github/scripts/release.sh verify <version>
    ```
 
-6. Confirm that `sacho show <version>` prints the finalized notes and that the
-   release pull request contains no unrelated changes.
+6. Inspect the finalized notes using the publication rendering:
+
+   ```sh
+   sacho show <version> --skip-heading --no-word-wrap
+   ```
+
+   This removes automatic line wrapping from the export, preserves intentional
+   Markdown hard breaks, and does not rewrite the stored changelog. Confirm
+   that the release pull request contains no unrelated changes.
+
+Without `--next`, `sacho release` closes the unreleased region. Start the next
+development cycle separately with a maintainer-selected `sacho next <version>`
+after tagging; do not automatically select the next version. A subsequent
+release with no substantive entries requires an intentional `--allow-empty`.
 
 Do not create or push the release tag before the preparation pull request is
 merged.
@@ -151,10 +271,6 @@ available. After every package is available, it creates one GitHub Release from
 Verify the workflow, all eight crates.io package versions, the tag target, and
 the single GitHub Release body. The release body must match the finalized Sacho
 notes.
-
-For the first release under this process, merge the implementation pull request,
-close issue #86, tag that merge commit as `0.2.0`, push the tag, and verify all
-eight `0.2.0` packages and the `0.2.0` GitHub Release.
 
 ## Recover a partial publication
 
