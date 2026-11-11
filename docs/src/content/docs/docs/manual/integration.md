@@ -79,7 +79,16 @@ The following adapters are maintained in this repository:
 
 For a new project, use `necrass init <PATH> --framework <FRAMEWORK>` with a value from the table. See [Create a project](https://necrass.rs/docs/installation/#create-a-project) for package naming and interactive setup.
 
-For an existing application, add its adapter dependency and register a handler as shown below. The [Axum example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/axum-server) and [Actix Web example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/actix-server) include manifests, build scripts, SDL, and resolver implementations. Dependency placement and generated project files are documented in [Consumer project setup](architecture.md#71-initial-cli-scope).
+For an existing application, add its adapter dependency and register a handler as shown below. The [Axum example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/axum-server) and [Actix Web example](https://github.com/Necrass-Dev/NecrassRs/tree/main/examples/actix-server) include manifests, build scripts, SDL, and resolver implementations.
+
+Put `necrassrs`, the chosen adapter, and the application's framework and runtime
+in `[dependencies]`; put `necrassrs-build` in `[build-dependencies]` for `build.rs`.
+The separately installed CLI is not a consumer dependency. Include generated
+contracts from `OUT_DIR`, and parse `generated::SDL` once during server startup
+for reuse across requests. Keep the executable's `panic = "abort"` profiles from
+the examples: selecting an unimplemented resolver terminates the process, while
+ordinary resolver errors produce GraphQL responses. Library Cargo profiles do
+not propagate to applications.
 
 If your framework is not listed, you can [write an adapter](#writing-an-adapter) using the same public runtime API.
 

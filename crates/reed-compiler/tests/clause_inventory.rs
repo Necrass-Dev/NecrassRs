@@ -1,4 +1,4 @@
-//! Language, schema, and executable clause coverage from archives/specs.md.
+//! Language, schema, and executable clauses from <https://necrass.rs/docs/reed/#specification-baseline>.
 use reed_compiler::{ast, ExecutableDocument, Schema};
 
 #[test]

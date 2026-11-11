@@ -99,23 +99,18 @@ modified.
 
 ## Read generated declarations
 
-New declarations use ordinary names such as `Query` and `hello`. Rust keywords
-keep their raw spelling, such as `r#type` and `r#gen`. This changes spelling, not
-the SDL-to-Rust name mapping or GraphQL field names.
+Generated argument types use `generated::types::<Object>::<field>::Args`.
+Object modules, field modules, and argument fields preserve SDL case. Prefix
+`self`, `Self`, `super`, and `crate` with one underscore, and prefix every SDL
+name already starting with an underscore with one more underscore. Thus `self`
+maps to `_self`, `_self` to `__self`, and `_` to `__`. This keeps distinct SDL
+names distinct in Rust. Synchronization uses these mapped identities; a rename
+is deletion plus addition, never an inferred move of an old resolver body.
 
-Standard types normally appear as `String`, `Vec<T>`, `Option<T>`, and
-`Result<T, E>`. If a declaration, import, or generic parameter in that module
-uses the same name, synchronization uses an absolute path such as
-`::std::vec::Vec<T>`. A glob import also causes conservative qualification.
-NecrassRs traits and types retain direct paths such as `necrassrs::Resolver`;
-if `necrassrs` is shadowed, they use `::necrassrs::Resolver` instead.
-
-Existing equivalent spelling is preserved. When new declarations introduce a
-collision, synchronization can qualify the affected contract paths without
-reformatting the file or rewriting resolver bodies. Existing aliases, custom
-trait bounds, and names from glob imports are preserved rather than resolved.
-Those application contracts and code inside a body may still need manual
-adjustment if their own names become shadowed.
+Rust keywords use raw identifiers such as `r#type`. Generated declarations may
+use qualified paths to avoid name collisions; equivalent path spelling can vary
+without changing the public names above. Synchronization preserves resolver
+bodies, so names shadowed inside application code may need manual adjustment.
 
 ## Understand source ownership
 
@@ -136,16 +131,13 @@ checks those after the generated argument type changes.
 
 ## Recover from synchronization errors
 
-NecrassRs plans and validates all resolver changes before writing. Immediately
-before replacing each file, it checks that the source still matches the version
-used to make the plan. If another process or editor changed the file, the build
-stops instead of overwriting that edit.
+NecrassRs validates the complete set of resolver changes before writing. If it
+detects an intervening edit from another process or editor, the build stops
+instead of overwriting that edit.
 
-Each replacement is staged beside its destination. If a later replacement
-fails, the build attempts to restore files it already changed. Rollback does not
-overwrite a file that changed again in the meantime.
+If a write fails, the build attempts to restore files it already changed.
+Rollback does not overwrite a file that changed again in the meantime.
 
 A process termination can interrupt a multi-file update after only some files
-were replaced. Staging prevents an ordinary replacement from exposing partially
-written source, but the whole set is not a durable transaction. Inspect the
-resolver files and run `cargo build` again to reconcile the remaining changes.
+were replaced; recovery of the whole set is not guaranteed. Inspect the resolver
+files and run `cargo build` again to reconcile the remaining changes.

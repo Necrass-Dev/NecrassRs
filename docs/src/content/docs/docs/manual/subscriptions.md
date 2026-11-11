@@ -268,8 +268,7 @@ source without requiring an additional poll.
 
 ## Ordering, cancellation, and resource ownership
 
-- Events within one subscription are processed serially, in source order. The
-  runtime does not request the next event while completing the current event.
+- Responses within one subscription preserve source-event order.
 - Independent selected fields and list items within an event can make concurrent
   progress. Response ordering remains stable.
 - Different subscriptions can make independent progress when polled concurrently.
@@ -278,8 +277,12 @@ source without requiring an additional poll.
   Resources owned by those futures and streams are released through Rust's drop
   behavior.
 
-The runtime does not create detached tasks or an unbounded event queue for this
-flow. Your application owns any external producers and buffers: choose their
+The current executor completes each event before requesting the next and uses
+no detached tasks or unbounded event queue for this flow. These are implementation
+choices; future scheduling changes must account for resolver side effects,
+buffering, ordering, and cancellation.
+
+Your application owns any external producers and buffers: choose their
 capacity, overflow policy, and cleanup behavior. Dropping a subscription does not
 automatically stop a separately spawned producer. Reconnection, replay,
 acknowledgements, and durable delivery also belong to the application and transport.

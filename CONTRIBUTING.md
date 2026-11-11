@@ -2,7 +2,7 @@
 
 NecrassRs welcomes bug reports, design discussions, documentation improvements,
 and code contributions. Before changing the repository, read the relevant issue,
-[`archives/architecture.md`](archives/architecture.md), and
+[package boundaries](docs/src/content/docs/docs/guide/contributing.md#package-boundaries), and
 [`AI_POLICY.md`](AI_POLICY.md). Use an issue's specified branch when it has one,
 and keep unrelated changes in separate commits.
 
