@@ -189,9 +189,34 @@ released together, including unchanged packages. Maintainers select each
 version explicitly; commit messages and API compatibility tools do not select
 it.
 
-`sacho next` labels the changelog; it does not update Cargo manifests, templates,
-or the lockfile. Sacho accepts version labels as text, while this repository
-requires a stable `major.minor.patch` release version without a `v` prefix.
+Set a maintainer-selected stable `major.minor.patch` version without a `v`
+prefix using Bash, jq, Cargo, and the pinned Sacho:
+
+```sh
+bash .github/scripts/set-version.sh <version>
+```
+
+The script updates the workspace version, internal dependency requirements,
+CLI templates, root lockfile, and Sacho's next-version label. Examples inherit
+their internal dependencies from the workspace. Existing released changelog
+sections and unrelated locked dependencies are preserved. `sacho next` alone
+does not update Cargo metadata.
+
+Cargo runs offline; populate its cache with `cargo fetch --locked` first if
+needed. Repeating the same version validates the state without rewriting it.
+Invalid input, conflicting versions, and symbolic-link destinations are
+rejected. Command failures restore the affected files; concurrent edits are
+reported rather than overwritten during rollback. A forced termination or
+power loss can interrupt a multi-file update, so inspect the diff before
+retrying after such an interruption. Failed updates report a temporary backup
+directory for recovery.
+
+The script does not finalize release notes, commit, tag, or publish. Its
+disposable-workspace regression checks run with:
+
+```sh
+bash .github/scripts/set-version-test.sh
+```
 
 During `0.x` development:
 
@@ -214,10 +239,10 @@ tracks this separately from section adoption. Do not bypass the failure by
 disabling coverage, exempting user-visible commits, or restoring duplicate
 unreleased notes.
 
-1. Choose the release version and set it with `sacho next <version>`.
-2. Update the workspace version, every internal `path + version` requirement,
-   example dependencies, CLI template dependencies, affected package examples,
-   and `Cargo.lock`.
+1. Choose the release version and run
+   `bash .github/scripts/set-version.sh <version>`.
+2. Review the version changes, including the workspace manifest, CLI templates,
+   `Cargo.lock`, and the generated unreleased changelog heading.
 3. Review `sacho preview` as a user upgrading from the previous release. Remove
    implementation history, combine duplicate entries, and make migrations
    explicit.

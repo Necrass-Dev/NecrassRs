@@ -37,14 +37,6 @@ Add the dependency to start using `reed-compiler`:
 cargo add reed-compiler
 ```
 
-Or add this to your `Cargo.toml` for a manual installation:
-
-```toml
-# Just an example, change to the necessary package version.
-[dependencies]
-reed-compiler = "0.2.1"
-```
-
 ## Rust versions
 
 `reed-compiler` is tested on the latest stable version of Rust.

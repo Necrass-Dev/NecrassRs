@@ -26,4 +26,7 @@ reed-compiler = { path = "crates/reed-compiler", version = "0.2.1" }
 reed-parser = { path = "crates/reed-parser", version = "0.2.1" }
 necrassrs = { path = "crates/necrassrs", version = "0.2.1" }
 necrassrs-http = { path = "crates/necrassrs-http", version = "0.2.1" }
+necrassrs-build = { path = "crates/necrassrs-build", version = "0.2.1" }
+necrassrs-axum = { path = "crates/necrassrs-axum", version = "0.2.1" }
+necrassrs-actix = { path = "crates/necrassrs-actix", version = "0.2.1" }
 serde = { version = "1.0.229", features = ["derive"] }
