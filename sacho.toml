@@ -22,3 +22,47 @@ paths = [
     "crates/**/src/**",
     "crates/necrassrs-cli/templates/**",
 ]
+
+[[sections]]
+id = "necrassrs"
+directory = "necrassrs"
+paths = ["crates/necrassrs/Cargo.toml", "crates/necrassrs/src/**"]
+
+[[sections]]
+id = "necrassrs-build"
+directory = "necrassrs-build"
+paths = ["crates/necrassrs-build/Cargo.toml", "crates/necrassrs-build/src/**"]
+
+[[sections]]
+id = "necrassrs-http"
+directory = "necrassrs-http"
+paths = ["crates/necrassrs-http/Cargo.toml", "crates/necrassrs-http/src/**"]
+
+[[sections]]
+id = "necrassrs-axum"
+directory = "necrassrs-axum"
+paths = ["crates/necrassrs-axum/Cargo.toml", "crates/necrassrs-axum/src/**"]
+
+[[sections]]
+id = "necrassrs-actix"
+directory = "necrassrs-actix"
+paths = ["crates/necrassrs-actix/Cargo.toml", "crates/necrassrs-actix/src/**"]
+
+[[sections]]
+id = "necrassrs-cli"
+directory = "necrassrs-cli"
+paths = [
+    "crates/necrassrs-cli/Cargo.toml",
+    "crates/necrassrs-cli/src/**",
+    "crates/necrassrs-cli/templates/**",
+]
+
+[[sections]]
+id = "reed-compiler"
+directory = "reed-compiler"
+paths = ["crates/reed-compiler/Cargo.toml", "crates/reed-compiler/src/**"]
+
+[[sections]]
+id = "reed-parser"
+directory = "reed-parser"
+paths = ["crates/reed-parser/Cargo.toml", "crates/reed-parser/src/**"]
