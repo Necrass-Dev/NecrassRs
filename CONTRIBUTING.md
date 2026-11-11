@@ -58,7 +58,7 @@ globally installed version. See the upstream
 
 | File | Responsibility |
 | --- | --- |
-| `sacho.toml` | Fragment locations, issue links, sections, and coverage policy. |
+| `sacho.toml` | Fragment locations, issue links, sections, and validation settings. |
 | `changes.d/**/*.md` | Editable source entries for the next release. |
 | `changes.d/next` | Maintainer-selected next version; managed with `sacho next`. |
 | `CHANGELOG.md` | Generated unreleased output and permanent released history. |
@@ -104,14 +104,6 @@ crate's fragment. For example, describe a shared HTTP negotiation fix under
 adapter. Do not copy the same paragraph into every section or invent entries
 for crates whose internal implementation changed without a user-visible effect.
 
-Section `paths` rules associate source changes with the required section during
-coverage checks; they do not choose a section automatically for `sacho add`.
-A fragment in another section cannot satisfy a section-specific requirement.
-Each crate's manifest and `src/` are covered, along with the CLI templates.
-The existing repository-wide `[check].paths` rules remain enabled; changes
-to the root `Cargo.toml` can be covered by a fragment in any relevant section.
-Use the exemption described below for commits with no user-visible effect.
-
 ### Write for users
 
 Name each fragment after the change, not an issue or pull request number. A
@@ -130,9 +122,9 @@ For example, a fragment can describe a behavior and link to its issue:
 ```
 
 Include the relevant issue or PR references. The `#` shortcut is defined in
-`sacho.toml`; Sacho expands it to an issue link. Keep the fragment with the
-implementation in every covered commit. When a later commit changes the
-behavior, update the existing fragment in that commit rather than adding a
+`sacho.toml`; Sacho expands it to an issue link. Include the fragment with the
+implementation in the pull request. When a later commit changes the
+behavior, update the existing fragment rather than adding a
 duplicate entry.
 
 Do not record implementation steps or intermediate designs that do not ship.
@@ -155,32 +147,16 @@ Use `sync` when only the generated region is stale. Inspect hand edits before
 using `sync --force`, which permits discarding them. `check --fix` repairs
 mechanical formatting and synchronization problems, not missing explanations.
 
-Stage the implementation, its fragments, and the generated changelog together,
-then run `sacho check --staged`. Only index contents count for staged coverage;
-an unstaged fragment does not cover a staged source change.
-
-| Check | Purpose |
-| --- | --- |
-| `sacho check` | Validate fragments, formatting, links, the next-version file, and generated output. |
-| `sacho check --staged` | Also enforce coverage for the staged Git changes. |
-| `sacho check --base <base-sha>` | Also enforce coverage separately for each commit after the PR base. |
+Stage the implementation, its fragments, and the generated changelog together.
+CI runs `sacho check` to validate fragments, formatting, links, the next-version
+file, and generated output. Automatic missing-fragment coverage is disabled.
+Reviewers check that user-visible changes have release notes in the appropriate
+crate sections and that compatibility changes include migration guidance.
 
 ### Changes without a fragment
 
 Documentation-only, test-only, and internal changes with no user-visible
-behavior change do not require a fragment.
-When a covered source change has no user-visible effect, add this trailer to the
-commit message:
-
-```text
-Changelog: none
-```
-
-CI runs `sacho check --base` commit by commit. An exemption applies only to the
-commit containing the trailer. `sacho check --staged` cannot apply exemptions
-because the commit message does not exist yet. Adding a fragment in a later
-commit does not cover an earlier undocumented commit. Use the same base SHA as
-the PR check and ensure the local history contains that revision.
+behavior change do not require a fragment or a commit-message exemption trailer.
 
 ## Select versions
 
@@ -231,13 +207,6 @@ must match the prepared workspace version.
 
 Prepare releases in a pull request. The tagged source must already contain the
 complete release; CI does not change versions or commit files.
-
-**Known limitation in Sacho 0.4.0:** Finalizing a release deletes consumed
-fragments, which can make the current PR coverage check reject their earlier commits despite
-the finalized notes. [Issue #89](https://github.com/Necrass-Dev/NecrassRs/issues/89)
-tracks this separately from section adoption. Do not bypass the failure by
-disabling coverage, exempting user-visible commits, or restoring duplicate
-unreleased notes.
 
 1. Choose the release version and run
    `bash .github/scripts/set-version.sh <version>`.

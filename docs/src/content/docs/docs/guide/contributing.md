@@ -74,7 +74,7 @@ Contributors record user-visible changes as Sacho fragments. Maintainers select
 versions and prepare releases explicitly; ordinary contribution pull requests
 and branch pushes do not publish packages. Follow the canonical
 [contributing guide](https://github.com/Necrass-Dev/NecrassRs/blob/main/CONTRIBUTING.md)
-for fragment commands, exemptions, version selection, tag-triggered publishing,
+for fragment commands, changelog review, version selection, tag-triggered publishing,
 and partial-publication recovery.
 
 Describe public API changes and compatibility risks clearly in the contribution
