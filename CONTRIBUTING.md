@@ -165,8 +165,10 @@ released together, including unchanged packages. Maintainers select each
 version explicitly; commit messages and API compatibility tools do not select
 it.
 
-Set a maintainer-selected stable `major.minor.patch` version without a `v`
-prefix using Bash, jq, Cargo, and the pinned Sacho:
+For a release, enter a stable `major.minor.patch` version without a `v` prefix
+in the Release workflow described below. CI uses the existing version-update
+script. To inspect version changes locally with Bash, jq, Cargo, and the pinned
+Sacho, run:
 
 ```sh
 bash .github/scripts/set-version.sh <version>
@@ -187,12 +189,8 @@ power loss can interrupt a multi-file update, so inspect the diff before
 retrying after such an interruption. Failed updates report a temporary backup
 directory for recovery.
 
-The script does not finalize release notes, commit, tag, or publish. Its
-disposable-workspace regression checks run with:
-
-```sh
-bash .github/scripts/set-version-test.sh
-```
+The version-update script alone does not finalize release notes, commit, tag,
+or publish.
 
 During `0.x` development:
 
@@ -205,68 +203,53 @@ must match the prepared workspace version.
 
 ## Prepare a release
 
-Prepare releases in a pull request. The tagged source must already contain the
-complete release; CI does not change versions or commit files.
+Review and merge the changes and changelog fragments before starting a release.
+Read `sacho preview` as a user upgrading from the previous release: remove
+implementation history, combine duplicate entries, and make migrations explicit.
 
-1. Choose the release version and run
-   `bash .github/scripts/set-version.sh <version>`.
-2. Review the version changes, including the workspace manifest, CLI templates,
-   `Cargo.lock`, and the generated unreleased changelog heading.
-3. Review `sacho preview` as a user upgrading from the previous release. Remove
-   implementation history, combine duplicate entries, and make migrations
-   explicit.
-4. Finalize the notes with `sacho release <version> --date YYYY-MM-DD`. Commit
-   the released changelog, deletion of the consumed fragments and
-   `changes.d/next`, and version changes together. An explicit version must
-   agree with `changes.d/next` when that file contains a version. Always supply
-   the reviewed release date instead of relying on the local calendar.
-5. Run the workspace baseline and the release checks:
+In GitHub, open **Actions → Release → Run workflow**, select **main**, enter
+the version (for example, `2.0.0`), and run the workflow. The equivalent CLI is:
 
-   ```sh
-   .github/scripts/release-test.sh
-   .github/scripts/release.sh verify <version>
-   ```
+```sh
+gh workflow run release-plz.yml --ref main -f version=2.0.0
+```
 
-6. Inspect the finalized notes using the publication rendering:
+The workflow must be present on the default branch before it can be dispatched.
+Only dispatches from `main` in the upstream repository can publish. Branch and
+tag rules must allow the workflow token to push the preparation commit and tag.
 
-   ```sh
-   sacho show <version> --skip-heading --no-word-wrap
-   ```
+For a new version, `.github/scripts/release-ci.sh prepare` updates versions with
+`set-version.sh` and finalizes the changelog with Sacho using the current UTC
+date. It consumes the fragments and closes the unreleased region without
+selecting another version. Empty subsequent releases are rejected by Sacho;
+the workflow does not silently allow them or rewrite an already released section.
 
-   This removes automatic line wrapping from the export, preserves intentional
-   Markdown hard breaks, and does not rewrite the stored changelog. Confirm
-   that the release pull request contains no unrelated changes.
+CI then runs formatting, Clippy, the full workspace tests, and
+`release.sh verify`. Only after those checks succeed does it
+create `Prepare release <version>` and a bare `<version>` tag on that commit.
+It pushes `main` and the tag atomically: either both refs are updated or neither
+is. If `main` advances during preparation or validation, the run stops without
+publishing; review the new changes and start a new run from `main`.
 
-For a release-wide summary or migration notice, add `--intro-file <path>` to
-`sacho release`; `--intro-file -` reads Markdown from standard input. Use
-`--note <text>` for a short note beside the release date. `sacho show` includes
-both in the exported release notes; `sacho carry` does not carry the introduction
-back into change fragments.
-
-Without `--next`, `sacho release` closes the unreleased region. Start the next
-development cycle separately with a maintainer-selected `sacho next <version>`
-after tagging; do not automatically select the next version. A subsequent
-release with no substantive entries requires an intentional `--allow-empty`.
-
-Do not create or push the release tag before the preparation pull request is
-merged.
+Preparation failures leave only the disposable runner checkout changed. No
+preparation commit or tag is pushed before verification succeeds. Do not run
+the CI helper in a working checkout: it switches revisions, commits, and pushes.
 
 ## Publish a release
 
-After the preparation pull request is merged, tag its merge commit with the
-bare stable version and push that tag. Do not add a `v` prefix or use per-crate
-tags.
+After pushing the prepared commit and tag, the same workflow obtains a
+short-lived crates.io token through Trusted Publishing and publishes that exact
+source. It publishes all eight packages in dependency order and waits for each
+required package to become available. After every package is available, it
+creates one GitHub Release from `sacho show <version> --skip-heading --no-word-wrap`.
+The export preserves intentional Markdown hard breaks without adding automatic
+line wrapping or rewriting the stored changelog.
 
-```sh
-git tag <version> <merge-commit>
-git push origin <version>
-```
-
-`.github/workflows/release-plz.yml` validates the tagged commit, obtains a
-short-lived crates.io token through Trusted Publishing, publishes all eight
-packages in dependency order, and waits for each required package to become
-available. After every package is available, it creates one GitHub Release from
-`sacho show <version>`.
+Publication continues in the same workflow because a tag pushed with
+`GITHUB_TOKEN` does not trigger a separate push workflow. Manually pushing a
+tag no longer starts publication. The workflow file remains `release-plz.yml`
+to preserve the filename used by existing crates.io Trusted Publisher settings;
+renaming it requires updating those settings for all eight packages.
 
 Verify the workflow, all eight crates.io package versions, the tag target, and
 the single GitHub Release body. The release body must match the finalized Sacho
@@ -275,10 +258,14 @@ notes.
 ## Recover a partial publication
 
 Do not move, replace, or force-push a release tag. Investigate the failed job,
-then rerun that workflow run. The release script verifies package versions that
-already exist, skips them, and resumes with the first unpublished package.
-Registry lookup failures stop the workflow rather than being interpreted as a
-successful publication.
+then rerun that workflow run or dispatch the Release workflow from `main` with
+the same version. When the tag already exists, preparation checks out its
+immutable commit, validates it, and preserves its release date and notes.
+Later changes on `main` are not included. The tag must belong to `main` history.
+
+The release script verifies package versions that already exist, skips them,
+and resumes with the first unpublished package. Registry lookup failures stop
+the workflow rather than being interpreted as a successful publication.
 
 The GitHub Release is created only after all packages are available. A rerun
 keeps an existing release when its body matches the finalized Sacho notes and
