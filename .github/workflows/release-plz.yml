@@ -16,20 +16,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Prepare and publish release
+  prepare:
+    name: Prepare release
     if: ${{ github.repository_owner == 'Necrass-Dev' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
+    outputs:
+      commit: ${{ steps.tag.outputs.commit }}
     env:
       RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_ROOT: ${{ github.workspace }}
     steps:
       - name: Checkout sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+
+      # Keep the current automation when resuming a tag with older scripts.
+      - name: Preserve release automation
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-automation"
+          cp .github/scripts/{release-ci,release,set-version}.sh "$RUNNER_TEMP/release-automation/"
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -45,7 +53,7 @@ jobs:
       - name: Prepare release or resume existing tag
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/release-ci.sh prepare "$RELEASE_VERSION"
+        run: bash "$RUNNER_TEMP/release-automation/release-ci.sh" prepare "$RELEASE_VERSION"
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -57,13 +65,124 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Verify release packages
-        run: .github/scripts/release.sh verify "$RELEASE_VERSION"
+        run: bash "$RUNNER_TEMP/release-automation/release.sh" verify "$RELEASE_VERSION"
 
       - name: Commit and tag validated release
+        id: tag
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          bash .github/scripts/release-ci.sh tag "$RELEASE_VERSION"
+          bash "$RUNNER_TEMP/release-automation/release-ci.sh" tag "$RELEASE_VERSION"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-cli:
+    name: Build CLI (${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      TARGET: ${{ matrix.target }}
+      CARGO_TARGET_DIR: target
+    steps:
+      - name: Checkout prepared source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build CLI
+        shell: bash
+        run: cargo build --release --locked -p necrassrs-cli --target "$TARGET"
+
+      - name: Package and check Unix CLI
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p target/cli-package target/release-assets target/cli-smoke
+          cp "target/$TARGET/release/necrass" crates/necrassrs-cli/LICENSE.md target/cli-package/
+          tar -czf "target/release-assets/necrass-$RELEASE_VERSION-$TARGET.tar.gz" -C target/cli-package necrass LICENSE.md
+          tar -xzf "target/release-assets/necrass-$RELEASE_VERSION-$TARGET.tar.gz" -C target/cli-smoke
+          test "$(target/cli-smoke/necrass --version)" = "necrass $RELEASE_VERSION"
+          target/cli-smoke/necrass init target/smoke-project --name smoke-project --framework axum
+          test -s target/smoke-project/Cargo.toml
+
+      - name: Package and check Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path target/cli-package, target/release-assets | Out-Null
+          Copy-Item "target/$env:TARGET/release/necrass.exe", crates/necrassrs-cli/LICENSE.md target/cli-package/
+          $archive = "target/release-assets/necrass-$env:RELEASE_VERSION-$env:TARGET.zip"
+          Compress-Archive -Path target/cli-package/* -DestinationPath $archive
+          Expand-Archive -Path $archive -DestinationPath target/cli-smoke
+          $version = & ./target/cli-smoke/necrass.exe --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne "necrass $env:RELEASE_VERSION") { throw "CLI version mismatch" }
+          & ./target/cli-smoke/necrass.exe init target/smoke-project --name smoke-project --framework axum
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path target/smoke-project/Cargo.toml)) { throw "CLI initialization failed" }
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: target/release-assets/*
+          archive: false
+          if-no-files-found: error
+
+  publish:
+    name: Publish packages and CLI archives
+    needs: [prepare, build-cli]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_ROOT: ${{ github.workspace }}
+    steps:
+      - name: Checkout release automation
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Preserve release automation
+        run: cp .github/scripts/release.sh "$RUNNER_TEMP/release.sh"
+
+      - name: Checkout prepared source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Install repository tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+
+      - name: Download CLI archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: necrass-${{ inputs.version }}-*
+          path: ${{ runner.temp }}/release-assets
+          merge-multiple: true
+          skip-decompress: true
 
       - name: Authenticate with crates.io
         id: crates-io-auth
@@ -71,6 +190,7 @@ jobs:
 
       - name: Publish release
         env:
+          RELEASE_ASSETS_DIR: ${{ runner.temp }}/release-assets
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
           GH_TOKEN: ${{ github.token }}
-        run: .github/scripts/release.sh publish "$RELEASE_VERSION"
+        run: bash "$RUNNER_TEMP/release.sh" publish "$RELEASE_VERSION"

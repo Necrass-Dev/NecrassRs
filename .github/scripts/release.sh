@@ -198,7 +198,8 @@ github_release_status() {
 }
 
 create_release() {
-  local tag=$1 notes response existing
+  local tag=$1 notes response existing asset
+  shift
   notes="$TEMPORARY/release-notes.md"
   response="$TEMPORARY/github-release.json"
   write_release_notes "$tag" "$notes"
@@ -207,10 +208,24 @@ create_release() {
     existing=$(jq -r '.body' "$response")
     [[ "$existing" == "$(cat "$notes")" ]] || die "existing GitHub Release $tag has different notes"
     echo "GitHub Release $tag already exists"
+    for asset in "$@"; do
+      if jq -e --arg name "${asset##*/}" '.assets[] | select(.name == $name)' "$response" >/dev/null; then
+        jq -e --arg name "${asset##*/}" \
+          '.assets[] | select(.name == $name) | .state == "uploaded" and .size > 0' "$response" >/dev/null ||
+          die "existing release asset is incomplete: ${asset##*/}"
+        echo "Release asset ${asset##*/} already exists; preserving it"
+      else
+        gh release upload "$tag" "$asset"
+      fi
+    done
+    # gh release create can leave a draft if an asset upload fails.
+    if jq -e '.draft == true' "$response" >/dev/null; then
+      gh release edit "$tag" --draft=false
+    fi
     return
   fi
 
-  gh release create "$tag" --verify-tag --title "$tag" --notes-file "$notes"
+  gh release create "$tag" --verify-tag --title "$tag" --notes-file "$notes" "$@"
 }
 
 main() {
@@ -228,8 +243,19 @@ main() {
     publish)
       require_command gh
       validate_release "$tag"
+      [[ -n "${RELEASE_ASSETS_DIR:-}" ]] || die "RELEASE_ASSETS_DIR is required for publication"
+      local prefix="$RELEASE_ASSETS_DIR/necrass-$tag" asset
+      local assets=(
+        "$prefix-x86_64-unknown-linux-gnu.tar.gz"
+        "$prefix-x86_64-apple-darwin.tar.gz"
+        "$prefix-aarch64-apple-darwin.tar.gz"
+        "$prefix-x86_64-pc-windows-msvc.zip"
+      )
+      for asset in "${assets[@]}"; do
+        [[ -f "$asset" && -s "$asset" ]] || die "missing or empty CLI archive: $asset"
+      done
       publish_packages "$tag"
-      create_release "$tag"
+      create_release "$tag" "${assets[@]}"
       ;;
     *) die "unknown command: $command" ;;
   esac

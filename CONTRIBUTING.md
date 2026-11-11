@@ -237,13 +237,27 @@ the CI helper in a working checkout: it switches revisions, commits, and pushes.
 
 ## Publish a release
 
-After pushing the prepared commit and tag, the same workflow obtains a
-short-lived crates.io token through Trusted Publishing and publishes that exact
-source. It publishes all eight packages in dependency order and waits for each
-required package to become available. After every package is available, it
-creates one GitHub Release from `sacho show <version> --skip-heading --no-word-wrap`.
+After pushing the prepared commit and tag, the same workflow builds CLI archives
+from that exact commit for Linux x86_64, macOS x86_64 and ARM64, and Windows
+x86_64. Each build extracts its archive and checks the CLI version and project
+initialization on its native runner. All four builds must succeed before
+publication starts. See the [installation guide](docs/src/content/docs/docs/guide/installation.md#prebuilt-binaries)
+for archive names and the supported platform matrix.
+
+The publish job downloads the archives, obtains a short-lived crates.io token
+through Trusted Publishing, and checks that all four archives are present and
+nonempty before publishing any package. It publishes all eight packages in
+dependency order and waits for each required package to become available.
+After every package is available, it
+creates one GitHub Release with the CLI archives and notes from
+`sacho show <version> --skip-heading --no-word-wrap`.
 The export preserves intentional Markdown hard breaks without adding automatic
 line wrapping or rewriting the stored changelog.
+
+GitHub automatically computes SHA-256 digests for uploaded release assets and
+displays them beside the files and in the API. We use those digests instead of
+publishing a separate checksum file. Actions artifacts only transfer archives
+between jobs; the GitHub Release attachments are the public downloads.
 
 Publication continues in the same workflow because a tag pushed with
 `GITHUB_TOKEN` does not trigger a separate push workflow. Manually pushing a
@@ -251,9 +265,9 @@ tag no longer starts publication. The workflow file remains `release-plz.yml`
 to preserve the filename used by existing crates.io Trusted Publisher settings;
 renaming it requires updating those settings for all eight packages.
 
-Verify the workflow, all eight crates.io package versions, the tag target, and
-the single GitHub Release body. The release body must match the finalized Sacho
-notes.
+Verify the workflow, all eight crates.io package versions, the tag target,
+the single GitHub Release body, and all four CLI attachments and their digests.
+The release body must match the finalized Sacho notes.
 
 ## Recover a partial publication
 
@@ -262,6 +276,8 @@ then rerun that workflow run or dispatch the Release workflow from `main` with
 the same version. When the tag already exists, preparation checks out its
 immutable commit, validates it, and preserves its release date and notes.
 Later changes on `main` are not included. The tag must belong to `main` history.
+The workflow preserves its release automation outside the source checkout so
+that recovery also works for tags predating the current scripts.
 
 The release script verifies package versions that already exist, skips them,
 and resumes with the first unpublished package. Registry lookup failures stop
@@ -269,6 +285,10 @@ the workflow rather than being interpreted as a successful publication.
 
 The GitHub Release is created only after all packages are available. A rerun
 keeps an existing release when its body matches the finalized Sacho notes and
-fails if the body differs. Resolve configuration, authentication, registry, or
-notes discrepancies before rerunning; never attempt to overwrite a published
-crate version.
+fails if the body differs. Existing uploaded CLI assets are preserved, and only
+missing files are uploaded; rebuilds never replace previously published bytes
+or their digests. An incomplete existing asset stops recovery; inspect and
+remove that failed upload before retrying. If an interrupted creation left a
+draft release, recovery publishes it after all expected assets are uploaded.
+Resolve configuration, authentication, registry, or notes discrepancies before
+rerunning; never attempt to overwrite a published crate version.
