@@ -118,6 +118,21 @@ cp -R "$RELEASE_ROOT" "$TEMPORARY/updated"
 run 1.2.4
 diff -ru "$TEMPORARY/updated" "$RELEASE_ROOT"
 
+# The selected version must remain usable by the real release and export commands.
+sacho release 1.2.4 --date 2026-11-11 --no-resolve-links
+sacho check
+[[ ! -e changes.d/next ]]
+[[ ! -e changes.d/necrassrs-cli/version-test.md ]]
+sacho show 1.2.4 --skip-heading --no-word-wrap --output-file "$TEMPORARY/release-notes.md"
+grep -Fq 'Released on November 11, 2026.' "$TEMPORARY/release-notes.md"
+grep -Fq '### necrassrs-cli' "$TEMPORARY/release-notes.md"
+grep -Fq 'Added a version update fixture.' "$TEMPORARY/release-notes.md"
+if grep -Fq 'Version 1.2.4' "$TEMPORARY/release-notes.md"; then
+  echo 'Release export must omit the version heading.' >&2; exit 1
+fi
+sed -n '/^Version 0.9.0/,$p' CHANGELOG.md > "$TEMPORARY/history-after"
+cmp "$TEMPORARY/history-before" "$TEMPORARY/history-after"
+
 export REAL_CARGO=$(command -v cargo)
 export REAL_SACHO=$(command -v sacho)
 cat > "$TEMPORARY/bin/cargo" <<'MOCK'

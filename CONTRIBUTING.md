@@ -232,8 +232,8 @@ must match the prepared workspace version.
 Prepare releases in a pull request. The tagged source must already contain the
 complete release; CI does not change versions or commit files.
 
-**Known limitation:** Finalizing a release deletes consumed fragments, which
-can make the current PR coverage check reject their earlier commits despite
+**Known limitation in Sacho 0.4.0:** Finalizing a release deletes consumed
+fragments, which can make the current PR coverage check reject their earlier commits despite
 the finalized notes. [Issue #89](https://github.com/Necrass-Dev/NecrassRs/issues/89)
 tracks this separately from section adoption. Do not bypass the failure by
 disabling coverage, exempting user-visible commits, or restoring duplicate
@@ -267,6 +267,12 @@ unreleased notes.
    This removes automatic line wrapping from the export, preserves intentional
    Markdown hard breaks, and does not rewrite the stored changelog. Confirm
    that the release pull request contains no unrelated changes.
+
+For a release-wide summary or migration notice, add `--intro-file <path>` to
+`sacho release`; `--intro-file -` reads Markdown from standard input. Use
+`--note <text>` for a short note beside the release date. `sacho show` includes
+both in the exported release notes; `sacho carry` does not carry the introduction
+back into change fragments.
 
 Without `--next`, `sacho release` closes the unreleased region. Start the next
 development cycle separately with a maintainer-selected `sacho next <version>`
