@@ -31,14 +31,6 @@ Add the dependency to start using `reed-parser`:
 cargo add reed-parser
 ```
 
-Or add this to your `Cargo.toml` for a manual installation:
-
-```toml
-# Just an example, change to the necessary package version.
-[dependencies]
-reed-parser = "0.2.1"
-```
-
 ## Rust versions
 
 `reed-parser` is tested on the latest stable version of Rust.

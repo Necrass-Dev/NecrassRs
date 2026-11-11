@@ -1,6 +1,6 @@
 # Agent instructions
 
-These instructions apply to AI agents working in the NecrassRs repository. See [AI_POLICY.md](AI_POLICY.md) for disclosure and contributor responsibilities, and [archives/architecture.md](archives/architecture.md) for product architecture and design decisions.
+These instructions apply to AI agents working in the NecrassRs repository. See [AI_POLICY.md](AI_POLICY.md) for disclosure and contributor responsibilities, and the [contributing guide](docs/src/content/docs/docs/guide/contributing.md#package-boundaries) for the current package layout.
 
 ## Before making changes
 
@@ -16,18 +16,17 @@ These instructions apply to AI agents working in the NecrassRs repository. See [
 - When implementation or fixes are requested, proceed with authorized investigation, edits, and validation without repeatedly asking about routine implementation choices.
 - Do not silently settle unresolved public contracts for implementation convenience. Explain consequential decisions and ask only for information needed to resolve them.
 - When a change in design is explicitly requested, update the relevant documentation. Do not quietly rewrite the design to justify a workaround.
+- Documentation describes current behavior, not a permanent restriction on internal design. Preserve public contracts and user data when refactoring; explain compatibility changes and update affected tests and guidance when changing those contracts.
 - Use an issue's specified branch when applicable. Do not damage existing work through checkout, reset, or overwrites.
 - Permission to edit local files does not itself authorize remote publication, merging, package releases, or messages to other people. Perform those actions only within the authorized scope.
 
 ## Implementation boundaries
 
 - SDL defines the public GraphQL contract. Do not synchronize Rust implementations back into SDL.
-- Use Apollo Compiler's models and validation. Do not duplicate its schema model or validator. Choosing an execution engine remains a separate decision.
-- Separate code generation, Cargo and filesystem integration, runtime execution, the Axum adapter, and the CLI as described in the architecture document.
-- Keep Axum, CLI, and build-tool dependencies out of the execution core. Applications own their Context types and construction.
-- Place disposable contracts and dispatch in `OUT_DIR`. Build integration creates and synchronizes the designated resolver implementation in `src` using the SDL-to-Rust naming rules: preserve retained resolver bodies and unrelated user code, add explicit stubs, and delete removed resolver declarations. A rename is deletion plus addition. Follow `archives/architecture.md` section 7.3; do not interpret user-code preservation as a ban on synchronizing SDL-owned declarations.
+- Reuse existing schema models and validation rather than duplicating them. Reed currently supplies these facilities; NecrassRs implements runtime execution. Package and module boundaries may change with the work being implemented.
+- Applications own their Context types and construction. Avoid introducing framework, CLI, or build-tool dependencies into runtime code without a concrete requirement.
+- Preserve retained resolver bodies and unrelated user code during source synchronization. Do not remove application-owned implementations automatically. Consult [Organizing Resolver Files](docs/src/content/docs/docs/manual/resolver-files.md) for current generated names, ownership rules, and limitations; changes to public names and synchronization behavior require compatibility review.
 - Initialization must not overwrite existing files or symbolic links.
-- Do not copy prototype code. Implement from the observed behavior and validation scenarios.
 - Check existing code, the standard library, and existing dependencies first. Do not add abstractions, configuration, crates, or dependencies without a concrete requirement.
 - Do not remove input validation, error handling, or user data protection to simplify an implementation.
 - Do not handle invalid external input or ordinary domain errors with panics. Keep the deliberate process-exit policy for unimplemented resolvers separate.
@@ -57,7 +56,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 Official repository documents must be written in English, including policies, architecture documents, READMEs, and contribution guides. Follow the user's requested language in conversation. Keep code, comments, documents, and other repository artifacts professional and free of conversational roleplay.
 
-The website groups its pages under `docs/src/content/docs/docs/` to match the sidebar: `introduction/`, `guide/`, and `manual/`. Keep step-by-step server setup in the tutorial and type mappings and `GraphQLInput` semantics in the Types manual. Keep integration records, design proposals, specification tracking, experiment articles, and their data in the repository-root `archives/` directory. Archives are independent of the documentation website: do not include them in its content collections, sidebar, public assets, or guide links. Use relative file links within archives and update repository source references when moving an article.
+The website groups its pages under `docs/src/content/docs/docs/` to match the sidebar: `introduction/`, `guide/`, and `manual/`. Keep step-by-step server setup in the tutorial and type mappings and `GraphQLInput` semantics in the Types manual. Maintain current user and contributor guidance in the relevant documentation pages. Track proposals, remaining work, and historical validation results in issues and pull requests rather than separate archive documents. Update repository references when removing or moving documentation.
 
 In reviews, lead with reproducible defects and risks, identifying locations and impact. Distinguish findings from hypotheses.
 

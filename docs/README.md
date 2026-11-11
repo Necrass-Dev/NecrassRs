@@ -38,25 +38,18 @@ support `.astro` templates; those are maintained manually and checked by
 - `src/styles/landing.css`: responsive layout, color inversion, and motion.
 - `src/content/docs/docs/`: introduction, tutorial, and Types/GraphiQL manual pages for `/docs/` pages.
 
-Design proposals, integration records, specification tracking, and experiments
-are stored independently in the repository-root `archives/` directory. They are
-not built or linked by the documentation website.
+Keep current user and contributor guidance in these documentation pages. Track
+proposals, remaining work, and historical validation results in issues and pull
+requests instead of maintaining separate archive documents.
 
 The initial demo imports the real CLI starter's SDL and resolver source. Adding
 `version: String!` demonstrates a new resolver stub after `cargo build`, without
 pretending to generate business logic. This is a visual demonstration, not a Rust
 compiler running in the browser.
 
-The scene uses [GSAP ScrollTrigger](https://gsap.com/docs/v3/Plugins/ScrollTrigger/).
-On desktop screens, it pins when the second screen reaches the top of the viewport;
-no code transition starts while the scene is still entering.
-A scrubbed timeline then crossfades Define → Evolve → Build over 1.6 viewport
-heights of native scrolling, with 0.35 seconds of smoothing. Scrolling upward
-reverses the same timeline. There is no wheel/touch interception, gesture counting,
-autoplay, or snapping; ScrollTrigger manages the pin spacing and resize cleanup.
-Smaller screens use an unpinned timeline with the same top-of-viewport start.
-Clicking Define, Evolve, or Build scrolls to that point in the timeline. Reduced
-motion disables pinning and animated playback; the buttons switch code instantly.
+The scene follows native scrolling through Define → Evolve → Build, with buttons
+for selecting each step. Keep those controls keyboard-accessible. Reduced motion
+disables pinning and animated playback; the buttons switch code instantly.
 Without JavaScript, both before/after examples remain readable in document order.
 
 Use `/docs/page-name/` links between published guides and GitHub source links for

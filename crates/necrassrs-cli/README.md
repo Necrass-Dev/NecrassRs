@@ -10,6 +10,11 @@ cargo install necrassrs-cli --locked
 necrass init my-api
 ```
 
+Prebuilt CLI archives for Linux, macOS, and Windows are available on
+[GitHub Releases](https://github.com/Necrass-Dev/NecrassRs/releases).
+See the [installation guide](https://necrass.rs/docs/installation/#prebuilt-binaries)
+for supported architectures and verification with GitHub's SHA-256 digests.
+
 The target directory must be new or empty. See the [installation guide](https://necrass.rs/docs/installation/) for prerequisites, framework selection, and the first request.
 
 ## License

@@ -1,4 +1,4 @@
-//! Issue #28 regressions against the baseline pinned in archives/specs.md.
+//! Issue #28 regressions against <https://necrass.rs/docs/reed/#specification-baseline>.
 use reed_compiler::{
     introspection, request::coerce_variable_values, response::JsonMap, validation::Valid,
     ExecutableDocument, Schema,

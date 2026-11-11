@@ -16,9 +16,36 @@ next-file = "next"
 preset = "git"
 
 [check]
-paths = [
-    "Cargo.toml",
-    "crates/**/Cargo.toml",
-    "crates/**/src/**",
-    "crates/necrassrs-cli/templates/**",
-]
+paths = []
+
+[[sections]]
+id = "necrassrs"
+directory = "necrassrs"
+
+[[sections]]
+id = "necrassrs-build"
+directory = "necrassrs-build"
+
+[[sections]]
+id = "necrassrs-http"
+directory = "necrassrs-http"
+
+[[sections]]
+id = "necrassrs-axum"
+directory = "necrassrs-axum"
+
+[[sections]]
+id = "necrassrs-actix"
+directory = "necrassrs-actix"
+
+[[sections]]
+id = "necrassrs-cli"
+directory = "necrassrs-cli"
+
+[[sections]]
+id = "reed-compiler"
+directory = "reed-compiler"
+
+[[sections]]
+id = "reed-parser"
+directory = "reed-parser"

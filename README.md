@@ -50,7 +50,7 @@ All eight public packages share one workspace version and release together:
 
 ## Contributing
 
-Read the [contribution guide](https://necrass.rs/docs/contributing/), [architecture](archives/architecture.md), and [AI usage policy](AI_POLICY.md) before making changes. To browse the workspace API documentation locally, run:
+Read the [contribution guide](https://necrass.rs/docs/contributing/) and [AI usage policy](AI_POLICY.md) before making changes. To browse the workspace API documentation locally, run:
 
 ```sh
 cargo doc --workspace --no-deps --locked --open

@@ -17,6 +17,51 @@ The Cargo package is named `necrassrs-cli`; the installed executable is named
 `necrass`. If your shell cannot find it, ensure Cargo's binary directory is on
 `PATH` (`~/.cargo/bin` on Unix or `%USERPROFILE%\.cargo\bin` on Windows).
 
+### Prebuilt binaries
+
+You can also download the CLI from [GitHub Releases](https://github.com/Necrass-Dev/NecrassRs/releases).
+Choose the archive for your operating system and processor:
+
+| Platform                | Rust target                | Archive                                             |
+| ----------------------- | -------------------------- | --------------------------------------------------- |
+| Linux x86_64 (GNU libc) | `x86_64-unknown-linux-gnu` | `necrass-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Intel             | `x86_64-apple-darwin`      | `necrass-<version>-x86_64-apple-darwin.tar.gz`      |
+| macOS Apple Silicon     | `aarch64-apple-darwin`     | `necrass-<version>-aarch64-apple-darwin.tar.gz`     |
+| Windows x86_64          | `x86_64-pc-windows-msvc`   | `necrass-<version>-x86_64-pc-windows-msvc.zip`      |
+
+These binaries are built and checked on Ubuntu 24.04, macOS 15, and Windows
+Server 2025 runners, respectively. Older systems and other architectures are
+not checked by the release workflow; use Cargo to build for your system instead.
+Rust and Cargo are still required to build the projects created by the CLI.
+
+Before extracting the archive, compare its SHA-256 with the digest displayed
+beside that file on the GitHub Release page. GitHub generates this digest when
+the file is uploaded; there is no separate checksum file. You can also retrieve
+the `digest` field through the [release assets API](https://docs.github.com/en/rest/releases/assets).
+
+Use the downloaded filename in the appropriate command:
+
+```sh
+# Linux
+sha256sum "<archive>.tar.gz"
+
+# macOS
+shasum -a 256 "<archive>.tar.gz"
+```
+
+```powershell
+# Windows PowerShell
+Get-FileHash "<archive>.zip" -Algorithm SHA256
+```
+
+The hexadecimal hash must match GitHub's value (ignoring letter case and any
+`sha256:` prefix). If it differs, do not use the archive.
+
+Extract the `.tar.gz` with `tar -xzf "<archive>.tar.gz"`, or the `.zip` with
+PowerShell's `Expand-Archive "<archive>.zip" -DestinationPath necrass-cli`.
+Each archive contains `necrass` (or `necrass.exe`) and `LICENSE.md`. Put the
+executable in a directory on `PATH`, then run `necrass --version`.
+
 ## Create a project
 
 Run the CLI without arguments in a terminal:
