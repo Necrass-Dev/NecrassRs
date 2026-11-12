@@ -36,6 +36,11 @@ name = "tracing"
 path = "tests/tracing.rs"
 required-features = ["tracing"]
 
+[[test]]
+name = "tracing_scalars"
+path = "tests/tracing_scalars.rs"
+required-features = ["tracing"]
+
 [[bench]]
 name = "query_execution"
 path = "benches/query_execution/main.rs"
