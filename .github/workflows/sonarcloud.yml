@@ -51,7 +51,7 @@ jobs:
           cargo llvm-cov clean --workspace
           rm -rf target/cargo-consumer
           # Instrument temporary consumer crates as well as workspace members.
-          cargo llvm-cov --workspace --locked --no-rustc-wrapper --no-report -- --test-threads=1 --skip generated_consumer_builds_and_rebuilds_without_the_cli
+          cargo llvm-cov --workspace --all-features --locked --no-rustc-wrapper --no-report -- --test-threads=1 --skip generated_consumer_builds_and_rebuilds_without_the_cli
           # Include consumer tests and build scripts outside llvm-cov's target directory.
           python3 - <<'PY'
           import json
