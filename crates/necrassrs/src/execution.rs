@@ -10,6 +10,8 @@ use reed_compiler::{
     schema::{ExtendedType, FieldDefinition, ObjectType},
     validation::Valid,
 };
+#[cfg(feature = "tracing")]
+use tracing::Instrument;
 
 use crate::{
     Request, ResolvedObject, ResolvedValue, ResolverError, Response, ResponseStream, ScalarError,
@@ -435,7 +437,48 @@ where
     C: Sync,
     D: Dispatcher<C> + Sync,
 {
-    let prepared = match prepare_request(schema, request) {
+    #[cfg(feature = "tracing")]
+    let span = tracing::info_span!(
+        "GraphQL Operation",
+        otel.name = tracing::field::Empty,
+        otel.kind = "server",
+        graphql.operation.type = tracing::field::Empty,
+        graphql.operation.name = tracing::field::Empty,
+    );
+
+    let prepared = prepare_request(schema, request);
+
+    #[cfg(feature = "tracing")]
+    if let Ok(prepared) = &prepared {
+        let operation_type = prepared.operation.operation_type.name();
+        span.record("otel.name", operation_type);
+        span.record("graphql.operation.type", operation_type);
+        if let Some(operation_name) = &prepared.operation.name {
+            span.record("graphql.operation.name", operation_name.as_str());
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    return execute_prepared(schema, prepared, dispatcher, context, options)
+        .instrument(span)
+        .await;
+
+    #[cfg(not(feature = "tracing"))]
+    execute_prepared(schema, prepared, dispatcher, context, options).await
+}
+
+async fn execute_prepared<C, D>(
+    schema: &Valid<Schema>,
+    prepared: Result<PreparedRequest, crate::request::RequestError>,
+    dispatcher: &D,
+    context: &C,
+    options: ExecutionOptions,
+) -> Response
+where
+    C: Sync,
+    D: Dispatcher<C> + Sync,
+{
+    let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(error) => return error.into(),
     };
