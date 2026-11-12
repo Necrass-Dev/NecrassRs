@@ -14,7 +14,10 @@ let response = execute_with_options(
     &request,
     &state.dispatcher,
     &context,
-    ExecutionOptions { introspection: false },
+    ExecutionOptions {
+        introspection: false,
+        ..Default::default()
+    },
 ).await;
 ```
 

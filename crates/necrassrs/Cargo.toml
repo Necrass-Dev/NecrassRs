@@ -12,23 +12,23 @@ keywords = ["graphql", "server", "execution", "sdl"]
 categories = ["web-programming"]
 
 [features]
-tracing = ["dep:tracing"]
+tracing = ["dep:opentelemetry", "dep:tracing", "dep:tracing-opentelemetry"]
 
 [dependencies]
 reed-compiler.workspace = true
 futures-util = "0.3"
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"], optional = true }
 serde.workspace = true
 tracing = { version = "0.1.44", optional = true }
+tracing-opentelemetry = { version = "0.32", default-features = false, optional = true }
 
 [dev-dependencies]
 async-graphql = { version = "=7.2.1", default-features = false }
 criterion = "0.7.0"
 futures = "0.3"
-opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.31", default-features = false, features = ["testing"] }
 serde_json = "1.0"
 tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
-tracing-opentelemetry = { version = "0.32", default-features = false }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 
 [[test]]

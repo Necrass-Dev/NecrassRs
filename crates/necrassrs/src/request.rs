@@ -84,6 +84,11 @@ pub(crate) struct PreparedRequest {
     pub(crate) variables: Valid<JsonMap>,
 }
 
+pub(crate) struct PreparedOperation {
+    pub(crate) document: Valid<ExecutableDocument>,
+    pub(crate) operation: Node<Operation>,
+}
+
 #[derive(Debug)]
 pub(crate) struct RequestError {
     pub(crate) errors: Vec<GraphQLError>,
@@ -99,21 +104,32 @@ impl From<Vec<GraphQLError>> for RequestError {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn prepare_request(
     schema: &Valid<reed_compiler::Schema>,
     request: &Request,
 ) -> Result<PreparedRequest, RequestError> {
-    // Parse once into Reed's AST so syntax and validation failures remain distinct.
-    let ast = Document::parse(request.document.as_str(), "request.graphql").map_err(|error| {
-        RequestError {
-            errors: error
-                .errors
-                .iter()
-                .map(|diagnostic| diagnostic.to_json())
-                .collect(),
-            syntax_error: true,
-        }
-    })?;
+    let ast = parse_request(request)?;
+    let operation = validate_request(schema, request, ast)?;
+    coerce_request_variables(schema, request, operation)
+}
+
+pub(crate) fn parse_request(request: &Request) -> Result<Document, RequestError> {
+    Document::parse(request.document.as_str(), "request.graphql").map_err(|error| RequestError {
+        errors: error
+            .errors
+            .iter()
+            .map(|diagnostic| diagnostic.to_json())
+            .collect(),
+        syntax_error: true,
+    })
+}
+
+pub(crate) fn validate_request(
+    schema: &Valid<reed_compiler::Schema>,
+    request: &Request,
+    ast: Document,
+) -> Result<PreparedOperation, RequestError> {
     let document = ast.to_executable_validate(schema).map_err(|error| {
         error
             .errors
@@ -126,14 +142,25 @@ pub(crate) fn prepare_request(
         .operations
         .get(request.operation_name.as_deref())
         .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
-
-    let variables = coerce_variable_values(schema, operation, &request.variables)
-        .map_err(|error| vec![error.to_graphql_error(&document.sources)])?;
     let operation = operation.clone();
 
-    Ok(PreparedRequest {
+    Ok(PreparedOperation {
         document,
         operation,
+    })
+}
+
+pub(crate) fn coerce_request_variables(
+    schema: &Valid<reed_compiler::Schema>,
+    request: &Request,
+    prepared: PreparedOperation,
+) -> Result<PreparedRequest, RequestError> {
+    let variables = coerce_variable_values(schema, &prepared.operation, &request.variables)
+        .map_err(|error| vec![error.to_graphql_error(&prepared.document.sources)])?;
+
+    Ok(PreparedRequest {
+        document: prepared.document,
+        operation: prepared.operation,
         provided_variables: request.variables.clone(),
         variables,
     })

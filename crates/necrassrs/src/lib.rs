@@ -38,6 +38,7 @@ use serde::Serialize;
 
 mod execution;
 mod input;
+mod telemetry;
 
 pub use execution::{
     Dispatcher, ExecutionOptions, FieldCoordinate, execute, execute_with_options, subscribe,
@@ -186,6 +187,13 @@ impl Response {
     /// An execution response with `data: null` still returns `false`.
     pub fn is_request_error(&self) -> bool {
         matches!(self.0, ResponseKind::RequestError { .. })
+    }
+
+    pub(crate) fn has_errors(&self) -> bool {
+        match &self.0 {
+            ResponseKind::RequestError { .. } => true,
+            ResponseKind::Execution(response) => !response.errors.is_empty(),
+        }
     }
 
     /// Whether request processing failed while parsing the GraphQL document.

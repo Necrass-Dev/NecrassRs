@@ -19,7 +19,7 @@ curl -sS http://127.0.0.1:3000/graphql \
 
 The response is `{"data":{"hello":"Hello, Sheri"}}`.
 
-The GraphiQL page uses `/graphql` for schema introspection and queries. Its browser assets load from `esm.sh` and require network access. Remove or gate the GET handler for `/graphql` in `src/main.rs` if the deployment should not expose the UI. Keep the POST handler for GraphQL requests. Runtime introspection is enabled by default independently of the UI route; use `necrassrs::execute_with_options` with `ExecutionOptions { introspection: false }` to disable it for a handler.
+The GraphiQL page uses `/graphql` for schema introspection and queries. Its browser assets load from `esm.sh` and require network access. Remove or gate the GET handler for `/graphql` in `src/main.rs` if the deployment should not expose the UI. Keep the POST handler for GraphQL requests. Runtime introspection is enabled by default independently of the UI route; use `necrassrs::execute_with_options` with `ExecutionOptions { introspection: false, ..Default::default() }` to disable it for a handler.
 
 Edit `schema/schema.graphql` to change the public API and `src/resolvers.rs` to implement its fields. Cargo runs `build.rs` automatically and keeps resolver declarations aligned with SDL. `src/generated.rs` includes disposable contracts from `OUT_DIR`. This starter begins with a `String!` field; generated contracts also support the input and composite result types documented by NecrassRs. The NecrassRs dependencies resolve from crates.io.
 

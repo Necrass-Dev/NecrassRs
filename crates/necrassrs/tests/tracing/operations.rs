@@ -302,6 +302,7 @@ async fn disabled_introspection_is_reported_as_request_failure() {
     let capture = Capture::default();
     let options = ExecutionOptions {
         introspection: false,
+        ..Default::default()
     };
     let response = capture
         .run(execute_with_options(
