@@ -75,7 +75,6 @@ async fn main() -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "../../http_contract.rs"]
 mod http_contract;
 
 #[cfg(test)]
@@ -150,7 +149,7 @@ mod tests {
             .unwrap();
         });
         let result = tokio::task::spawn_blocking(move || {
-            http_contract::check_method_and_transport_errors(address, 414);
+            http_contract::check_method_and_transport_errors(address);
         })
         .await;
         server.abort();

@@ -268,6 +268,10 @@ source without requiring an additional poll.
 
 ## Ordering, cancellation, and resource ownership
 
+The optional `tracing` feature records the overall subscription lifetime and
+each event's response computation. See [OpenTelemetry](/docs/opentelemetry/#observe-subscriptions)
+for field selection, error status, and cancellation attributes.
+
 - Responses within one subscription preserve source-event order.
 - Independent selected fields and list items within an event can make concurrent
   progress. Response ordering remains stable.

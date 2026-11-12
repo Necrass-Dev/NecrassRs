@@ -94,6 +94,10 @@ If your framework is not listed, you can [write an adapter](#writing-an-adapter)
 
 ## Using an adapter
 
+For request and field tracing, see [OpenTelemetry](/docs/opentelemetry/).
+The application configures HTTP parent spans, the subscriber, and the exporter;
+the GraphQL adapters do not initialize telemetry.
+
 Both maintained adapters expose `GraphQLRequest` and `GraphQLResponse`. The request wrapper contains the runtime request; the response wrapper accepts the result of execution. The examples below assume application state named `AppState` with `schema` and `dispatcher` fields, as in the consumer examples, and use `()` as Context.
 
 `necrassrs-http` contains the response media-type selection shared by both adapters. It parses `Accept` preferences, applies quality and specificity rules, and handles explicit exclusions. It does not execute GraphQL, read request bodies, run a server, or own application routes. Applications normally depend on their adapter, which brings this package transitively.

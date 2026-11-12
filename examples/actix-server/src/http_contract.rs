@@ -27,8 +27,8 @@ fn exchange(
     (status, headers.to_ascii_lowercase(), body.to_owned())
 }
 
-// Both consumers run this against a real server with an application-selected 128-byte body limit.
-pub fn check_method_and_transport_errors(address: SocketAddr, oversized_uri_status: u16) {
+// The test server uses an application-selected 128-byte body limit.
+pub fn check_method_and_transport_errors(address: SocketAddr) {
     let query = r#"{"query":"{ hello(name: \"Sheri\") }"}"#;
     for (method, target, body) in [
         ("GET", "/graphql?query=%7Bhello(name%3A%22Sheri%22)%7D", ""),
@@ -97,7 +97,7 @@ pub fn check_method_and_transport_errors(address: SocketAddr, oversized_uri_stat
     );
     assert_eq!(
         (observed, uri_status),
-        (vec![(405, true, true); 2], oversized_uri_status),
+        (vec![(405, true, true); 2], 400),
         "HEAD, SSE-only GET mutation, and oversized URI (HTTP candidate 3903e680, Status Codes)"
     );
 }
