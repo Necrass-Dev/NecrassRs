@@ -11,11 +11,18 @@ doc = false
 
 [dependencies]
 actix-web = "4"
-necrassrs.workspace = true
+necrassrs = { workspace = true, features = ["tracing"] }
 necrassrs-actix.workspace = true
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry-stdout = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace"] }
+tracing-actix-web = "0.7"
+tracing-opentelemetry = { version = "0.32", default-features = false }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 
 [build-dependencies]
 necrassrs-build.workspace = true
 
 [dev-dependencies]
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["testing"] }
 serde_json = "1.0"

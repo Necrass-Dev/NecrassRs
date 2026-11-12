@@ -3,6 +3,11 @@ use std::sync::Arc;
 use axum::{Router, extract::State, routing::get};
 use necrassrs::{Schema, Valid};
 use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
+use tower_http::trace::TraceLayer;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 mod generated;
 mod resolvers;
@@ -35,12 +40,38 @@ fn app() -> Router {
         )
         .route("/graphiql", get(|| async { graphiql_html("/graphql") }))
         .with_state(state)
+        .layer(TraceLayer::new_for_http())
+}
+
+fn init_tracing() -> SdkTracerProvider {
+    let provider = SdkTracerProvider::builder()
+        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+            0.1,
+        ))))
+        .with_simple_exporter(opentelemetry_stdout::SpanExporter::default())
+        .build();
+    let subscriber = tracing_subscriber::registry().with(
+        tracing_opentelemetry::layer()
+            .with_error_events_to_status(false)
+            .with_tracer(provider.tracer("axum-server")),
+    );
+    subscriber
+        .try_init()
+        .expect("global tracing subscriber must only be initialized once");
+    provider
 }
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
-    axum::serve(listener, app()).await
+    let provider = init_tracing();
+    let server = async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+        axum::serve(listener, app()).await
+    }
+    .await;
+    let shutdown = provider.shutdown().map_err(std::io::Error::other);
+    server?;
+    shutdown
 }
 
 #[cfg(test)]
@@ -54,8 +85,55 @@ mod tests {
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
     };
+    use opentelemetry::Value as OtelValue;
+    use opentelemetry_sdk::trace::InMemorySpanExporter;
     use serde_json::{Value, json};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn graphql_trace_is_child_of_http_trace() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_opentelemetry::layer()
+                .with_error_events_to_status(false)
+                .with_tracer(provider.tracer("axum-server-test")),
+        );
+        subscriber.try_init().unwrap();
+
+        let (status, _) = post(
+            &app(),
+            json!({ "query": "query Example { hello(name: \"Sheri\") }" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let operation = spans
+            .iter()
+            .find(|span| {
+                span.name == "query"
+                    && span.attributes.iter().any(|attribute| {
+                        attribute.key.as_str() == "graphql.operation.name"
+                            && matches!(&attribute.value, OtelValue::String(name) if name.as_str() == "Example")
+                    })
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing GraphQL operation span; exported spans: {:?}",
+                    spans.iter().map(|span| span.name.as_ref()).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.span_context.span_id() == operation.parent_span_id),
+            "GraphQL operation parent must be the exported HTTP request span"
+        );
+    }
 
     #[tokio::test]
     async fn http_method_and_transport_errors_over_tcp() {

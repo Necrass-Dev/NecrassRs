@@ -1,6 +1,11 @@
 use actix_web::{App, HttpServer, web};
 use necrassrs::{Schema, Valid};
 use necrassrs_actix::{GraphQLRequest, GraphQLResponse, graphiql_html};
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
+use tracing_actix_web::TracingLogger;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 mod generated;
 mod resolvers;
@@ -35,12 +40,41 @@ fn configure(cfg: &mut web::ServiceConfig) {
     );
 }
 
+fn init_tracing() -> SdkTracerProvider {
+    let provider = SdkTracerProvider::builder()
+        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+            0.1,
+        ))))
+        .with_simple_exporter(opentelemetry_stdout::SpanExporter::default())
+        .build();
+    let subscriber = tracing_subscriber::registry().with(
+        tracing_opentelemetry::layer()
+            .with_error_events_to_status(false)
+            .with_tracer(provider.tracer("actix-server")),
+    );
+    subscriber
+        .try_init()
+        .expect("global tracing subscriber must only be initialized once");
+    provider
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    HttpServer::new(|| App::new().configure(configure))
+    let provider = init_tracing();
+    let server = async {
+        HttpServer::new(|| {
+            App::new()
+                .wrap(TracingLogger::default())
+                .configure(configure)
+        })
         .bind(("127.0.0.1", 3001))?
         .run()
         .await
+    }
+    .await;
+    let shutdown = provider.shutdown().map_err(std::io::Error::other);
+    server?;
+    shutdown
 }
 
 #[cfg(test)]
@@ -54,7 +88,63 @@ mod tests {
         http::{StatusCode, header},
         test,
     };
+    use opentelemetry::Value as OtelValue;
+    use opentelemetry_sdk::trace::InMemorySpanExporter;
     use serde_json::{Value, json};
+
+    #[actix_web::test]
+    async fn graphql_trace_is_child_of_http_trace() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_opentelemetry::layer()
+                .with_error_events_to_status(false)
+                .with_tracer(provider.tracer("actix-server-test")),
+        );
+        subscriber.try_init().unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .wrap(TracingLogger::default())
+                .configure(configure),
+        )
+        .await;
+        let request = test::TestRequest::post()
+            .uri("/graphql")
+            .set_json(json!({
+                "query": "query Example { hello(name: \"Sheri\") }"
+            }))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        test::read_body(response).await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let operation = spans
+            .iter()
+            .find(|span| {
+                span.name == "query"
+                    && span.attributes.iter().any(|attribute| {
+                        attribute.key.as_str() == "graphql.operation.name"
+                            && matches!(&attribute.value, OtelValue::String(name) if name.as_str() == "Example")
+                    })
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing GraphQL operation span; exported spans: {:?}",
+                    spans.iter().map(|span| span.name.as_ref()).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.span_context.span_id() == operation.parent_span_id),
+            "GraphQL operation parent must be the exported HTTP request span"
+        );
+    }
 
     #[actix_web::test]
     async fn http_method_and_transport_errors_over_tcp() {
