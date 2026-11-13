@@ -1,3 +1,12 @@
+use crate::{
+    Request, ResolvedObject, ResolvedValue, ResolverError, Response, ResponseStream, ScalarError,
+    ScalarLiteralMap, SourceEvent, SourceStream, SubscriptionError,
+    input::literal_to_json as input_literal_to_json,
+    request::{
+        PreparedRequest, RequestError, coerce_request_variables, parse_request, validate_request,
+    },
+    telemetry::{self, OperationSpan, Span},
+};
 use futures_util::{StreamExt, future::join_all, stream};
 use reed_compiler::{
     Name, Node, Schema,
@@ -9,13 +18,6 @@ use reed_compiler::{
     response::{GraphQLError, JsonMap, JsonValue, ResponseDataPathSegment},
     schema::{ExtendedType, FieldDefinition, ObjectType},
     validation::Valid,
-};
-
-use crate::{
-    Request, ResolvedObject, ResolvedValue, ResolverError, Response, ResponseStream, ScalarError,
-    ScalarLiteralMap, SourceEvent, SourceStream, SubscriptionError,
-    input::literal_to_json as input_literal_to_json,
-    request::{PreparedRequest, prepare_request},
 };
 
 /// Original SDL coordinates of a field to resolve, independent of query aliases.
@@ -105,12 +107,15 @@ pub trait Dispatcher<C> {
 pub struct ExecutionOptions {
     /// Whether `__schema` and `__type` may be queried. Enabled by default.
     pub introspection: bool,
+    /// Whether scalar and enum fields receive tracing spans. Disabled by default.
+    pub trace_scalars: bool,
 }
 
 impl Default for ExecutionOptions {
     fn default() -> Self {
         Self {
             introspection: true,
+            trace_scalars: false,
         }
     }
 }
@@ -187,6 +192,50 @@ where
     .await
 }
 
+fn request_phase<T>(
+    span: &Span,
+    f: impl FnOnce() -> Result<T, RequestError>,
+) -> Result<T, RequestError> {
+    span.in_scope(|| {
+        let result = f();
+        if result.is_err() {
+            telemetry::record_request_error();
+        }
+        result
+    })
+}
+
+fn prepare_instrumented<C, D>(
+    schema: &Valid<Schema>,
+    request: &Request,
+    dispatcher: &D,
+    operation_span: &Span,
+) -> Result<PreparedRequest, RequestError>
+where
+    D: Dispatcher<C>,
+{
+    let parse = operation_span.in_scope(|| Span::phase("necrassrs.parse"));
+    let ast = operation_span.in_scope(|| request_phase(&parse, || parse_request(request)))?;
+
+    let validate = operation_span.in_scope(|| Span::phase("necrassrs.validate"));
+    let operation = operation_span
+        .in_scope(|| request_phase(&validate, || validate_request(schema, request, ast)))?;
+    operation_span.identify_operation(
+        operation.operation.operation_type.name(),
+        operation.operation.name.as_deref(),
+    );
+
+    let coerce = operation_span.in_scope(|| Span::phase("necrassrs.coerce_variables"));
+    operation_span.in_scope(|| {
+        request_phase(&coerce, || {
+            let prepared = coerce_request_variables(schema, request, operation)?;
+            validate_custom_scalar_variables::<C, D>(schema, &prepared, dispatcher)
+                .map_err(|error| RequestError::from(vec![*error]))?;
+            Ok(prepared)
+        })
+    })
+}
+
 /// Validates a subscription request and creates its source stream.
 pub fn subscribe<'a, C, D>(
     schema: &'a Valid<Schema>,
@@ -213,87 +262,150 @@ pub fn subscribe_with_options<'a, C, D>(
     request: &Request,
     dispatcher: &'a D,
     context: &'a C,
-    _options: ExecutionOptions,
+    options: ExecutionOptions,
 ) -> impl Future<Output = Result<ResponseStream<'a>, Response>> + Send + 'a
 where
     C: Sync,
     D: Dispatcher<C> + Sync,
 {
-    let prepared = prepare_request(schema, request).map_err(Response::from);
+    let parent_span = Span::current();
+    let operation_span = OperationSpan::new();
+    let prepared = prepare_instrumented::<C, D>(schema, request, dispatcher, operation_span.span());
+    let span = operation_span.span().clone();
     async move {
-        let prepared = prepared?;
-        if !prepared.operation.is_subscription() {
-            return Err(Response::request_error(GraphQLError::new(
-                "Expected a subscription operation.",
-                prepared.operation.location(),
-                &prepared.document.sources,
-            )));
-        }
-        if let Err(error) = validate_custom_scalar_variables::<C, D>(schema, &prepared, dispatcher)
-        {
-            return Err(Response::request_error(*error));
-        }
-
-        let fields = collect_fields(schema, &prepared);
-        let Some((response_key, selected_fields)) = fields.first() else {
-            return Err(Response::request_error(GraphQLError::new(
-                "Subscription must select one root field.",
-                prepared.operation.location(),
-                &prepared.document.sources,
-            )));
-        };
-        let field = selected_fields[0];
-        let object_type = schema
-            .get_object(prepared.operation.selection_set.ty.as_str())
-            .expect("validated subscription root must be an object");
-        let definition = schema
-            .type_field(object_type.name.as_str(), field.name.as_str())
-            .expect("validated subscription selection must have a field definition");
-        let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
-        let arguments = coerce_argument_values(schema, &prepared, &path, field, definition)
-            .map_err(|error| Response::request_error(*error))?;
-        let source = dispatcher
-            .resolve_event_stream(
-                context,
-                FieldCoordinate {
-                    parent_type: object_type.name.as_str(),
-                    field: field.name.as_str(),
-                },
-                &arguments.values,
-                &arguments.literals,
-            )
-            .await
-            .map_err(|error| source_creation_error(&prepared, selected_fields, error))?;
-
-        let state = SubscriptionState {
-            schema,
-            prepared,
-            context,
-            source: Some(source),
-        };
-        Ok(ResponseStream::from_stream(stream::unfold(
-            state,
-            |mut state| async move {
-                let event = state.source.as_mut()?.next().await;
-                match event {
-                    None => None,
-                    Some(SourceEvent::SourceError(error)) => {
-                        state.source = None;
-                        Some((Err(SubscriptionError::Source(error)), state))
-                    }
-                    Some(event) => {
-                        let response = execute_subscription_event(
-                            state.schema,
-                            &state.prepared,
-                            state.context,
-                            event,
-                        )
-                        .await;
-                        Some((Ok(response), state))
-                    }
+        span.run(async move {
+            let mut operation_span = operation_span;
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let response = Response::from(error);
+                    operation_span.finish_response(&response);
+                    return Err(response);
                 }
-            },
-        )))
+            };
+            if !prepared.operation.is_subscription() {
+                telemetry::record_request_error();
+                let response = Response::request_error(GraphQLError::new(
+                    "Expected a subscription operation.",
+                    prepared.operation.location(),
+                    &prepared.document.sources,
+                ));
+                operation_span.finish_response(&response);
+                return Err(response);
+            }
+
+            let fields = collect_fields(schema, &prepared);
+            let Some((response_key, selected_fields)) = fields.first() else {
+                telemetry::record_request_error();
+                let response = Response::request_error(GraphQLError::new(
+                    "Subscription must select one root field.",
+                    prepared.operation.location(),
+                    &prepared.document.sources,
+                ));
+                operation_span.finish_response(&response);
+                return Err(response);
+            };
+            let field = selected_fields[0];
+            let object_type = schema
+                .get_object(prepared.operation.selection_set.ty.as_str())
+                .expect("validated subscription root must be an object");
+            let definition = schema
+                .type_field(object_type.name.as_str(), field.name.as_str())
+                .expect("validated subscription selection must have a field definition");
+            let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
+            let arguments =
+                match coerce_argument_values(schema, &prepared, &path, field, definition) {
+                    Ok(arguments) => arguments,
+                    Err(error) => {
+                        telemetry::record_request_error();
+                        let response = Response::request_error(*error);
+                        operation_span.finish_response(&response);
+                        return Err(response);
+                    }
+                };
+            let source = match dispatcher
+                .resolve_event_stream(
+                    context,
+                    FieldCoordinate {
+                        parent_type: object_type.name.as_str(),
+                        field: field.name.as_str(),
+                    },
+                    &arguments.values,
+                    &arguments.literals,
+                )
+                .await
+            {
+                Ok(source) => source,
+                Err(error) => {
+                    telemetry::record_request_error();
+                    let response = source_creation_error(&prepared, selected_fields, error);
+                    operation_span.finish_response(&response);
+                    return Err(response);
+                }
+            };
+
+            let state = SubscriptionState {
+                schema,
+                prepared,
+                context,
+                source: Some(source),
+                options,
+                operation_span,
+                parent_span,
+            };
+            Ok(ResponseStream::from_stream(stream::unfold(
+                state,
+                |mut state| {
+                    let span = state.operation_span.span().clone();
+                    let parent = state.parent_span.clone();
+                    async move {
+                        parent
+                            .run(span.run(async move {
+                                let event = match state.source.as_mut() {
+                                    Some(source) => source.next().await,
+                                    None => None,
+                                };
+                                match event {
+                                    None => {
+                                        state.operation_span.complete();
+                                        None
+                                    }
+                                    Some(SourceEvent::SourceError(error)) => {
+                                        state.source = None;
+                                        state.operation_span.span().record_error(
+                                            &[],
+                                            "necrassrs.subscription_source_error",
+                                        );
+                                        state.operation_span.mark_source_error();
+                                        state.operation_span.complete();
+                                        Some((Err(SubscriptionError::Source(error)), state))
+                                    }
+                                    Some(event) => {
+                                        let event_span =
+                                            Span::subscription_event(state.operation_span.span());
+                                        let response = event_span
+                                            .run(execute_subscription_event(
+                                                state.schema,
+                                                &state.prepared,
+                                                state.context,
+                                                state.options,
+                                                event,
+                                            ))
+                                            .await;
+                                        if response.has_errors() {
+                                            event_span.mark_error("necrassrs.execution_error");
+                                            state.operation_span.mark_execution_error();
+                                        }
+                                        Some((Ok(response), state))
+                                    }
+                                }
+                            }))
+                            .await
+                    }
+                },
+            )))
+        })
+        .await
     }
 }
 
@@ -302,6 +414,9 @@ struct SubscriptionState<'a, C> {
     prepared: PreparedRequest,
     context: &'a C,
     source: Option<SourceStream<'a, ResolvedValue<C>>>,
+    options: ExecutionOptions,
+    operation_span: OperationSpan,
+    parent_span: Span,
 }
 
 fn source_creation_error(
@@ -334,6 +449,7 @@ async fn execute_subscription_event<C>(
     schema: &Valid<Schema>,
     prepared: &PreparedRequest,
     context: &C,
+    options: ExecutionOptions,
     event: SourceEvent<ResolvedValue<C>>,
 ) -> Response
 where
@@ -352,36 +468,44 @@ where
         .type_field(object_type.name.as_str(), field.name.as_str())
         .expect("validated subscription selection must have a field definition");
     let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
-    let mut errors = Vec::new();
-    let value = match event {
-        SourceEvent::Value(value) => value,
-        SourceEvent::FieldError(error) => {
-            errors.push(*subscription_field_error_to_graphql_error(
-                prepared, &fields, &path, error,
-            ));
-            if definition.ty.is_non_null() {
-                return Response::execution(None, errors);
+    let field_span = field_span(schema, object_type, field, definition, &path, options);
+    telemetry::run(field_span, async move {
+        let mut errors = Vec::new();
+        let value = match event {
+            SourceEvent::Value(value) => value,
+            SourceEvent::FieldError(error) => {
+                telemetry::record_error(&path, "necrassrs.resolver_error");
+                errors.push(*subscription_field_error_to_graphql_error(
+                    prepared, &fields, &path, error,
+                ));
+                if definition.ty.is_non_null() {
+                    return Response::execution(None, errors);
+                }
+                ResolvedValue::Json(JsonValue::Null)
             }
-            ResolvedValue::Json(JsonValue::Null)
-        }
-        SourceEvent::SourceError(_) => unreachable!("source errors terminate before execution"),
-    };
-    let completed = complete_value(
-        schema,
-        prepared,
-        &fields,
-        &definition.ty,
-        value,
-        context,
-        &path,
-        &mut errors,
-    )
-    .await;
-    let data = match completed {
-        Ok(value) => Some(JsonMap::from_iter([(response_key.as_str().into(), value)])),
-        Err(PropagateNull) => None,
-    };
-    Response::execution(data, errors)
+            SourceEvent::SourceError(_) => {
+                unreachable!("source errors terminate before execution")
+            }
+        };
+        let completed = complete_value(
+            schema,
+            prepared,
+            &fields,
+            &definition.ty,
+            value,
+            context,
+            &path,
+            &mut errors,
+            options,
+        )
+        .await;
+        let data = match completed {
+            Ok(value) => Some(JsonMap::from_iter([(response_key.as_str().into(), value)])),
+            Err(PropagateNull) => None,
+        };
+        Response::execution(data, errors)
+    })
+    .await
 }
 
 fn subscription_field_error_to_graphql_error(
@@ -422,8 +546,8 @@ fn subscription_field_error_to_graphql_error(
 /// Resolver panics are not caught. Applications enforcing termination for
 /// unimplemented resolvers must set `panic = "abort"` in their root Cargo profiles.
 /// Scheduling and cancellation follow [`execute`]. See that function for a complete
-/// example. To disable introspection, pass `ExecutionOptions { introspection: false }`
-/// as the final argument here.
+/// example. To disable introspection, pass
+/// `ExecutionOptions { introspection: false, ..Default::default() }` as the final argument here.
 pub async fn execute_with_options<C, D>(
     schema: &Valid<Schema>,
     request: &Request,
@@ -435,16 +559,39 @@ where
     C: Sync,
     D: Dispatcher<C> + Sync,
 {
-    let prepared = match prepare_request(schema, request) {
-        Ok(prepared) => prepared,
-        Err(error) => return error.into(),
-    };
+    let mut operation_span = OperationSpan::new();
+    let response =
+        match prepare_instrumented::<C, D>(schema, request, dispatcher, operation_span.span()) {
+            Ok(prepared) => {
+                let execute_span = operation_span
+                    .span()
+                    .in_scope(|| Span::phase("necrassrs.execute"));
+                operation_span
+                    .span()
+                    .run(execute_span.run(execute_prepared(
+                        schema, prepared, dispatcher, context, options,
+                    )))
+                    .await
+            }
+            Err(error) => error.into(),
+        };
+    operation_span.finish_response(&response);
+    response
+}
 
-    if let Err(error) = validate_custom_scalar_variables::<C, D>(schema, &prepared, dispatcher) {
-        return Response::request_error(*error);
-    }
-
+async fn execute_prepared<C, D>(
+    schema: &Valid<Schema>,
+    prepared: PreparedRequest,
+    dispatcher: &D,
+    context: &C,
+    options: ExecutionOptions,
+) -> Response
+where
+    C: Sync,
+    D: Dispatcher<C> + Sync,
+{
     if prepared.operation.is_subscription() {
+        telemetry::record_request_error();
         return Response::response_stream_required(GraphQLError::new(
             "Subscription operations require a response stream.",
             prepared.operation.location(),
@@ -462,6 +609,7 @@ where
         .map(|fields| fields[0])
         .find(|field| matches!(field.name.as_str(), "__schema" | "__type"));
     if let Some(field) = introspection_field.filter(|_| !options.introspection) {
+        telemetry::record_request_error();
         return Response::request_error(GraphQLError::new(
             "Schema introspection is disabled.",
             field.name.location(),
@@ -474,6 +622,7 @@ where
     if introspection_field.is_some() {
         if let Err(error) = introspection::check_max_depth(&prepared.document, &prepared.operation)
         {
+            telemetry::record_request_error();
             return Response::request_error(error.to_graphql_error(&prepared.document.sources));
         }
         match introspection::partial_execute(
@@ -488,6 +637,7 @@ where
                 errors = response.errors;
             }
             Err(error) => {
+                telemetry::record_request_error();
                 return Response::request_error(error.to_graphql_error(&prepared.document.sources));
             }
         }
@@ -505,6 +655,7 @@ where
                 &introspection_data,
                 dispatcher,
                 context,
+                options,
             )
             .await;
             errors.append(&mut field_errors);
@@ -531,6 +682,7 @@ where
             &introspection_data,
             dispatcher,
             context,
+            options,
         )
     }))
     .await;
@@ -668,6 +820,30 @@ where
     }
 }
 
+fn field_span(
+    schema: &Valid<Schema>,
+    object_type: &ObjectType,
+    field: &Field,
+    definition: &FieldDefinition,
+    path: &[ResponseDataPathSegment],
+    options: ExecutionOptions,
+) -> Option<Span> {
+    if field.name.as_str().starts_with("__") {
+        return None;
+    }
+    let composite = matches!(
+        schema.types.get(definition.ty.inner_named_type()),
+        Some(ExtendedType::Object(_) | ExtendedType::Interface(_) | ExtendedType::Union(_))
+    );
+    (composite || options.trace_scalars).then(|| {
+        Span::field(
+            object_type.name.as_str(),
+            field.name.as_str(),
+            &telemetry::path_string(path),
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_root_field<'a, C, D>(
     schema: &'a Valid<Schema>,
@@ -678,6 +854,7 @@ async fn execute_root_field<'a, C, D>(
     introspection_data: &'a JsonMap,
     dispatcher: &'a D,
     context: &'a C,
+    options: ExecutionOptions,
 ) -> (Name, Option<CompletionResult>, Vec<GraphQLError>)
 where
     C: Sync,
@@ -700,6 +877,7 @@ where
     let definition = match schema.type_field(object_type.name.as_str(), field.name.as_str()) {
         Ok(definition) => definition,
         Err(_) => {
+            telemetry::record_error(&path, "necrassrs.result_error");
             errors.push(*new_execution_error(
                 prepared,
                 &path,
@@ -711,61 +889,70 @@ where
         }
     };
 
-    let (value, has_error) = match field.name.as_str() {
-        "__typename" => (
-            ResolvedValue::Json(JsonValue::from(
-                prepared.operation.selection_set.ty.as_str(),
-            )),
-            false,
-        ),
-        _ => match coerce_argument_values(schema, prepared, &path, field, definition) {
-            Ok(arguments) => match dispatcher
-                .resolve_with_literals(
-                    context,
-                    FieldCoordinate {
-                        parent_type: object_type.name.as_str(),
-                        field: field.name.as_str(),
-                    },
-                    &arguments.values,
-                    &arguments.literals,
-                )
-                .await
-            {
-                Ok(value) => (value, false),
+    let field_span = field_span(schema, object_type, field, definition, &path, options);
+    telemetry::run(field_span, async move {
+        let mut errors = errors;
+
+        let (value, has_error) = match field.name.as_str() {
+            "__typename" => (
+                ResolvedValue::Json(JsonValue::from(
+                    prepared.operation.selection_set.ty.as_str(),
+                )),
+                false,
+            ),
+            _ => match coerce_argument_values(schema, prepared, &path, field, definition) {
+                Ok(arguments) => match dispatcher
+                    .resolve_with_literals(
+                        context,
+                        FieldCoordinate {
+                            parent_type: object_type.name.as_str(),
+                            field: field.name.as_str(),
+                        },
+                        &arguments.values,
+                        &arguments.literals,
+                    )
+                    .await
+                {
+                    Ok(value) => (value, false),
+                    Err(error) => {
+                        telemetry::record_error(&path, "necrassrs.resolver_error");
+                        errors.push(*resolver_error_to_graphql_error(
+                            prepared, &fields, &path, error,
+                        ));
+                        (ResolvedValue::Json(JsonValue::Null), true)
+                    }
+                },
                 Err(error) => {
-                    errors.push(*resolver_error_to_graphql_error(
-                        prepared, &fields, &path, error,
-                    ));
+                    telemetry::record_error(&path, "necrassrs.argument_error");
+                    errors.push(*error);
                     (ResolvedValue::Json(JsonValue::Null), true)
                 }
             },
-            Err(error) => {
-                errors.push(*error);
-                (ResolvedValue::Json(JsonValue::Null), true)
-            }
-        },
-    };
+        };
 
-    if has_error
-        && matches!(&value, ResolvedValue::Json(value) if value.is_null())
-        && definition.ty.is_non_null()
-    {
-        return (response_key, Some(Err(PropagateNull)), errors);
-    }
+        if has_error
+            && matches!(&value, ResolvedValue::Json(value) if value.is_null())
+            && definition.ty.is_non_null()
+        {
+            return (response_key, Some(Err(PropagateNull)), errors);
+        }
 
-    let value = complete_value(
-        schema,
-        prepared,
-        &fields,
-        &definition.ty,
-        value,
-        context,
-        &path,
-        &mut errors,
-    )
-    .await;
+        let value = complete_value(
+            schema,
+            prepared,
+            &fields,
+            &definition.ty,
+            value,
+            context,
+            &path,
+            &mut errors,
+            options,
+        )
+        .await;
 
-    (response_key, Some(value), errors)
+        (response_key, Some(value), errors)
+    })
+    .await
 }
 
 fn resolver_error_to_graphql_error(
@@ -1254,6 +1441,7 @@ fn complete_value<'a, C>(
     context: &'a C,
     path: &'a [ResponseDataPathSegment],
     errors: &'a mut Vec<GraphQLError>,
+    options: ExecutionOptions,
 ) -> CompletionFuture<'a>
 where
     C: Sync + 'a,
@@ -1262,6 +1450,7 @@ where
         let field = fields[0];
         let value = match value {
             ResolvedValue::Error(error) => {
+                telemetry::record_error(path, "necrassrs.result_error");
                 errors.push(*resolver_error_to_graphql_error(
                     prepared, fields, path, error,
                 ));
@@ -1272,6 +1461,7 @@ where
 
         if matches!(&value, ResolvedValue::Json(value) if value.is_null()) {
             if ty.is_non_null() {
+                telemetry::record_error(path, "necrassrs.result_error");
                 errors.push(*new_field_execution_error(
                     prepared,
                     fields,
@@ -1288,13 +1478,13 @@ where
         match ty {
             Type::List(item_type) | Type::NonNullList(item_type) => {
                 complete_list_value(
-                    schema, prepared, fields, ty, item_type, value, context, path, errors,
+                    schema, prepared, fields, ty, item_type, value, context, path, errors, options,
                 )
                 .await
             }
             Type::Named(name) | Type::NonNullNamed(name) => {
                 complete_named_value(
-                    schema, prepared, fields, ty, name, value, context, path, errors,
+                    schema, prepared, fields, ty, name, value, context, path, errors, options,
                 )
                 .await
             }
@@ -1321,6 +1511,7 @@ async fn complete_list_value<C>(
     context: &C,
     path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
+    options: ExecutionOptions,
 ) -> CompletionResult
 where
     C: Sync,
@@ -1332,6 +1523,7 @@ where
             values.into_iter().map(ResolvedValue::Json).collect()
         }
         _ => {
+            telemetry::record_error(path, "necrassrs.result_error");
             errors.push(*new_field_execution_error(
                 prepared,
                 fields,
@@ -1357,6 +1549,7 @@ where
                 context,
                 &item_path,
                 &mut item_errors,
+                options,
             )
             .await;
             (item, item_errors)
@@ -1392,6 +1585,7 @@ async fn complete_named_value<C>(
     context: &C,
     path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
+    options: ExecutionOptions,
 ) -> CompletionResult
 where
     C: Sync,
@@ -1401,7 +1595,7 @@ where
         Some(ExtendedType::Object(_) | ExtendedType::Interface(_) | ExtendedType::Union(_))
     ) {
         complete_object_value(
-            schema, prepared, fields, ty, name, value, context, path, errors,
+            schema, prepared, fields, ty, name, value, context, path, errors, options,
         )
         .await
     } else {
@@ -1420,12 +1614,14 @@ async fn complete_object_value<C>(
     context: &C,
     path: &[ResponseDataPathSegment],
     errors: &mut Vec<GraphQLError>,
+    options: ExecutionOptions,
 ) -> CompletionResult
 where
     C: Sync,
 {
     let field = fields[0];
     let ResolvedValue::Object(object) = value else {
+        telemetry::record_error(path, "necrassrs.result_error");
         errors.push(*new_field_execution_error(
             prepared,
             fields,
@@ -1436,6 +1632,7 @@ where
     };
 
     let Some(object_type) = schema.get_object(object.type_name()) else {
+        telemetry::record_error(path, "necrassrs.result_error");
         errors.push(*new_field_execution_error(
             prepared,
             fields,
@@ -1446,6 +1643,7 @@ where
     };
 
     if !does_fragment_type_apply(schema, object_type, name) {
+        telemetry::record_error(path, "necrassrs.result_error");
         errors.push(*new_field_execution_error(
             prepared,
             fields,
@@ -1483,6 +1681,7 @@ where
             object_type,
             context,
             field_path,
+            options,
         )
     }))
     .await;
@@ -1516,6 +1715,7 @@ async fn complete_object_field<'a, C>(
     object_type: &'a ObjectType,
     context: &'a C,
     path: Vec<ResponseDataPathSegment>,
+    options: ExecutionOptions,
 ) -> (Name, CompletionResult, Vec<GraphQLError>)
 where
     C: Sync,
@@ -1532,40 +1732,52 @@ where
     let definition = schema
         .type_field(object_type.name.as_str(), selected_field.name.as_str())
         .expect("validated Object selection must have a field definition");
-    let mut errors = Vec::new();
-    let (field_value, has_error) = resolve_object_field(
+    let field_span = field_span(
         schema,
-        prepared,
-        &fields,
-        definition,
-        object,
         object_type,
-        context,
+        selected_field,
+        definition,
         &path,
-        &mut errors,
-    )
-    .await;
+        options,
+    );
+    telemetry::run(field_span, async move {
+        let mut errors = Vec::new();
+        let (field_value, has_error) = resolve_object_field(
+            schema,
+            prepared,
+            &fields,
+            definition,
+            object,
+            object_type,
+            context,
+            &path,
+            &mut errors,
+        )
+        .await;
 
-    if has_error
-        && matches!(&field_value, ResolvedValue::Json(value) if value.is_null())
-        && definition.ty.is_non_null()
-    {
-        return (response_key, Err(PropagateNull), errors);
-    }
+        if has_error
+            && matches!(&field_value, ResolvedValue::Json(value) if value.is_null())
+            && definition.ty.is_non_null()
+        {
+            return (response_key, Err(PropagateNull), errors);
+        }
 
-    let field_value = complete_value(
-        schema,
-        prepared,
-        &fields,
-        &definition.ty,
-        field_value,
-        context,
-        &path,
-        &mut errors,
-    )
-    .await;
+        let field_value = complete_value(
+            schema,
+            prepared,
+            &fields,
+            &definition.ty,
+            field_value,
+            context,
+            &path,
+            &mut errors,
+            options,
+        )
+        .await;
 
-    (response_key, field_value, errors)
+        (response_key, field_value, errors)
+    })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1587,6 +1799,7 @@ where
     let arguments = match coerce_argument_values(schema, prepared, path, field, definition) {
         Ok(arguments) => arguments,
         Err(error) => {
+            telemetry::record_error(path, "necrassrs.argument_error");
             errors.push(*error);
             return (ResolvedValue::Json(JsonValue::Null), true);
         }
@@ -1606,6 +1819,7 @@ where
     {
         Ok(value) => (value, false),
         Err(error) => {
+            telemetry::record_error(path, "necrassrs.resolver_error");
             errors.push(*resolver_error_to_graphql_error(
                 prepared, fields, path, error,
             ));
@@ -1627,6 +1841,7 @@ fn complete_leaf_value<C>(
 ) -> CompletionResult {
     let field = fields[0];
     let ResolvedValue::Json(value) = value else {
+        telemetry::record_error(path, "necrassrs.result_error");
         errors.push(*new_field_execution_error(
             prepared,
             fields,
@@ -1659,6 +1874,7 @@ fn complete_leaf_value<C>(
         None => format!("Unknown output type '{name}'."),
     };
 
+    telemetry::record_error(path, "necrassrs.result_error");
     errors.push(*new_field_execution_error(prepared, fields, path, message));
     complete_null(ty)
 }
@@ -3666,6 +3882,7 @@ mod tests {
                 &(),
                 super::ExecutionOptions {
                     introspection: false,
+                    ..Default::default()
                 },
             )
             .await,
@@ -3687,6 +3904,7 @@ mod tests {
                 &(),
                 super::ExecutionOptions {
                     introspection: false,
+                    ..Default::default()
                 },
             )
             .await,

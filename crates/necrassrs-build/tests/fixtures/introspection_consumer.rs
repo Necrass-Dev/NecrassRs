@@ -76,7 +76,10 @@ fn main() {
             &request,
             &dispatcher,
             &(),
-            necrassrs::ExecutionOptions { introspection },
+            necrassrs::ExecutionOptions {
+                introspection,
+                ..Default::default()
+            },
         ));
         let serialized = serde_json::to_string(&response).unwrap();
         serde_json::from_str::<Value>(&serialized).unwrap()

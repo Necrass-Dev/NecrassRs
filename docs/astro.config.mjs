@@ -46,6 +46,7 @@ export default defineConfig({
             "docs/types",
             "docs/custom-scalars",
             "docs/subscriptions",
+            "docs/opentelemetry",
             "docs/resolver-files",
             "docs/graphiql",
             "docs/integration",

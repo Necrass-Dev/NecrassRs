@@ -706,6 +706,7 @@ fn options_operation_selection_and_nested_directives_are_preserved() {
         &context,
         ExecutionOptions {
             introspection: false,
+            ..Default::default()
         },
     )));
     let mut responses = match result {

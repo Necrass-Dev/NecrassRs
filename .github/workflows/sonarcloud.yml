@@ -51,7 +51,7 @@ jobs:
           cargo llvm-cov clean --workspace
           rm -rf target/cargo-consumer
           # Instrument temporary consumer crates as well as workspace members.
-          cargo llvm-cov --workspace --locked --no-rustc-wrapper --no-report -- --test-threads=1 --skip generated_consumer_builds_and_rebuilds_without_the_cli
+          cargo llvm-cov --workspace --all-features --locked --no-rustc-wrapper --no-report -- --test-threads=1 --skip generated_consumer_builds_and_rebuilds_without_the_cli
           # Include consumer tests and build scripts outside llvm-cov's target directory.
           python3 - <<'PY'
           import json
@@ -59,9 +59,9 @@ jobs:
           from pathlib import Path
 
           target = Path("target/cargo-consumer/debug")
+          # Cargo's intermediate artifact layout varies between toolchain versions.
           objects = sorted(
-              path for pattern in ("deps/*", "build/*/build-script-build")
-              for path in target.glob(pattern)
+              path for path in target.rglob("*")
               if path.is_file() and os.access(path, os.X_OK)
           )
           assert objects, "No consumer coverage binaries were collected"
