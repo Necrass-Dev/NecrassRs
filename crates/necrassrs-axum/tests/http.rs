@@ -202,7 +202,7 @@ async fn distinguishes_request_and_execution_errors_and_recovers() {
         json!({ "query": "{ alias: hello(name: \"Unknown\") }" }).to_string(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status.as_u16(), 294);
     assert_eq!(response["data"], Value::Null);
     assert_eq!(
         response["errors"][0]["message"],
@@ -377,15 +377,14 @@ async fn validation_operation_selection_and_variable_errors_return_422() {
 }
 
 #[tokio::test]
-async fn partial_execution_errors_remain_http_200() {
+async fn partial_execution_errors_return_294() {
     let app = app();
-    // Maintainer decision in #18: execution errors use 200, never 294.
     let body = json!({
         "query": "{ ok: hello(name: \"Sheri\") failed: nullableHello(name: \"Unknown\") }"
     })
     .to_string();
     let (status, _, response_body) = send(&app, "POST", Some("application/json"), None, body).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status.as_u16(), 294);
     assert_eq!(
         response_body["data"],
         json!({ "ok": "Hello, Sheri", "failed": null })
@@ -514,8 +513,8 @@ async fn unacceptable_response_type_is_rejected_before_body_extraction() {
 fn contract_app() -> (Router, Arc<AppState>) {
     let state = Arc::new(AppState {
         schema: Schema::parse_and_validate(
-            "type Query { hello(name: String!): String! }
-             type Mutation { hello(name: String!): String! }
+            "type Query { hello(name: String!): String! nullableHello(name: String!): String }
+             type Mutation { hello(name: String!): String! nullableHello(name: String!): String }
              type Subscription { hello(name: String!): String! }",
             "schema.graphql",
         )
@@ -531,6 +530,100 @@ fn contract_app() -> (Router, Arc<AppState>) {
         )
         .with_state(state.clone());
     (app, state)
+}
+
+#[tokio::test]
+async fn execution_status_and_body_follow_the_negotiated_json_contract() {
+    use necrassrs_http::{GRAPHQL_JSON, JSON};
+
+    let (app, _) = contract_app();
+    let mut mismatches = Vec::new();
+    for (accept, expected_media_type) in [
+        (&[][..], JSON),
+        (&[JSON][..], JSON),
+        (&[GRAPHQL_JSON][..], GRAPHQL_JSON),
+        (&["*/*"][..], GRAPHQL_JSON),
+        (
+            &["application/graphql-response+json; charset=utf-8"][..],
+            GRAPHQL_JSON,
+        ),
+        (
+            &["application/json;q=1, application/graphql-response+json;q=0.5"][..],
+            JSON,
+        ),
+        (&["application/json;q=0.5", GRAPHQL_JSON][..], GRAPHQL_JSON),
+        (&["application/graphql-response+json;q=0, */*"][..], JSON),
+    ] {
+        for operation in ["query", "mutation"] {
+            for (selection, data, error_line, expected_status) in [
+                (
+                    "{ ok: hello(name: \"Sheri\") }",
+                    json!({ "ok": "Hello, Sheri" }),
+                    None,
+                    200,
+                ),
+                (
+                    "{ hello(name: \"Sheri\") @skip(if: true) }",
+                    json!({}),
+                    None,
+                    200,
+                ),
+                (
+                    "{\n  ok: hello(name: \"Sheri\")\n  failed: nullableHello(name: \"Unknown\")\n}",
+                    json!({ "ok": "Hello, Sheri", "failed": null }),
+                    Some(3),
+                    294,
+                ),
+                (
+                    "{\n  failed: hello(name: \"Unknown\")\n}",
+                    Value::Null,
+                    Some(2),
+                    294,
+                ),
+            ] {
+                let query = format!("{operation} {selection}");
+                let payload = json!({ "query": query }).to_string();
+                let mut request = HttpRequest::post("/graphql").header(header::CONTENT_TYPE, JSON);
+                for value in accept {
+                    request = request.header(header::ACCEPT, *value);
+                }
+                let response = app
+                    .clone()
+                    .oneshot(request.body(Body::from(payload)).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.headers().get(header::VARY).unwrap(), "Accept");
+                let (status, media_type, body) = response_parts(response).await;
+                assert_eq!(
+                    media_type
+                        .as_deref()
+                        .unwrap()
+                        .split(';')
+                        .next()
+                        .unwrap()
+                        .trim(),
+                    expected_media_type,
+                    "Accept: {accept:?}, {query}"
+                );
+                let mut expected_body = json!({ "data": data });
+                if let Some(line) = error_line {
+                    expected_body["errors"] = json!([{
+                        "message": "User \"Unknown\" was not found.",
+                        "locations": [{ "line": line, "column": 11 }],
+                        "path": ["failed"],
+                        "extensions": { "code": "USER_NOT_FOUND" }
+                    }]);
+                }
+                assert_eq!(body, expected_body, "Accept: {accept:?}, {query}");
+                if status.as_u16() != expected_status {
+                    mismatches.push(format!(
+                        "Accept: {accept:?}, {query}: expected {expected_status}, got {status}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
 #[tokio::test]
@@ -683,39 +776,48 @@ async fn get_mutations_are_rejected_before_dispatch_even_with_a_json_body() {
 }
 
 #[tokio::test]
-async fn request_errors_preserve_negotiated_json_for_clients_supporting_both_types() {
+async fn request_errors_preserve_status_and_negotiated_json() {
     let (app, state) = contract_app();
-    for (query, expected_status) in [
-        ("{", StatusCode::BAD_REQUEST),
-        ("{ missing }", StatusCode::UNPROCESSABLE_ENTITY),
+    for (accept, expected_media_type) in [
+        (
+            "application/graphql-response+json",
+            "application/graphql-response+json",
+        ),
+        ("application/json", "application/graphql-response+json"),
+        (
+            "application/json;q=1, application/graphql-response+json;q=0.1",
+            "application/json",
+        ),
     ] {
-        let body = json!({ "query": query }).to_string();
-        let request = HttpRequest::builder()
-            .method("POST")
-            .uri("/graphql")
-            .header(
-                header::ACCEPT,
-                "application/json;q=1, application/graphql-response+json;q=0.1",
-            )
-            .header(header::CONTENT_TYPE, "application/json");
-        let response = app
-            .clone()
-            .oneshot(request.body(Body::from(body)).unwrap())
-            .await
-            .unwrap();
-        let (status, media_type, body) = response_parts(response).await;
-        assert_eq!(status, expected_status);
-        assert_eq!(
-            media_type.as_deref().unwrap().split(';').next(),
-            Some("application/json")
-        );
-        assert!(body.get("data").is_none());
-        assert!(
-            body["errors"]
-                .as_array()
-                .is_some_and(|errors| !errors.is_empty())
-        );
-        assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+        for (query, expected_status) in [
+            ("{", StatusCode::BAD_REQUEST),
+            ("{ missing }", StatusCode::UNPROCESSABLE_ENTITY),
+        ] {
+            let body = json!({ "query": query }).to_string();
+            let request = HttpRequest::builder()
+                .method("POST")
+                .uri("/graphql")
+                .header(header::ACCEPT, accept)
+                .header(header::CONTENT_TYPE, "application/json");
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            let (status, media_type, body) = response_parts(response).await;
+            assert_eq!(status, expected_status);
+            assert_eq!(
+                media_type.as_deref().unwrap().split(';').next(),
+                Some(expected_media_type)
+            );
+            assert!(body.get("data").is_none());
+            assert!(
+                body["errors"]
+                    .as_array()
+                    .is_some_and(|errors| !errors.is_empty())
+            );
+            assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+        }
     }
 }
 

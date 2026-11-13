@@ -208,6 +208,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -541,13 +542,15 @@ mod tests {
 
     impl TestDirectory {
         fn new() -> Self {
+            static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
             let path = std::env::temp_dir().join(format!(
-                "necrassrs-cli-unit-{}-{}",
+                "necrassrs-cli-unit-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_nanos(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed),
             ));
             fs::create_dir(&path).unwrap();
             Self(path)

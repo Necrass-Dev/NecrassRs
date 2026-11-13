@@ -1,6 +1,29 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+To be released.
+
+### necrassrs
+
+ -  Added `Response::is_execution_error` to distinguish completed execution
+    results containing errors from request errors. [[#93]]
+
+[#93]: https://github.com/Necrass-Dev/NecrassRs/issues/93
+
+### necrassrs-axum
+
+ -  Changed completed execution results containing errors to return HTTP `294`,
+    while preserving the negotiated JSON response body. [[#93]]
+
+### necrassrs-actix
+
+ -  Changed completed execution results containing errors to return HTTP `294`,
+    while preserving the negotiated JSON response body. [[#93]]
+
+
 Version 0.3.0
 -------------
 

@@ -41,10 +41,11 @@
 //! content types receive 415, and oversized bodies receive 413. Route methods
 //! other than GET and POST receive Axum's 405. GET mutations receive 405.
 //! GraphQL syntax errors receive 400;
-//! other GraphQL request errors receive 422. Execution results, including
-//! domain errors, receive 200. Mount [`negotiate_response`] on GraphQL routes
-//! to negotiate responses using `Accept`. Extractor failures retain Axum's
-//! rejection response and are not relabeled as GraphQL responses.
+//! other GraphQL request errors receive 422. Error-free execution results receive
+//! 200; execution results with field errors receive 294. Mount
+//! [`negotiate_response`] on GraphQL routes to negotiate responses using
+//! `Accept`. Extractor failures retain Axum's rejection response and are not
+//! relabeled as GraphQL responses.
 
 use axum::{
     Json,
@@ -265,9 +266,9 @@ fn parse_optional_map(value: &str) -> Result<Option<JsonMap>, serde_json::Error>
 ///
 /// Subscriptions passed to single-response execution receive HTTP 406.
 /// Syntax errors receive HTTP 400, other request errors HTTP 422;
-/// execution responses receive HTTP 200,
-/// including responses with resolver errors or `data: null`. The content type
-/// is `application/json` unless [`negotiate_response`] selects another type.
+/// error-free execution responses receive HTTP 200, while responses with
+/// resolver errors receive HTTP 294, including when `data` is null. The content
+/// type is `application/json` unless [`negotiate_response`] selects another type.
 /// See the [crate documentation](crate) for extraction
 /// errors, which follow a separate path.
 pub struct GraphQLResponse(
@@ -283,6 +284,8 @@ impl IntoResponse for GraphQLResponse {
             StatusCode::BAD_REQUEST
         } else if self.0.is_request_error() {
             StatusCode::UNPROCESSABLE_ENTITY
+        } else if self.0.is_execution_error() {
+            StatusCode::from_u16(294).expect("294 is a valid HTTP status code")
         } else {
             StatusCode::OK
         };

@@ -50,6 +50,7 @@ export default defineConfig({
             "docs/resolver-files",
             "docs/graphiql",
             "docs/integration",
+            "docs/graphql-over-http",
           ],
         },
       ],
