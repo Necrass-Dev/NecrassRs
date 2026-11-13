@@ -316,7 +316,7 @@ async fn distinguishes_request_and_execution_errors_and_recovers() {
     let response = test::call_service(&app, req).await;
     let (status, _, response_body) = response_parts(response).await;
 
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status.as_u16(), 294);
     assert_eq!(response_body["data"], Value::Null);
     assert_eq!(
         response_body["errors"][0]["message"],
@@ -495,9 +495,8 @@ async fn validation_operation_selection_and_variable_errors_return_422() {
 }
 
 #[actix_web::test]
-async fn partial_execution_errors_remain_http_200() {
+async fn partial_execution_errors_return_294() {
     let app = test::init_service(app()).await;
-    // Maintainer decision in #18: execution errors use 200, never 294.
     let body = json!({
         "query": "{ ok: hello(name: \"Sheri\") failed: nullableHello(name: \"Unknown\") }"
     })
@@ -505,7 +504,7 @@ async fn partial_execution_errors_remain_http_200() {
     let req = request("POST", Some("application/json"), None, body).to_request();
     let response = test::call_service(&app, req).await;
     let (status, _, response_body) = response_parts(response).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status.as_u16(), 294);
     assert_eq!(
         response_body["data"],
         json!({ "ok": "Hello, Sheri", "failed": null })
@@ -652,8 +651,8 @@ async fn json_configuration_preserves_body_limits_and_custom_errors() {
 fn contract_state() -> web::Data<AppState> {
     let mut state = app_state();
     state.schema = Schema::parse_and_validate(
-        "type Query { hello(name: String!): String! }
-         type Mutation { hello(name: String!): String! }
+        "type Query { hello(name: String!): String! nullableHello(name: String!): String }
+         type Mutation { hello(name: String!): String! nullableHello(name: String!): String }
          type Subscription { hello(name: String!): String! }",
         "schema.graphql",
     )
@@ -677,6 +676,99 @@ fn contract_app(
             .route(web::get().to(graphql))
             .route(web::post().to(graphql)),
     )
+}
+
+#[actix_web::test]
+async fn execution_status_and_body_follow_the_negotiated_json_contract() {
+    use necrassrs_http::{GRAPHQL_JSON, JSON};
+
+    let app = test::init_service(contract_app(contract_state())).await;
+    let mut mismatches = Vec::new();
+    for (accept, expected_media_type) in [
+        (&[][..], JSON),
+        (&[JSON][..], JSON),
+        (&[GRAPHQL_JSON][..], GRAPHQL_JSON),
+        (&["*/*"][..], GRAPHQL_JSON),
+        (
+            &["application/graphql-response+json; charset=utf-8"][..],
+            GRAPHQL_JSON,
+        ),
+        (
+            &["application/json;q=1, application/graphql-response+json;q=0.5"][..],
+            JSON,
+        ),
+        (&["application/json;q=0.5", GRAPHQL_JSON][..], GRAPHQL_JSON),
+        (&["application/graphql-response+json;q=0, */*"][..], JSON),
+    ] {
+        for operation in ["query", "mutation"] {
+            for (selection, data, error_line, expected_status) in [
+                (
+                    "{ ok: hello(name: \"Sheri\") }",
+                    json!({ "ok": "Hello, Sheri" }),
+                    None,
+                    200,
+                ),
+                (
+                    "{ hello(name: \"Sheri\") @skip(if: true) }",
+                    json!({}),
+                    None,
+                    200,
+                ),
+                (
+                    "{\n  ok: hello(name: \"Sheri\")\n  failed: nullableHello(name: \"Unknown\")\n}",
+                    json!({ "ok": "Hello, Sheri", "failed": null }),
+                    Some(3),
+                    294,
+                ),
+                (
+                    "{\n  failed: hello(name: \"Unknown\")\n}",
+                    Value::Null,
+                    Some(2),
+                    294,
+                ),
+            ] {
+                let query = format!("{operation} {selection}");
+                let payload = json!({ "query": query }).to_string();
+                let mut request = test::TestRequest::post()
+                    .uri("/graphql")
+                    .insert_header((header::CONTENT_TYPE, JSON))
+                    .set_payload(payload);
+                for value in accept {
+                    request = request.append_header((header::ACCEPT, *value));
+                }
+                let response = test::call_service(&app, request.to_request()).await;
+                assert_eq!(response.headers().get(header::VARY).unwrap(), "Accept");
+                let (status, media_type, body) = response_parts(response).await;
+                assert_eq!(
+                    media_type
+                        .as_deref()
+                        .unwrap()
+                        .split(';')
+                        .next()
+                        .unwrap()
+                        .trim(),
+                    expected_media_type,
+                    "Accept: {accept:?}, {query}"
+                );
+                let mut expected_body = json!({ "data": data });
+                if let Some(line) = error_line {
+                    expected_body["errors"] = json!([{
+                        "message": "User \"Unknown\" was not found.",
+                        "locations": [{ "line": line, "column": 11 }],
+                        "path": ["failed"],
+                        "extensions": { "code": "USER_NOT_FOUND" }
+                    }]);
+                }
+                assert_eq!(body, expected_body, "Accept: {accept:?}, {query}");
+                if status.as_u16() != expected_status {
+                    mismatches.push(format!(
+                        "Accept: {accept:?}, {query}: expected {expected_status}, got {status}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
 #[actix_web::test]
@@ -806,34 +898,43 @@ async fn get_mutations_are_rejected_before_dispatch_even_with_a_json_body() {
 }
 
 #[actix_web::test]
-async fn request_errors_preserve_negotiated_json_for_clients_supporting_both_types() {
+async fn request_errors_preserve_status_and_negotiated_json() {
     let state = contract_state();
     let app = test::init_service(contract_app(state.clone())).await;
-    for (query, expected_status) in [
-        ("{", StatusCode::BAD_REQUEST),
-        ("{ missing }", StatusCode::UNPROCESSABLE_ENTITY),
+    for (accept, expected_media_type) in [
+        (
+            "application/graphql-response+json",
+            "application/graphql-response+json",
+        ),
+        ("application/json", "application/graphql-response+json"),
+        (
+            "application/json;q=1, application/graphql-response+json;q=0.1",
+            "application/json",
+        ),
     ] {
-        let body = json!({ "query": query }).to_string();
-        let req = request_at("/graphql", "POST", Some("application/json"), None, body)
-            .insert_header((
-                header::ACCEPT,
-                "application/json;q=1, application/graphql-response+json;q=0.1",
-            ))
-            .to_request();
-        let response = test::call_service(&app, req).await;
-        let (status, media_type, body) = response_parts(response).await;
-        assert_eq!(status, expected_status);
-        assert_eq!(
-            media_type.as_deref().unwrap().split(';').next(),
-            Some("application/json")
-        );
-        assert!(body.get("data").is_none());
-        assert!(
-            body["errors"]
-                .as_array()
-                .is_some_and(|errors| !errors.is_empty())
-        );
-        assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+        for (query, expected_status) in [
+            ("{", StatusCode::BAD_REQUEST),
+            ("{ missing }", StatusCode::UNPROCESSABLE_ENTITY),
+        ] {
+            let body = json!({ "query": query }).to_string();
+            let req = request_at("/graphql", "POST", Some("application/json"), None, body)
+                .insert_header((header::ACCEPT, accept))
+                .to_request();
+            let response = test::call_service(&app, req).await;
+            let (status, media_type, body) = response_parts(response).await;
+            assert_eq!(status, expected_status);
+            assert_eq!(
+                media_type.as_deref().unwrap().split(';').next(),
+                Some(expected_media_type)
+            );
+            assert!(body.get("data").is_none());
+            assert!(
+                body["errors"]
+                    .as_array()
+                    .is_some_and(|errors| !errors.is_empty())
+            );
+            assert_eq!(state.dispatcher.calls.load(Ordering::SeqCst), 0);
+        }
     }
 }
 

@@ -27,6 +27,64 @@ fn exchange(
     (status, headers.to_ascii_lowercase(), body.to_owned())
 }
 
+pub fn check_execution_error_statuses(address: SocketAddr) {
+    use serde_json::json;
+
+    let mut mismatches = Vec::new();
+    for accept in ["application/graphql-response+json", "application/json"] {
+        for method in ["GET", "POST"] {
+            for (name, expected_status, expected_body) in [
+                (
+                    "Unknown",
+                    294,
+                    json!({
+                        "data": null,
+                        "errors": [{
+                            "message": "User \"Unknown\" was not found.",
+                            "locations": [{ "line": 1, "column": 10 }],
+                            "path": ["alias"],
+                            "extensions": { "code": "USER_NOT_FOUND" }
+                        }]
+                    }),
+                ),
+                ("Sheri", 200, json!({ "data": { "alias": "Hello, Sheri" } })),
+            ] {
+                let query = format!("{{ alias: hello(name: \"{name}\") }}");
+                let payload = json!({ "query": query }).to_string();
+                let uri =
+                    format!("/graphql?query=%7B%20alias%3A%20hello(name%3A%20%22{name}%22)%20%7D");
+                let (target, payload) = if method == "GET" {
+                    (uri.as_str(), "")
+                } else {
+                    ("/graphql", payload.as_str())
+                };
+                let (status, headers, body) = exchange(address, method, target, accept, payload);
+                let media_type = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-type:"))
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .trim();
+                assert_eq!(media_type, accept);
+                assert!(headers.contains("\r\nvary: accept"));
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                    expected_body,
+                    "{method}, Accept: {accept}, name: {name}"
+                );
+                if status != expected_status {
+                    mismatches.push(format!(
+                        "{method}, Accept: {accept}, name: {name}: expected {expected_status}, got {status}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
 // The test server uses an application-selected 128-byte body limit.
 pub fn check_method_and_transport_errors(address: SocketAddr) {
     let query = r#"{"query":"{ hello(name: \"Sheri\") }"}"#;

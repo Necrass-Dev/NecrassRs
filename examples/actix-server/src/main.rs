@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn http_method_and_transport_errors_over_tcp() {
+    async fn http_contract_over_tcp() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let server = HttpServer::new(|| {
@@ -163,6 +163,7 @@ mod tests {
         let result = actix_web::rt::task::spawn_blocking(move || {
             // Actix maps URI overflow to 400 in its HTTP/1 parser before application dispatch.
             http_contract::check_method_and_transport_errors(address);
+            http_contract::check_execution_error_statuses(address);
         })
         .await;
         handle.stop(false).await;
@@ -203,7 +204,7 @@ mod tests {
         for (query, status, expected) in [
             (
                 "{ alias: hello(name: \"Unknown\") }",
-                StatusCode::OK,
+                StatusCode::from_u16(294).unwrap(),
                 json!({ "data": null, "errors": [{
                     "message": "User \"Unknown\" was not found.",
                     "locations": [{ "line": 1, "column": 10 }],

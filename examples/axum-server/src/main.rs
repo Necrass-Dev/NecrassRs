@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_method_and_transport_errors_over_tcp() {
+    async fn http_contract_over_tcp() {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
@@ -150,6 +150,7 @@ mod tests {
         });
         let result = tokio::task::spawn_blocking(move || {
             http_contract::check_method_and_transport_errors(address);
+            http_contract::check_execution_error_statuses(address);
         })
         .await;
         server.abort();
@@ -194,7 +195,7 @@ mod tests {
         let app = app();
         let (status, response) =
             post(&app, json!({ "query": "{ hello(name: \"Unknown\") }" })).await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status.as_u16(), 294);
         assert_eq!(
             response,
             json!({
@@ -222,7 +223,7 @@ mod tests {
             ),
         ] {
             let (status, response) = post(&app, request).await;
-            assert_eq!(status, StatusCode::OK);
+            assert_eq!(status.as_u16(), 294);
             assert_eq!(response["data"], Value::Null);
             assert_eq!(
                 response["errors"][0]["message"],
@@ -288,7 +289,7 @@ mod tests {
                 }),
             )
             .await;
-            assert_eq!(status, StatusCode::OK);
+            assert_eq!(status.as_u16(), 294);
             assert_eq!(response["data"], Value::Null);
             assert_eq!(
                 response["errors"][0]["extensions"]["code"],
