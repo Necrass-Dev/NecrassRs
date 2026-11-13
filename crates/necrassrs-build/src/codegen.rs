@@ -6383,6 +6383,18 @@ mod test {
             .filter(|message| message["reason"] == "compiler-artifact")
             .collect();
         let mut compiler = Command::new("rustc");
+        // Cargo's intermediate artifact layout varies between toolchain versions.
+        let directories: std::collections::BTreeSet<_> = artifacts
+            .iter()
+            .flat_map(|artifact| artifact["filenames"].as_array().unwrap())
+            .filter_map(|filename| filename.as_str())
+            .filter_map(|filename| Path::new(filename).parent())
+            .collect();
+        for directory in directories {
+            compiler
+                .arg("-L")
+                .arg(format!("dependency={}", directory.display()));
+        }
         for name in ["necrassrs", "futures", "serde_json"] {
             let artifact = artifacts
                 .iter()
@@ -6395,14 +6407,7 @@ mod test {
                 .filter_map(|name| name.as_str())
                 .find(|name| name.ends_with(".rlib"))
                 .expect("Cargo must report the library artifact");
-            let directory = Path::new(library).parent().unwrap();
-            compiler
-                .arg("--extern")
-                .arg(format!("{name}={library}"))
-                .arg("-L")
-                .arg(format!("dependency={}", directory.display()))
-                .arg("-L")
-                .arg(format!("dependency={}", directory.join("deps").display()));
+            compiler.arg("--extern").arg(format!("{name}={library}"));
         }
         if let Some(executable) = executable {
             compiler.arg("-o").arg(executable);

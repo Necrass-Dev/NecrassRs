@@ -59,9 +59,9 @@ jobs:
           from pathlib import Path
 
           target = Path("target/cargo-consumer/debug")
+          # Cargo's intermediate artifact layout varies between toolchain versions.
           objects = sorted(
-              path for pattern in ("deps/*", "build/*/build-script-build")
-              for path in target.glob(pattern)
+              path for path in target.rglob("*")
               if path.is_file() and os.access(path, os.X_OK)
           )
           assert objects, "No consumer coverage binaries were collected"
