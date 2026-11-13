@@ -144,7 +144,7 @@ Without this middleware, `GraphQLResponse` preserves the existing `application/j
 
 `GraphQLRequest` implements Actix's `FromRequest`; `GraphQLResponse` implements `Responder`. The extractor checks acceptable response types before GraphQL execution, and the responder reads `Accept` directly from `HttpRequest`. No additional negotiation middleware is needed.
 
-Use `web::Data` for application state and construct Context inside the handler. Configure JSON limits with `web::JsonConfig::limit`. Standard JSON extraction errors are mapped to the status codes below; custom JSON error handlers returning other error types retain their own responses.
+Use `web::Data` for application state and construct Context inside the handler. Configure JSON limits with `web::JsonConfig::limit`. Standard JSON extraction errors follow the [HTTP status contract](/docs/graphql-over-http/#status-and-error-contract); custom JSON error handlers returning other error types retain their own responses.
 
 ```rust
 use actix_web::web;
@@ -175,47 +175,23 @@ Both adapters also provide an optional `graphiql_html` helper. Register it on an
 
 ## HTTP behavior
 
-The following contract describes the maintained adapters. Use it as the compatibility baseline for a new HTTP adapter.
+The [GraphQL over HTTP manual](/docs/graphql-over-http/) describes the maintained
+adapters against the September 2026 specification, including request support,
+HTTP 294, framework limitations, and verification coverage.
 
 ### Media types
 
-- Send JSON request bodies with `Content-Type: application/json`.
-- Prefer `Accept: application/graphql-response+json`; `application/json` remains supported for legacy clients.
-- Quality weights (`q`), multiple header values, media-range wildcards, and specific `q=0` exclusions are respected. Equal quality prefers GraphQL JSON.
-- Missing `Accept` preserves the JSON preference. An invalid header or no acceptable supported media type returns 406 before GraphQL execution.
-- Negotiated runtime responses include `Vary: Accept`. Successful HTTP responses use the selected media type. A non-2xx GraphQL response switches to `application/graphql-response+json` only for a legacy client that accepts JSON but not GraphQL JSON; explicit preferences for both types remain effective.
-- Non-GraphQL extraction failures retain framework error bodies when ordinary JSON is acceptable. SSE-only transport failures retain their status with an empty body.
-
-For example:
-
-```sh
-curl -i http://127.0.0.1:3000/graphql \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/graphql-response+json' \
-  --data '{"query":"{ hello(name: \"Sheri\") }"}'
-```
+Send JSON request bodies and prefer `Accept: application/graphql-response+json`.
+Both adapters also support legacy `application/json`. See the
+[media negotiation contract](/docs/graphql-over-http/#media-types) for quality
+weights, missing headers, legacy error labeling, and `Vary: Accept`.
 
 ### Status and error contract
 
-| Condition                                                             | HTTP status           | Response behavior                  |
-| --------------------------------------------------------------------- | --------------------- | ---------------------------------- |
-| Successful execution                                                  | 200                   | GraphQL `data`                     |
-| Execution errors, including partial data or `data: null`              | 200                   | GraphQL `data` and `errors`        |
-| GraphQL document syntax error                                         | 400                   | GraphQL `errors`, no `data`        |
-| GraphQL validation, operation selection, or variable coercion failure | 422                   | GraphQL `errors`, no `data`        |
-| Malformed JSON body                                                   | 400                   | Framework extraction error         |
-| Missing or incorrectly typed request fields                           | 422                   | Framework extraction error         |
-| Non-object JSON envelope or non-object `extensions`                   | 422                   | Framework extraction error         |
-| Missing or unsupported request Content-Type                           | 415                   | Framework extraction error         |
-| Body exceeds configured JSON limit                                    | 413                   | Framework extraction error         |
-| URI exceeds the framework parser limit                                | Axum: 414; Actix: 400 | Framework parser error             |
-| No acceptable response media type or invalid Accept                   | 406                   | Empty HTTP error response          |
-| Selected mutation over GET                                            | 405                   | Empty response, with `Allow: POST` |
-| Subscription limited to ordinary JSON                                 | 406                   | GraphQL `errors`, no `data`        |
-
-The runtime distinguishes Reed AST parsing failures from validation failures without interpreting diagnostic messages. `Response::is_syntax_error()` exposes that distinction to adapters; the classification is not serialized into GraphQL responses. Manually constructed `Response::request_error(s)` values remain general request errors.
-
-NecrassRs deliberately does not adopt HTTP 294. Completed execution results use 200 even when errors propagate to a null root. See the [maintainer decision in #18](https://github.com/Necrass-Dev/NecrassRs/issues/18#issuecomment-5843384906).
+Error-free execution uses 200. Execution with errors uses 294 for both JSON
+representations, including `data: null`; request errors remain 4xx. See the
+[complete status table](/docs/graphql-over-http/#status-and-error-contract) and
+[294 compatibility guidance](/docs/graphql-over-http/#http-294-and-compatibility).
 
 ## Writing an adapter
 
@@ -246,11 +222,12 @@ Let the application handler call `execute` or `execute_with_options`; it owns th
 1. `requires_response_stream()` selects 406 for ordinary JSON delivery.
 2. Otherwise, `is_syntax_error()` selects 400.
 3. Otherwise, `is_request_error()` selects 422.
-4. All execution responses select 200, including partial data and `data: null` with errors.
+4. Otherwise, `is_execution_error()` selects 294, including partial data and `data: null` with errors.
+5. Error-free execution selects 200.
 
 Serialize `Response` directly with Serde. Use the negotiated media type, switching a non-2xx response to `necrassrs_http::GRAPHQL_JSON` only when `ResponseMediaTypes::legacy_json` is true. Include `Vary: Accept` without discarding existing values. Keep framework extraction errors separate from GraphQL response serialization.
 
-Do not classify responses by matching diagnostic text, counting errors, or checking whether `data` is null. Those approaches lose the distinction between request and execution errors. Leave resolver errors, field paths, and null propagation to the runtime.
+Use the runtime classification methods rather than matching diagnostic text, counting serialized errors, or checking whether `data` is null. Those approaches lose the distinction between request and execution errors. Leave resolver errors, field paths, and null propagation to the runtime.
 
 ### Verify and document the integration
 
@@ -262,12 +239,8 @@ A reusable adapter does not automatically become a CLI option. To add a maintain
 
 ## Scope and verification
 
-These behaviors and acceptance cases are informed by [GraphQL-over-HTTP revision 3903e680](https://github.com/graphql/graphql-over-http/blob/3903e68045982cb6710880bf03527aa0e9331667/spec/GraphQLOverHTTP.md). This is a draft reference, not a claim of complete HTTP conformance or the final acceptance baseline for #18.
-
-The maintained adapters and starters expose queries through GET and ordinary operations through POST. They reject GET mutations and subscriptions limited to ordinary JSON before resolver or source dispatch. WebSocket and SSE framing remain separate transport work; body limits remain framework configuration, not a GraphQL-mandated byte count.
-
-Run the focused checks with:
-
-```sh
-cargo test -p necrassrs-http -p necrassrs-axum -p necrassrs-actix --locked
-```
+Use the [GraphQL over HTTP verification guidance](/docs/graphql-over-http/#verification-coverage)
+for adapter and real HTTP consumer checks. The maintained behavior follows the
+September 2026 edition; the [documented limitations](/docs/graphql-over-http/#limitations-and-deployment-boundaries)
+remain part of the support contract. Neither these tests nor an external checker
+establish complete HTTP conformance.
