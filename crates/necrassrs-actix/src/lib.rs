@@ -4,8 +4,9 @@
 //! receive 405. JSON syntax errors receive 400, invalid request fields 422, unsupported
 //! content types 415, and oversized bodies 413. Configure body limits through
 //! `web::JsonConfig`. Custom JSON error handlers remain effective.
-//! GraphQL syntax errors receive 400 and other request errors 422. All execution
-//! results use 200, including partial data and root-null results with errors.
+//! GraphQL syntax errors receive 400 and other request errors 422. Error-free
+//! execution results use 200; results with errors use 294, including partial data
+//! and root-null results.
 //! Responses negotiate `Accept`; missing headers preserve JSON and unsupported
 //! preferences receive 406 before runtime execution. GraphiQL routes are owned
 //! by the application and remain separate from response negotiation.
@@ -205,8 +206,9 @@ fn invalid_request(message: String, empty: bool) -> actix_web::Error {
     InternalError::from_response(message, response).into()
 }
 
-/// Converts a runtime response to JSON with HTTP 200 for execution results,
-/// including partial data and root-null results with errors.
+/// Converts a runtime response to JSON with HTTP 200 for error-free execution
+/// results and HTTP 294 for results with errors, including partial data and
+/// root-null results.
 ///
 /// Subscriptions passed to single-response execution receive 406.
 /// GraphQL syntax errors receive 400; other request errors receive 422.
@@ -230,6 +232,8 @@ impl Responder for GraphQLResponse {
             StatusCode::BAD_REQUEST
         } else if self.0.is_request_error() {
             StatusCode::UNPROCESSABLE_ENTITY
+        } else if self.0.is_execution_error() {
+            StatusCode::from_u16(294).expect("294 is a valid HTTP status code")
         } else {
             StatusCode::OK
         };

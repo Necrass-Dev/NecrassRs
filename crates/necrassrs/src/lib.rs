@@ -189,6 +189,11 @@ impl Response {
         matches!(self.0, ResponseKind::RequestError { .. })
     }
 
+    /// Whether execution completed with one or more field errors.
+    pub fn is_execution_error(&self) -> bool {
+        matches!(&self.0, ResponseKind::Execution(response) if !response.errors.is_empty())
+    }
+
     pub(crate) fn has_errors(&self) -> bool {
         match &self.0 {
             ResponseKind::RequestError { .. } => true,
