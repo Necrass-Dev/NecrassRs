@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "actix-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actix-web",
  "necrassrs",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "axum-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "necrassrs",
@@ -1691,7 +1691,7 @@ checksum = "e94e1e6445d314f972ff7395df2de295fe51b71821694f0b0e1e79c4f12c8577"
 
 [[package]]
 name = "necrassrs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-graphql",
  "criterion",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "necrassrs-actix"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actix-web",
  "necrassrs",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "necrassrs-axum"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "necrassrs",
@@ -1736,7 +1736,7 @@ dependencies = [
 
 [[package]]
 name = "necrassrs-build"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "miette",
@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "necrassrs-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "dialoguer",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "necrassrs-http"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "mime",
 ]
@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "reed-compiler"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ahash",
  "ariadne",
@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "reed-parser"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "expect-test",
  "indexmap",
@@ -2838,7 +2838,7 @@ dependencies = [
 
 [[package]]
 name = "tutorial"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "necrassrs",
