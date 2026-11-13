@@ -5,12 +5,12 @@ edition = "2024"
 
 [dependencies]
 actix-web = "4"
-necrassrs = "0.2.1"
-necrassrs-actix = "0.2.1"
+necrassrs = "0.3.0"
+necrassrs-actix = "0.3.0"
 
 [build-dependencies]
 miette = "7.6.0"
-necrassrs-build = "0.2.1"
+necrassrs-build = "0.3.0"
 
 [workspace]
 

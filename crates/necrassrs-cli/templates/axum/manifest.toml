@@ -5,13 +5,13 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8.9"
-necrassrs = "0.2.1"
-necrassrs-axum = "0.2.1"
+necrassrs = "0.3.0"
+necrassrs-axum = "0.3.0"
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread"] }
 
 [build-dependencies]
 miette = "7.6.0"
-necrassrs-build = "0.2.1"
+necrassrs-build = "0.3.0"
 
 [workspace]
 
