@@ -157,3 +157,76 @@ cargo test -p necrassrs-http -p necrassrs-axum -p necrassrs-actix \
 
 Keep observed results and remaining conformance work in issues and pull requests.
 Passing these checks does not establish full GraphQL or HTTP conformance.
+
+### External compliance checker
+
+The [graphql-http.com checker](https://graphql-http.com/) provides another view of
+the HTTP contract. For reproducible local checks, use the published
+[`graphql-http` audits](https://github.com/graphql/graphql-http/blob/v1.23.1/src/audits/server.ts)
+with a pinned version. The hosted checker may use a different version.
+
+Start the example servers in separate terminals from the repository root:
+
+```sh
+cargo run -p axum-server@0.3.0 --locked
+```
+
+```sh
+cargo run -p actix-server@0.3.0 --locked
+```
+
+With Node.js 22 or later, install the checker outside the workspace and run:
+
+```sh
+audit_dir=$(mktemp -d)
+npm install --prefix "$audit_dir" --no-save --package-lock=false \
+  graphql-http@1.23.1 graphql@16.11.0
+node - "$audit_dir" http://127.0.0.1:3000/graphql http://127.0.0.1:3001/graphql <<'JS'
+const { auditServer } = require(require.resolve('graphql-http', {
+  paths: [process.argv[2]],
+}));
+(async () => {
+  for (const url of process.argv.slice(3)) {
+    const results = await auditServer({
+      url,
+      fetchFn: (url, init) => fetch(url, {
+        ...init, signal: AbortSignal.timeout(10000),
+      }),
+    });
+    console.log(JSON.stringify({ url, results: results.map(({ response, ...result }) => ({
+      ...result,
+      ...(response && {
+        httpStatus: response.status,
+        contentType: response.headers.get('content-type'),
+      }),
+    })) }, null, 2));
+    if (results.some(result => result.status === 'error')) process.exitCode = 1;
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+JS
+```
+
+Preserve the output, repository revision, Node version, and checker version in
+the issue or pull request. Inspect every `warn` and `notice`; an exit code of zero
+only means the checker reported no `error` results or fatal failures.
+
+Version 1.23.1 predates the September 2026 status contract. Interpret its probes
+against their actual requests and the published specification:
+
+- `47DE` expects legacy JSON for `*/*`; NecrassRs prefers GraphQL JSON at equal
+  quality. Node's built-in fetch also inserts `Accept: */*` when absent, so `80D8`
+  does not test an absent header with this runner. Use the adapter regression
+  tests for that case.
+- `572B`, `FDE2`, and `7B9B` expect legacy request errors to use 200. NecrassRs
+  returns 400 or 422 with the legacy error-labeling rule described above.
+- `FDE2` and `74FF` use an invalid field name beginning with a digit, so their
+  purported validation probes exercise parsing. `86EE` includes an unused
+  variable, which fails validation before coercion; its expected 400 differs
+  from the runtime's 422 request-error contract.
+- Optional (`MAY`) probes requesting 400 for invalid envelope fields can report
+  notices for the adapters' 422 responses. These are not failed requirements.
+
+This checker version does not verify execution-error status 294. Keep the local
+query, mutation, partial-data, and root-null regressions as the acceptance checks
+for that behavior. It also does not replace deployment-specific limit checks or
+provide WebSocket/SSE transport verification.
