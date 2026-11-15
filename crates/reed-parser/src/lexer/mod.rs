@@ -592,10 +592,10 @@ fn is_escaped_char(c: char) -> bool {
 
 // Shared by lexing and CST decoding so accepted escapes have identical values.
 pub(crate) fn unicode_escape(input: &str) -> Option<(char, usize)> {
-    let (value, length) = if input.starts_with('{') {
-        let end = input.find('}')?;
+    let (value, length) = if let Some(rest) = input.strip_prefix('{') {
+        let end = rest.find(|c: char| !c.is_ascii_hexdigit())? + 1;
         let digits = &input[1..end];
-        if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
+        if digits.is_empty() || input.as_bytes()[end] != b'}' {
             return None;
         }
         (u32::from_str_radix(digits, 16).ok()?, end + 1)
@@ -628,6 +628,24 @@ pub(crate) fn unicode_escape(input: &str) -> Option<(char, usize)> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn malformed_braced_unicode_escapes_do_not_rescan_the_input() {
+        let lex = |count| {
+            let source = format!("\"{}\"", "\\u{".repeat(count));
+            let start = std::time::Instant::now();
+            let (_, errors) = Lexer::new(&source).lex();
+            assert!(!errors.is_empty());
+            start.elapsed()
+        };
+        let small = lex(100_000);
+        let large = lex(300_000);
+
+        assert!(
+            large < small * 5,
+            "lexing 3x more malformed escapes took {large:?} versus {small:?}"
+        );
+    }
 
     #[test]
     fn unterminated_string() {
