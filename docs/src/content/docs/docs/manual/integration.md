@@ -173,6 +173,8 @@ Register `configure` on your `App` and attach state with `.app_data(web::Data::n
 
 Both adapters also provide an optional `graphiql_html` helper. Register it on an application-owned GET route separately from GraphQL execution; see [Introspection and GraphiQL](https://necrass.rs/docs/graphiql/).
 
+For public endpoints, set request-size limits at the HTTP boundary. Axum's `DefaultBodyLimit` and Actix's `web::JsonConfig::limit` cover POST JSON bodies; configure the HTTP server or reverse proxy to bound GET URI length as well. Choose limits for the application's expected client requests rather than imposing one GraphQL document limit on every deployment. See [deployment boundaries](/docs/graphql-over-http/#limitations-and-deployment-boundaries) for framework-specific behavior.
+
 ## HTTP behavior
 
 The [GraphQL over HTTP manual](/docs/graphql-over-http/) describes the maintained
