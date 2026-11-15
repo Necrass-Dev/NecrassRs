@@ -1,10 +1,10 @@
 Changelog
 =========
 
-Unreleased
-----------
+Version 0.4.1
+-------------
 
-To be released.
+Released on November 15, 2026.
 
 ### reed-parser
 
