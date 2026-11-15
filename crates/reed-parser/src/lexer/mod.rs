@@ -630,6 +630,24 @@ mod test {
     use super::*;
 
     #[test]
+    fn malformed_braced_unicode_escapes_do_not_rescan_the_input() {
+        let lex = |count| {
+            let source = format!("\"{}\"", "\\u{".repeat(count));
+            let start = std::time::Instant::now();
+            let (_, errors) = Lexer::new(&source).lex();
+            assert!(!errors.is_empty());
+            start.elapsed()
+        };
+        let small = lex(100_000);
+        let large = lex(300_000);
+
+        assert!(
+            large < small * 5,
+            "lexing 3x more malformed escapes took {large:?} versus {small:?}"
+        );
+    }
+
+    #[test]
     fn unterminated_string() {
         let schema = r#"
 type Query {
