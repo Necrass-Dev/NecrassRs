@@ -74,6 +74,8 @@ fn expand_selections<'doc>(
 
     while let Some(next_set) = queue.pop_front() {
         for selection in &next_set.selections {
+            #[cfg(test)]
+            super::record_executable_validation_visit();
             match selection {
                 executable::Selection::Field(field) => {
                     selections.push(FieldSelection::new(&next_set.ty, field))
@@ -584,6 +586,8 @@ pub(crate) fn validate_selection_set(
     context: &mut OperationValidationContext<'_>,
 ) {
     for selection in &selection_set.selections {
+        #[cfg(test)]
+        super::record_executable_validation_visit();
         match selection {
             executable::Selection::Field(field) => {
                 super::field::validate_field(diagnostics, document, against_type, field, context)

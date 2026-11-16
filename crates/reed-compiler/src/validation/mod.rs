@@ -45,6 +45,21 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+#[cfg(test)]
+thread_local! {
+    static EXECUTABLE_VALIDATION_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn record_executable_validation_visit() {
+    EXECUTABLE_VALIDATION_VISITS.with(|visits| visits.set(visits.get() + 1));
+}
+
+#[cfg(test)]
+fn take_executable_validation_visits() -> usize {
+    EXECUTABLE_VALIDATION_VISITS.with(|visits| visits.replace(0))
+}
+
 /// Wraps a [`Schema`] or [`ExecutableDocument`] to mark it
 /// as [valid](https://spec.graphql.org/October2021/#sec-Validation).
 ///
@@ -1365,5 +1380,56 @@ where
             element.fmt(f)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod validation_work_regression {
+    use super::take_executable_validation_visits;
+    use crate::{ExecutableDocument, Schema};
+
+    #[test]
+    fn shared_fragments_do_not_multiply_validation_visits() {
+        let schema = Schema::parse_and_validate(
+            "type Query { immediate(value: Int!): Int! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let selections = (0..128)
+            .map(|index| format!("f{index}: immediate(value: {index})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut single_wide =
+            format!("query Main {{ immediate(value: 0) }} query Wide {{ {selections} }}");
+        let mut shared_fragment = String::from("query Main { immediate(value: 0) }");
+        for index in 0..32 {
+            single_wide.push_str(&format!(" query Extra{index} {{ immediate(value: 0) }}"));
+            shared_fragment.push_str(&format!(" query Extra{index} {{ ...Shared }}"));
+        }
+        shared_fragment.push_str(&format!(" fragment Shared on Query {{ {selections} }}"));
+
+        assert!(
+            ExecutableDocument::parse_and_validate(
+                &schema,
+                "query Main { immediate(value: 0) } query Extra { ...Shared } fragment Shared on Query { immediate(value: 0) }",
+                "small_shared.graphql",
+            )
+            .is_ok()
+        );
+        assert!(
+            ExecutableDocument::parse(&schema, shared_fragment.clone(), "shared.graphql").is_ok()
+        );
+        take_executable_validation_visits();
+        ExecutableDocument::parse_and_validate(&schema, single_wide, "single.graphql").unwrap();
+        let single_visits = take_executable_validation_visits();
+        let shared_result =
+            ExecutableDocument::parse_and_validate(&schema, shared_fragment, "shared.graphql");
+        let shared_visits = take_executable_validation_visits();
+
+        // A validation-work guard may reject the shared document before repeated traversal.
+        assert!(
+            shared_result.is_err() || shared_visits <= single_visits * 2,
+            "shared fragment validation visited {shared_visits} selections; single wide operation visited {single_visits}"
+        );
     }
 }

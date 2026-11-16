@@ -103,6 +103,8 @@ pub(super) fn walk_selections_with_deduped_fragments<'doc>(
         f: &mut dyn FnMut(&'doc executable::Selection),
     ) -> Result<(), RecursionLimitError> {
         for selection in &selection_set.selections {
+            #[cfg(test)]
+            super::record_executable_validation_visit();
             f(selection);
             match selection {
                 executable::Selection::Field(field) => {
