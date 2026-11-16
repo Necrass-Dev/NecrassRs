@@ -66,6 +66,7 @@ fn init_creates_project_at_explicit_path_and_name() {
         "build.rs",
         "schema/schema.graphql",
         "src/main.rs",
+        "src/options.rs",
         "src/generated.rs",
         "src/resolvers.rs",
     ] {
@@ -74,6 +75,11 @@ fn init_creates_project_at_explicit_path_and_name() {
     let main = fs::read_to_string(project.join("src/main.rs")).unwrap();
     assert!(main.contains("graphiql_html(\"/graphql\")"));
     assert!(main.contains(".route(\"/graphiql\", get("));
+    assert!(main.contains("execute_with_options"));
+    let options = fs::read_to_string(project.join("src/options.rs")).unwrap();
+    assert!(options.contains("ExecutionOptions {"));
+    assert!(options.contains("..Default::default()"));
+    assert!(!options.contains("validation_work_multiplier:"));
 
     let manifest = fs::read(project.join("Cargo.toml")).unwrap();
     let repeated = Command::new(env!("CARGO_BIN_EXE_necrass"))
@@ -104,6 +110,7 @@ fn actix_init_uses_a_separate_graphiql_route() {
     let main = fs::read_to_string(project.join("src/main.rs")).unwrap();
     assert!(main.contains("\"/graphiql\""));
     assert!(main.contains("graphiql_html(\"/graphql\")"));
+    assert!(main.contains("execute_with_options"));
 }
 
 #[test]

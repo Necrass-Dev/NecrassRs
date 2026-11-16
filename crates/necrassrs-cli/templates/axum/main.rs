@@ -9,11 +9,13 @@ use necrassrs::{Schema, Valid};
 use necrassrs_axum::{GraphQLRequest, GraphQLResponse, graphiql_html, negotiate_response};
 
 mod generated;
+mod options;
 mod resolvers;
 
 struct AppState {
     schema: Valid<Schema>,
     dispatcher: generated::dispatch::SchemaDispatcher<resolvers::Query>,
+    execution_options: necrassrs::ExecutionOptions,
 }
 
 async fn graphql(
@@ -21,7 +23,16 @@ async fn graphql(
     GraphQLRequest(request): GraphQLRequest,
 ) -> GraphQLResponse {
     let context = ();
-    GraphQLResponse(necrassrs::execute(&state.schema, &request, &state.dispatcher, &context).await)
+    GraphQLResponse(
+        necrassrs::execute_with_options(
+            &state.schema,
+            &request,
+            &state.dispatcher,
+            &context,
+            state.execution_options,
+        )
+        .await,
+    )
 }
 
 fn app() -> Router {
@@ -29,6 +40,7 @@ fn app() -> Router {
     let state = Arc::new(AppState {
         schema,
         dispatcher: generated::dispatch::SchemaDispatcher::new(resolvers::Query),
+        execution_options: options::execution_options(),
     });
     Router::new()
         .route(

@@ -129,6 +129,18 @@ authentication failures, and proxy-generated errors must be verified for the
 actual server configuration. The adapter suite is not evidence of every such
 deployment behavior.
 
+Reed validates the whole executable document before `operationName` selects an
+operation. To bound repeated validation of shared fragments, it rejects a document
+when cumulative weighted visits across operations exceed the larger of 2,048
+visits or eight times its physical node count. The count includes selections,
+directives, arguments, and nested input values. A valid GraphQL document can
+therefore be rejected for excessive validation work. Applications can set the
+multiplier with [`ExecutionOptions`](https://docs.rs/necrassrs/latest/necrassrs/struct.ExecutionOptions.html);
+the minimum remains 2,048, and requests cannot change either setting. CLI-created
+services define these options in `src/options.rs`. This is a GraphQL validation
+error: the maintained adapters return 422 with `errors` and no `data`. HTTP body
+limits remain independent.
+
 The runtime implements subscription execution and cancellation, but the adapters
 do not provide SSE framing or the `graphql-transport-ws` protocol. These remain
 separate work in [#32](https://github.com/Necrass-Dev/NecrassRs/issues/32) and

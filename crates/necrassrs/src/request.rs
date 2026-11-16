@@ -4,7 +4,7 @@ use reed_compiler::{
     executable::Operation,
     request::coerce_variable_values,
     response::{GraphQLError, JsonMap},
-    validation::Valid,
+    validation::{Valid, ValidationOptions},
 };
 
 /// An owned GraphQL document, optional operation name, and variable values.
@@ -110,7 +110,12 @@ pub(crate) fn prepare_request(
     request: &Request,
 ) -> Result<PreparedRequest, RequestError> {
     let ast = parse_request(request)?;
-    let operation = validate_request(schema, request, ast)?;
+    let operation = validate_request(
+        schema,
+        request,
+        ast,
+        ValidationOptions::default().work_multiplier,
+    )?;
     coerce_request_variables(schema, request, operation)
 }
 
@@ -129,14 +134,22 @@ pub(crate) fn validate_request(
     schema: &Valid<reed_compiler::Schema>,
     request: &Request,
     ast: Document,
+    validation_work_multiplier: usize,
 ) -> Result<PreparedOperation, RequestError> {
-    let document = ast.to_executable_validate(schema).map_err(|error| {
-        error
-            .errors
-            .iter()
-            .map(|diagnostic| diagnostic.to_json())
-            .collect::<Vec<_>>()
-    })?;
+    let document = ast
+        .to_executable_validate_with_options(
+            schema,
+            ValidationOptions {
+                work_multiplier: validation_work_multiplier,
+            },
+        )
+        .map_err(|error| {
+            error
+                .errors
+                .iter()
+                .map(|diagnostic| diagnostic.to_json())
+                .collect::<Vec<_>>()
+        })?;
 
     let operation = document
         .operations
@@ -225,6 +238,35 @@ mod tests {
         let prepared = prepare_request(&schema, &request).unwrap();
 
         assert_eq!(prepared.operation.name.as_deref(), Some("Second"));
+    }
+
+    #[test]
+    fn validation_work_limit_rejects_unselected_operations() {
+        let schema = Schema::parse_and_validate(
+            "type Query { immediate(value: Int!): Int! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let fields = (0..128)
+            .map(|index| format!("f{index}: immediate(value: {index})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut document = String::from("query Main { immediate(value: 0) }");
+        for index in 0..32 {
+            document.push_str(&format!(" query Extra{index} {{ ...Shared }}"));
+        }
+        document.push_str(&format!(" fragment Shared on Query {{ {fields} }}"));
+
+        let request = Request::new(document).with_operation_name("Main");
+        let error = prepare_request(&schema, &request).unwrap_err();
+        assert!(!error.syntax_error);
+        assert_eq!(error.errors.len(), 1);
+        assert_eq!(
+            error.errors[0].message,
+            "executable document requires too much validation work"
+        );
+        let ast = parse_request(&request).unwrap();
+        assert!(validate_request(&schema, &request, ast, 64).is_ok());
     }
 
     #[test]

@@ -1,6 +1,34 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+To be released.
+
+### necrassrs
+
+ -  Added `ExecutionOptions::validation_work_multiplier` so applications can
+    choose the relative executable-validation limit. The default is 8; a value
+    of zero applies only the fixed 2,048-work minimum. GraphQL requests cannot
+    override this server setting. Existing exhaustive `ExecutionOptions` struct
+    literals must add this field or use `..Default::default()`.
+
+### necrassrs-cli
+
+ -  Added editable `src/options.rs` to new Axum and Actix projects. Both
+    generated handlers use its `ExecutionOptions` for request validation and
+    execution. Existing projects can adopt the same `execute_with_options` call.
+
+### reed-compiler
+
+ -  Fixed excessive executable-document validation work when multiple operations
+    reuse shared fragments. Documents that exceed the validation work limit now
+    return a validation error; applications may need to reduce repeated work in
+    such documents. Applications can set the relative work multiplier through
+    `ValidationOptions`; its default remains 8.
+
+
 Version 0.4.1
 -------------
 

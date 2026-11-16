@@ -103,12 +103,24 @@ pub trait Dispatcher<C> {
 }
 
 /// Server-controlled execution settings.
+///
+/// [`Default`] enables introspection, disables scalar tracing, and sets the
+/// validation-work multiplier to 8. The multiplier is applied to the number of
+/// selection, directive, argument, and nested-value nodes physically present
+/// in the document; the minimum allowed work is 2,048. Request input cannot
+/// change these settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExecutionOptions {
     /// Whether `__schema` and `__type` may be queried. Enabled by default.
     pub introspection: bool,
     /// Whether scalar and enum fields receive tracing spans. Disabled by default.
     pub trace_scalars: bool,
+    /// Allowed repeated validation work relative to physical document work.
+    ///
+    /// Defaults to 8. Zero applies only the fixed 2,048-work minimum. Larger
+    /// values permit more repeated work from shared fragments before rejection.
+    /// This is controlled by the application, not by GraphQL request input.
+    pub validation_work_multiplier: usize,
 }
 
 impl Default for ExecutionOptions {
@@ -116,6 +128,8 @@ impl Default for ExecutionOptions {
         Self {
             introspection: true,
             trace_scalars: false,
+            validation_work_multiplier: reed_compiler::validation::ValidationOptions::default()
+                .work_multiplier,
         }
     }
 }
@@ -210,6 +224,7 @@ fn prepare_instrumented<C, D>(
     request: &Request,
     dispatcher: &D,
     operation_span: &Span,
+    options: ExecutionOptions,
 ) -> Result<PreparedRequest, RequestError>
 where
     D: Dispatcher<C>,
@@ -218,8 +233,11 @@ where
     let ast = operation_span.in_scope(|| request_phase(&parse, || parse_request(request)))?;
 
     let validate = operation_span.in_scope(|| Span::phase("necrassrs.validate"));
-    let operation = operation_span
-        .in_scope(|| request_phase(&validate, || validate_request(schema, request, ast)))?;
+    let operation = operation_span.in_scope(|| {
+        request_phase(&validate, || {
+            validate_request(schema, request, ast, options.validation_work_multiplier)
+        })
+    })?;
     operation_span.identify_operation(
         operation.operation.operation_type.name(),
         operation.operation.name.as_deref(),
@@ -270,7 +288,8 @@ where
 {
     let parent_span = Span::current();
     let operation_span = OperationSpan::new();
-    let prepared = prepare_instrumented::<C, D>(schema, request, dispatcher, operation_span.span());
+    let prepared =
+        prepare_instrumented::<C, D>(schema, request, dispatcher, operation_span.span(), options);
     let span = operation_span.span().clone();
     async move {
         span.run(async move {
@@ -560,21 +579,26 @@ where
     D: Dispatcher<C> + Sync,
 {
     let mut operation_span = OperationSpan::new();
-    let response =
-        match prepare_instrumented::<C, D>(schema, request, dispatcher, operation_span.span()) {
-            Ok(prepared) => {
-                let execute_span = operation_span
-                    .span()
-                    .in_scope(|| Span::phase("necrassrs.execute"));
-                operation_span
-                    .span()
-                    .run(execute_span.run(execute_prepared(
-                        schema, prepared, dispatcher, context, options,
-                    )))
-                    .await
-            }
-            Err(error) => error.into(),
-        };
+    let response = match prepare_instrumented::<C, D>(
+        schema,
+        request,
+        dispatcher,
+        operation_span.span(),
+        options,
+    ) {
+        Ok(prepared) => {
+            let execute_span = operation_span
+                .span()
+                .in_scope(|| Span::phase("necrassrs.execute"));
+            operation_span
+                .span()
+                .run(execute_span.run(execute_prepared(
+                    schema, prepared, dispatcher, context, options,
+                )))
+                .await
+        }
+        Err(error) => error.into(),
+    };
     operation_span.finish_response(&response);
     response
 }
@@ -2330,6 +2354,49 @@ mod tests {
 
     async fn execute_list_with_null_item(field_type: &str) -> JsonValue {
         execute_value(field_type, json!(["A", null, "B"])).await
+    }
+
+    #[tokio::test]
+    async fn server_validation_work_multiplier_controls_request_validation() {
+        let schema =
+            Schema::parse_and_validate("type Query { immediate: Int! }", "schema.graphql").unwrap();
+        let fields = (0..128)
+            .map(|index| format!("f{index}: immediate"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut document = String::from("query Main { immediate }");
+        for index in 0..32 {
+            document.push_str(&format!(" query Extra{index} {{ ...Shared }}"));
+        }
+        document.push_str(&format!(" fragment Shared on Query {{ {fields} }}"));
+        let request = Request::new(document).with_operation_name("Main");
+        let dispatcher = ValueDispatcher(json!(0));
+
+        let rejected = super::execute_with_options(
+            &schema,
+            &request,
+            &dispatcher,
+            &(),
+            super::ExecutionOptions::default(),
+        )
+        .await;
+        assert!(rejected.is_request_error());
+
+        let accepted = super::execute_with_options(
+            &schema,
+            &request,
+            &dispatcher,
+            &(),
+            super::ExecutionOptions {
+                validation_work_multiplier: 64,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            to_value(accepted).unwrap(),
+            json!({ "data": { "immediate": 0 } })
+        );
     }
 
     #[test]

@@ -420,19 +420,45 @@ impl ExecutableDocument {
         source_text: impl Into<String>,
         path: impl AsRef<Path>,
     ) -> Result<Valid<Self>, WithErrors<Self>> {
+        Self::parse_and_validate_with_options(
+            schema,
+            source_text,
+            path,
+            crate::validation::ValidationOptions::default(),
+        )
+    }
+
+    /// Parse and validate with server-controlled validation limits.
+    #[allow(clippy::result_large_err)]
+    pub fn parse_and_validate_with_options(
+        schema: &Valid<Schema>,
+        source_text: impl Into<String>,
+        path: impl AsRef<Path>,
+        options: crate::validation::ValidationOptions,
+    ) -> Result<Valid<Self>, WithErrors<Self>> {
         let (doc, mut errors) = Parser::new().parse_executable_inner(schema, source_text, path);
         Arc::make_mut(&mut errors.sources)
             .extend(schema.sources.iter().map(|(k, v)| (*k, v.clone())));
-        validation::validate_executable_document(&mut errors, schema, &doc);
+        validation::validate_executable_document_with_options(&mut errors, schema, &doc, options);
         errors.into_valid_result(doc)
     }
 
     #[allow(clippy::result_large_err)] // Typically not called very often
     pub fn validate(self, schema: &Valid<Schema>) -> Result<Valid<Self>, WithErrors<Self>> {
+        self.validate_with_options(schema, crate::validation::ValidationOptions::default())
+    }
+
+    /// Validate with server-controlled validation limits.
+    #[allow(clippy::result_large_err)]
+    pub fn validate_with_options(
+        self,
+        schema: &Valid<Schema>,
+        options: crate::validation::ValidationOptions,
+    ) -> Result<Valid<Self>, WithErrors<Self>> {
         let mut sources = IndexMap::clone(&schema.sources);
         sources.extend(self.sources.iter().map(|(k, v)| (*k, v.clone())));
         let mut errors = DiagnosticList::new(Arc::new(sources));
-        validation::validate_executable_document(&mut errors, schema, &self);
+        validation::validate_executable_document_with_options(&mut errors, schema, &self, options);
         errors.into_valid_result(self)
     }
 

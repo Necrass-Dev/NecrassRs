@@ -74,5 +74,53 @@ fn validate_responses(
     );
 }
 
-criterion_group!(benches, query_execution);
+fn validation_amplification(criterion: &mut Criterion) {
+    let runtime = Builder::new_current_thread().enable_time().build().unwrap();
+    let necrassrs = NecrassrsFixture::new();
+    let mut group = criterion.benchmark_group("validation_amplification");
+
+    for (operations, fields) in [(8, 128), (32, 128), (8, 512), (32, 512)] {
+        let selections = (0..fields)
+            .map(|index| format!("f{index}: immediate(value: {index})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut single_wide =
+            format!("query Main {{ immediate(value: 0) }} query Wide {{ {selections} }}");
+        let mut shared_fragment = String::from("query Main { immediate(value: 0) }");
+        for index in 0..operations {
+            single_wide.push_str(&format!(" query Extra{index} {{ immediate(value: 0) }}"));
+            shared_fragment.push_str(&format!(" query Extra{index} {{ ...Shared }}"));
+        }
+        shared_fragment.push_str(&format!(" fragment Shared on Query {{ {selections} }}"));
+
+        for (shape, document) in [
+            ("single_wide_operation", single_wide),
+            ("shared_fragment", shared_fragment),
+        ] {
+            let request = Request::new(document).with_operation_name("Main");
+            let response =
+                serde_json::to_value(runtime.block_on(necrassrs.execute(&request))).unwrap();
+            assert!(
+                response == json!({ "data": { "immediate": 0 } })
+                    || (shape == "shared_fragment"
+                        && response
+                            == json!({ "errors": [{ "message": "executable document requires too much validation work" }] })),
+                "unexpected {shape} response: {response}"
+            );
+            group.bench_with_input(
+                BenchmarkId::new(shape, format!("{operations}_operations_{fields}_fields")),
+                &request,
+                |benchmark, request| {
+                    benchmark.iter(|| {
+                        black_box(runtime.block_on(necrassrs.execute(black_box(request))))
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, query_execution, validation_amplification);
 criterion_main!(benches);

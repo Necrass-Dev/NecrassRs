@@ -5,6 +5,7 @@ use crate::parser::SourceSpan;
 use crate::schema::SchemaBuilder;
 use crate::validation::DiagnosticList;
 use crate::validation::Valid;
+use crate::validation::ValidationOptions;
 use crate::validation::WithErrors;
 use crate::ExecutableDocument;
 use crate::Schema;
@@ -40,6 +41,14 @@ impl Document {
 
     /// Validate as an executable document, as much as possible without a schema
     pub fn validate_standalone_executable(&self) -> Result<(), DiagnosticList> {
+        self.validate_standalone_executable_with_options(ValidationOptions::default())
+    }
+
+    /// Validate without a schema using server-controlled validation limits.
+    pub fn validate_standalone_executable_with_options(
+        &self,
+        options: ValidationOptions,
+    ) -> Result<(), DiagnosticList> {
         let mut errors = DiagnosticList::new(self.sources.clone());
         let type_system_definitions_are_errors = true;
         let executable = crate::executable::from_ast::document_from_ast(
@@ -48,7 +57,11 @@ impl Document {
             &mut errors,
             type_system_definitions_are_errors,
         );
-        crate::executable::validation::validate_standalone_executable(&mut errors, &executable);
+        crate::executable::validation::validate_standalone_executable_with_options(
+            &mut errors,
+            &executable,
+            options,
+        );
         errors.into_result()
     }
 
@@ -89,9 +102,24 @@ impl Document {
         &self,
         schema: &Valid<Schema>,
     ) -> Result<Valid<ExecutableDocument>, WithErrors<ExecutableDocument>> {
+        self.to_executable_validate_with_options(schema, ValidationOptions::default())
+    }
+
+    /// Build and validate an executable document with server-controlled limits.
+    #[allow(clippy::result_large_err)]
+    pub fn to_executable_validate_with_options(
+        &self,
+        schema: &Valid<Schema>,
+        options: ValidationOptions,
+    ) -> Result<Valid<ExecutableDocument>, WithErrors<ExecutableDocument>> {
         let mut errors = DiagnosticList::new(self.sources.clone());
         let document = self.to_executable_inner(schema, &mut errors);
-        crate::executable::validation::validate_executable_document(&mut errors, schema, &document);
+        crate::executable::validation::validate_executable_document_with_options(
+            &mut errors,
+            schema,
+            &document,
+            options,
+        );
         errors.into_valid_result(document)
     }
 

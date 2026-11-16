@@ -45,6 +45,41 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+/// Server-controlled limits for executable-document validation.
+///
+/// [`Default`] sets [`work_multiplier`](Self::work_multiplier) to 8. The
+/// effective work limit is the larger of 2,048 or the weighted physical node
+/// count multiplied by that value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidationOptions {
+    /// Maximum expanded validation work relative to physical document work.
+    ///
+    /// The effective limit is `max(2048, physical_work * work_multiplier)`.
+    /// A value of zero applies only the 2,048-work minimum.
+    pub work_multiplier: usize,
+}
+
+impl Default for ValidationOptions {
+    fn default() -> Self {
+        Self { work_multiplier: 8 }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXECUTABLE_VALIDATION_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn record_executable_validation_visit() {
+    EXECUTABLE_VALIDATION_VISITS.with(|visits| visits.set(visits.get() + 1));
+}
+
+#[cfg(test)]
+fn take_executable_validation_visits() -> usize {
+    EXECUTABLE_VALIDATION_VISITS.with(|visits| visits.replace(0))
+}
+
 /// Wraps a [`Schema`] or [`ExecutableDocument`] to mark it
 /// as [valid](https://spec.graphql.org/October2021/#sec-Validation).
 ///
@@ -262,6 +297,8 @@ pub(crate) enum Details {
     CompilerDiagnostic(diagnostics::DiagnosticData),
     #[error("too much recursion")]
     RecursionLimitError,
+    #[error("executable document requires too much validation work")]
+    ValidationWorkLimitExceeded,
 }
 
 impl DiagnosticData {
@@ -368,6 +405,7 @@ impl DiagnosticData {
                 ExecutableBuildError::ConflictingFieldArgument(_) => "ConflictingFieldArgument",
             }),
             Details::RecursionLimitError => Some("RecursionLimitError"),
+            Details::ValidationWorkLimitExceeded => Some("ValidationWorkLimitExceeded"),
             _ => None,
         }
     }
@@ -1053,7 +1091,7 @@ impl ToCliReport for DiagnosticData {
                     report.with_help("Both fields may be present on the schema type, so it's not clear which one should be used to fill the response");
                 }
             },
-            Details::RecursionLimitError => {}
+            Details::RecursionLimitError | Details::ValidationWorkLimitExceeded => {}
         }
     }
 }
@@ -1197,7 +1235,7 @@ const DEFAULT_RECURSION_LIMIT: usize = 32;
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Recursion limit reached")]
 #[non_exhaustive]
-struct RecursionLimitError {}
+pub(crate) struct RecursionLimitError {}
 
 /// Track recursion depth to prevent stack overflow.
 #[derive(Debug)]
@@ -1365,5 +1403,123 @@ where
             element.fmt(f)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod validation_work_regression {
+    use super::take_executable_validation_visits;
+    use crate::{ExecutableDocument, Schema};
+
+    #[test]
+    fn shared_fragments_do_not_multiply_validation_visits() {
+        let schema = Schema::parse_and_validate(
+            "type Query { immediate(value: Int!): Int! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let selections = (0..128)
+            .map(|index| format!("f{index}: immediate(value: {index})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut single_wide =
+            format!("query Main {{ immediate(value: 0) }} query Wide {{ {selections} }}");
+        let mut shared_fragment = String::from("query Main { immediate(value: 0) }");
+        for index in 0..32 {
+            single_wide.push_str(&format!(" query Extra{index} {{ immediate(value: 0) }}"));
+            shared_fragment.push_str(&format!(" query Extra{index} {{ ...Shared }}"));
+        }
+        shared_fragment.push_str(&format!(" fragment Shared on Query {{ {selections} }}"));
+
+        assert!(
+            ExecutableDocument::parse_and_validate(
+                &schema,
+                "query Main { immediate(value: 0) } query Extra { ...Shared } fragment Shared on Query { immediate(value: 0) }",
+                "small_shared.graphql",
+            )
+            .is_ok()
+        );
+        assert!(
+            ExecutableDocument::parse(&schema, shared_fragment.clone(), "shared.graphql").is_ok()
+        );
+        take_executable_validation_visits();
+        ExecutableDocument::parse_and_validate(&schema, single_wide, "single.graphql").unwrap();
+        let single_visits = take_executable_validation_visits();
+        let invalid_fragment =
+            shared_fragment.replace(&selections, &selections.replace("value:", "unknown:"));
+        let shared_result =
+            ExecutableDocument::parse_and_validate(&schema, shared_fragment, "shared.graphql");
+        let shared_visits = take_executable_validation_visits();
+        if let Err(error) = &shared_result {
+            assert!(error
+                .errors
+                .to_string()
+                .contains("too much validation work"));
+        }
+
+        // A validation-work guard may reject the shared document before repeated traversal.
+        assert!(
+            shared_result.is_err() || shared_visits <= single_visits * 2,
+            "shared fragment validation visited {shared_visits} selections; single wide operation visited {single_visits}"
+        );
+
+        let invalid_errors =
+            ExecutableDocument::parse_and_validate(&schema, invalid_fragment, "invalid.graphql")
+                .unwrap_err()
+                .errors;
+        assert!(invalid_errors
+            .to_string()
+            .contains("too much validation work"));
+        assert!(
+            invalid_errors.len() <= 129,
+            "{} diagnostics",
+            invalid_errors.len()
+        );
+    }
+
+    #[test]
+    fn shared_fragment_directive_arguments_do_not_multiply_diagnostics() {
+        let schema =
+            Schema::parse_and_validate("type Query { immediate: Int }", "schema.graphql").unwrap();
+        let arguments = (0..128)
+            .map(|index| format!("a{index}: 0"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut document = String::from("query Main { immediate }");
+        for index in 0..32 {
+            document.push_str(&format!(" query Extra{index} {{ ...Shared }}"));
+        }
+        document.push_str(&format!(
+            " fragment Shared on Query @skip(if: false, {arguments}) {{ immediate }}"
+        ));
+
+        let errors = ExecutableDocument::parse_and_validate(&schema, document, "query.graphql")
+            .unwrap_err()
+            .errors;
+        assert!(errors.to_string().contains("too much validation work"));
+        assert!(errors.len() <= 129, "{} diagnostics", errors.len());
+    }
+
+    #[test]
+    fn shared_field_arguments_do_not_multiply_diagnostics() {
+        let schema =
+            Schema::parse_and_validate("type Query { immediate: Int }", "schema.graphql").unwrap();
+        let arguments = (0..128)
+            .map(|index| format!("a{index}: 0"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut document = String::from("query Main { immediate }");
+        for index in 0..32 {
+            document.push_str(&format!(" query Extra{index} {{ ...Shared }}"));
+        }
+        document.push_str(&format!(
+            " fragment Shared on Query {{ immediate({arguments}) }}"
+        ));
+
+        let errors = ExecutableDocument::parse_and_validate(&schema, document, "query.graphql")
+            .unwrap_err()
+            .errors;
+        assert!(errors.to_string().contains("too much validation work"));
+        assert!(errors.len() <= 129, "{} diagnostics", errors.len());
     }
 }

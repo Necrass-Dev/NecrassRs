@@ -31,6 +31,19 @@
 [val]: https://spec.graphql.org/September2025/#sec-Validation
 [introsp]: https://spec.graphql.org/September2025/#sec-Introspection
 
+## Validation work limit
+
+Executable-document validation bounds repeated work across operations. It counts
+selection nodes, directives, arguments, and nested input values reached through
+each operation's fragments. The limit is the larger of 2,048 weighted visits or
+eight times the corresponding count of nodes physically present in the document.
+Large documents with proportionate validation work remain valid, while a document
+whose shared fragments multiply the work may be rejected. The default limit also
+applies to standalone validation. Applications can change the multiplier through
+[`ValidationOptions`][validation-options]; GraphQL requests cannot change it.
+
+[validation-options]: https://docs.rs/reed-compiler/latest/reed_compiler/validation/struct.ValidationOptions.html
+
 ## Getting started
 Add the dependency to start using `reed-compiler`:
 ```bash
