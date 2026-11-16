@@ -65,14 +65,9 @@ Special thanks to [XiNiHa](https://xiniha.dev/#about) for his contributions to N
 
 ## Next steps
 
-- [Reed](/docs/reed/): learn about the GraphQL compiler toolkit used by NecrassRs.
+- [Installation](/docs/installation/): install the CLI and run a starter server.
 - [Tutorial](/docs/tutorial/): build a GraphQL web server and send queries and
   mutations with GraphiQL or HTTP.
-- [Personnel Management System](/docs/personnel-management/): add Object,
-  Interface, and Union results to a working server.
-- [Types](/docs/types/): Rust type mappings, input presence, defaults, and
-  generated input types.
-- [Custom Scalars](/docs/custom-scalars/): define scalar storage, input
-  coercion, output serialization, and regeneration behavior.
-- [Subscriptions](/docs/subscriptions/): create event sources, consume responses,
-  and handle errors and cancellation.
+- [Schema-first Workflow](/docs/schema-first-workflow/): how SDL, generated
+  contracts, application code, and the runtime divide responsibility.
+- [Reed](/docs/reed/): learn about the GraphQL compiler toolkit used by NecrassRs.

@@ -152,14 +152,17 @@ build errors, and [Execution Model](/docs/execution-model/) for how requests run
 ## Explore the documentation
 
 - [Tutorial](/docs/tutorial/): build a web server and query it with GraphiQL or HTTP.
-- [Personnel Management System](/docs/personnel-management/): add Object, Interface,
-  and Union results to a working server.
-- [Types](/docs/types/): Rust type mappings, input presence, defaults, OneOf, and recursion.
-- [Custom Scalars](/docs/custom-scalars/): define scalar storage, coercion, and
-  serialization.
-- [Organizing Resolver Files](/docs/resolver-files/): split implementations across
-  Rust modules and understand synchronization safety.
-- [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
+- Example projects: [Personnel Management System](/docs/personnel-management/)
+  for Object, Interface, and Union results, and
+  [Subscription Console](/docs/subscription-console/) for subscriptions.
+- Guides: [Custom Scalars](/docs/custom-scalars/),
+  [Organizing Resolver Files](/docs/resolver-files/),
+  [Integration](/docs/integration/), [Subscriptions](/docs/subscriptions/), and
+  [OpenTelemetry](/docs/opentelemetry/).
+- Reference: [CLI](/docs/cli/), [Build Configuration](/docs/build-configuration/),
+  [Type Mappings](/docs/types/), and [GraphQL over HTTP](/docs/graphql-over-http/).
+- Concepts: [Schema-first Workflow](/docs/schema-first-workflow/) and
+  [Execution Model](/docs/execution-model/).
 
 These pages follow the source checkout from which this site is built; they do not
 describe a versioned release. Use [docs.rs](https://docs.rs/necrassrs/) for the

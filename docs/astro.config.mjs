@@ -56,6 +56,11 @@ export default defineConfig({
             "docs/types",
             "docs/graphql-over-http",
             "docs/tracing-spans",
+            {
+              label: "Rust API (docs.rs)",
+              link: "https://docs.rs/necrassrs/",
+              attrs: { target: "_blank", rel: "noopener" },
+            },
           ],
         },
         {
