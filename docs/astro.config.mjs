@@ -37,21 +37,15 @@ export default defineConfig({
           label: "Guides",
           items: [
             {
-              label: "Schema & Types",
-              items: ["docs/types", "docs/custom-scalars", "docs/resolver-files"],
+              label: "Schema & Resolvers",
+              items: ["docs/custom-scalars", "docs/resolver-files"],
             },
             {
               label: "Serving",
               items: ["docs/integration", "docs/graphiql"],
             },
-            {
-              label: "Subscriptions",
-              items: ["docs/subscriptions"],
-            },
-            {
-              label: "Observability",
-              items: ["docs/opentelemetry"],
-            },
+            "docs/subscriptions",
+            "docs/opentelemetry",
           ],
         },
         {
@@ -59,6 +53,7 @@ export default defineConfig({
           items: [
             "docs/cli",
             "docs/build-configuration",
+            "docs/types",
             "docs/graphql-over-http",
             "docs/tracing-spans",
           ],

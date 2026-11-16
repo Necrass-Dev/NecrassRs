@@ -1,5 +1,5 @@
 ---
-title: Types
+title: Type Mappings
 description: GraphQL-to-Rust type mappings, custom scalars, input presence, defaults, OneOf, and recursive inputs.
 ---
 

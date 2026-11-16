@@ -60,7 +60,7 @@ The website keeps its pages under `docs/src/content/docs/docs/`, with directorie
 
 - Getting Started: what NecrassRs is, installation, and the first tutorial.
 - Example Projects: complete applications built step by step.
-- Guides: task-oriented pages grouped by topic, such as schema and types, serving, subscriptions, and observability.
+- Guides: task-oriented pages grouped by topic, such as schema and resolvers, serving, subscriptions, and observability.
 - Reference: exact contracts, such as the CLI, build configuration, GraphQL over HTTP, type mappings, and tracing spans. Link to docs.rs for Rust API details.
 - Concepts: design and behavior explanations, such as the schema-first workflow, source ownership, the execution model, and Reed.
 - Contributing: guidance for contributors, including writing framework adapters.
