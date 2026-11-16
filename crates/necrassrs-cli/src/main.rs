@@ -88,6 +88,10 @@ fn create_package(path: &Path, name: &str, framework: Framework) -> io::Result<(
         ),
         ("src/main.rs", main.to_owned()),
         (
+            "src/options.rs",
+            include_str!("../templates/shared/options.rs").to_owned(),
+        ),
+        (
             "src/generated.rs",
             include_str!("../templates/shared/generated.rs").to_owned(),
         ),

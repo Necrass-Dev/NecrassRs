@@ -3,11 +3,13 @@ use necrassrs::{Schema, Valid};
 use necrassrs_actix::{GraphQLRequest, GraphQLResponse, graphiql_html};
 
 mod generated;
+mod options;
 mod resolvers;
 
 struct AppState {
     schema: Valid<Schema>,
     dispatcher: generated::dispatch::SchemaDispatcher<resolvers::Query>,
+    execution_options: necrassrs::ExecutionOptions,
 }
 
 async fn graphql(
@@ -15,7 +17,16 @@ async fn graphql(
     GraphQLRequest(request): GraphQLRequest,
 ) -> GraphQLResponse {
     let context = ();
-    GraphQLResponse(necrassrs::execute(&state.schema, &request, &state.dispatcher, &context).await)
+    GraphQLResponse(
+        necrassrs::execute_with_options(
+            &state.schema,
+            &request,
+            &state.dispatcher,
+            &context,
+            state.execution_options,
+        )
+        .await,
+    )
 }
 
 fn configure(cfg: &mut web::ServiceConfig) {
@@ -23,6 +34,7 @@ fn configure(cfg: &mut web::ServiceConfig) {
     cfg.app_data(web::Data::new(AppState {
         schema,
         dispatcher: generated::dispatch::SchemaDispatcher::new(resolvers::Query),
+        execution_options: options::execution_options(),
     }))
     .service(
         web::resource("/graphql")

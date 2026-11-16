@@ -11,6 +11,7 @@ use crate::validation::Details;
 use crate::validation::DiagnosticList;
 use crate::validation::ExecutableValidationContext;
 use crate::validation::Valid;
+use crate::validation::ValidationOptions;
 use crate::ExecutableDocument;
 use crate::Node;
 use crate::Schema;
@@ -20,16 +21,31 @@ pub(crate) fn validate_executable_document(
     schema: &Schema,
     document: &ExecutableDocument,
 ) {
-    if validate_with_or_without_schema(errors, Some(schema), document) {
+    validate_executable_document_with_options(
+        errors,
+        schema,
+        document,
+        ValidationOptions::default(),
+    );
+}
+
+pub(crate) fn validate_executable_document_with_options(
+    errors: &mut DiagnosticList,
+    schema: &Schema,
+    document: &ExecutableDocument,
+    options: ValidationOptions,
+) {
+    if validate_with_or_without_schema(errors, Some(schema), document, options) {
         validate_with_schema(errors, schema, document);
     }
 }
 
-pub(crate) fn validate_standalone_executable(
+pub(crate) fn validate_standalone_executable_with_options(
     errors: &mut DiagnosticList,
     document: &ExecutableDocument,
+    options: ValidationOptions,
 ) {
-    validate_with_or_without_schema(errors, None, document);
+    validate_with_or_without_schema(errors, None, document, options);
 }
 
 fn validate_with_schema(
@@ -49,8 +65,9 @@ pub(crate) fn validate_with_or_without_schema(
     errors: &mut DiagnosticList,
     schema: Option<&Schema>,
     document: &ExecutableDocument,
+    options: ValidationOptions,
 ) -> bool {
-    if exceeds_validation_work(document) {
+    if exceeds_validation_work(document, options) {
         errors.push(None, Details::ValidationWorkLimitExceeded);
         return false;
     }
@@ -61,7 +78,7 @@ pub(crate) fn validate_with_or_without_schema(
     true
 }
 
-fn exceeds_validation_work(document: &ExecutableDocument) -> bool {
+fn exceeds_validation_work(document: &ExecutableDocument, options: ValidationOptions) -> bool {
     let mut pending: Vec<_> = document
         .operations
         .iter()
@@ -88,7 +105,7 @@ fn exceeds_validation_work(document: &ExecutableDocument) -> bool {
     }
 
     // Permit large documents whose validation work grows with their physical selection count.
-    let limit = physical.saturating_mul(8).max(2048);
+    let limit = physical.saturating_mul(options.work_multiplier).max(2048);
     let mut expanded = 0usize;
     for operation in document.operations.iter() {
         let mut seen_fragments = HashSet::default();

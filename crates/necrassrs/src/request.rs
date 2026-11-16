@@ -4,7 +4,7 @@ use reed_compiler::{
     executable::Operation,
     request::coerce_variable_values,
     response::{GraphQLError, JsonMap},
-    validation::Valid,
+    validation::{Valid, ValidationOptions},
 };
 
 /// An owned GraphQL document, optional operation name, and variable values.
@@ -110,7 +110,12 @@ pub(crate) fn prepare_request(
     request: &Request,
 ) -> Result<PreparedRequest, RequestError> {
     let ast = parse_request(request)?;
-    let operation = validate_request(schema, request, ast)?;
+    let operation = validate_request(
+        schema,
+        request,
+        ast,
+        ValidationOptions::default().work_multiplier,
+    )?;
     coerce_request_variables(schema, request, operation)
 }
 
@@ -129,14 +134,22 @@ pub(crate) fn validate_request(
     schema: &Valid<reed_compiler::Schema>,
     request: &Request,
     ast: Document,
+    validation_work_multiplier: usize,
 ) -> Result<PreparedOperation, RequestError> {
-    let document = ast.to_executable_validate(schema).map_err(|error| {
-        error
-            .errors
-            .iter()
-            .map(|diagnostic| diagnostic.to_json())
-            .collect::<Vec<_>>()
-    })?;
+    let document = ast
+        .to_executable_validate_with_options(
+            schema,
+            ValidationOptions {
+                work_multiplier: validation_work_multiplier,
+            },
+        )
+        .map_err(|error| {
+            error
+                .errors
+                .iter()
+                .map(|diagnostic| diagnostic.to_json())
+                .collect::<Vec<_>>()
+        })?;
 
     let operation = document
         .operations
@@ -252,6 +265,8 @@ mod tests {
             error.errors[0].message,
             "executable document requires too much validation work"
         );
+        let ast = parse_request(&request).unwrap();
+        assert!(validate_request(&schema, &request, ast, 64).is_ok());
     }
 
     #[test]

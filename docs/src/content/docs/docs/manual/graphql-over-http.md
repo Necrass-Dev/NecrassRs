@@ -134,10 +134,12 @@ operation. To bound repeated validation of shared fragments, it rejects a docume
 when cumulative weighted visits across operations exceed the larger of 2,048
 visits or eight times its physical node count. The count includes selections,
 directives, arguments, and nested input values. A valid GraphQL document can
-therefore be rejected for excessive validation work. The limit is currently fixed;
-applications cannot raise it per request. This is a GraphQL validation error:
-the maintained adapters return 422 with `errors` and no `data`. HTTP body limits
-remain independent.
+therefore be rejected for excessive validation work. Applications can set the
+multiplier with [`ExecutionOptions`](https://docs.rs/necrassrs/latest/necrassrs/struct.ExecutionOptions.html);
+the minimum remains 2,048, and requests cannot change either setting. CLI-created
+services define these options in `src/options.rs`. This is a GraphQL validation
+error: the maintained adapters return 422 with `errors` and no `data`. HTTP body
+limits remain independent.
 
 The runtime implements subscription execution and cancellation, but the adapters
 do not provide SSE framing or the `graphql-transport-ws` protocol. These remain

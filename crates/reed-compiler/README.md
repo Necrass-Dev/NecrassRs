@@ -38,8 +38,11 @@ selection nodes, directives, arguments, and nested input values reached through
 each operation's fragments. The limit is the larger of 2,048 weighted visits or
 eight times the corresponding count of nodes physically present in the document.
 Large documents with proportionate validation work remain valid, while a document
-whose shared fragments multiply the work may be rejected. The limit also applies
-to standalone validation and cannot currently be configured.
+whose shared fragments multiply the work may be rejected. The default limit also
+applies to standalone validation. Applications can change the multiplier through
+[`ValidationOptions`][validation-options]; GraphQL requests cannot change it.
+
+[validation-options]: https://docs.rs/reed-compiler/latest/reed_compiler/validation/struct.ValidationOptions.html
 
 ## Getting started
 Add the dependency to start using `reed-compiler`:

@@ -45,6 +45,26 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+/// Server-controlled limits for executable-document validation.
+///
+/// [`Default`] sets [`work_multiplier`](Self::work_multiplier) to 8. The
+/// effective work limit is the larger of 2,048 or the weighted physical node
+/// count multiplied by that value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidationOptions {
+    /// Maximum expanded validation work relative to physical document work.
+    ///
+    /// The effective limit is `max(2048, physical_work * work_multiplier)`.
+    /// A value of zero applies only the 2,048-work minimum.
+    pub work_multiplier: usize,
+}
+
+impl Default for ValidationOptions {
+    fn default() -> Self {
+        Self { work_multiplier: 8 }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static EXECUTABLE_VALIDATION_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
