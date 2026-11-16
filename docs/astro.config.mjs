@@ -61,6 +61,7 @@ export default defineConfig({
         {
           label: "Concepts",
           items: [
+            "docs/schema-first-workflow",
             "docs/execution-model",
             {
               label: "Reed",
