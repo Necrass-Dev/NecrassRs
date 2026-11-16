@@ -76,8 +76,9 @@ impl ::necrassrs::Scalar for DateTime {
 
 This scaffold is not a `DateTime` validator. Change its representation and
 conversion bodies when the scalar needs format validation, a numeric transport
-value, or another application type. Generated argument and result contracts use
-the stable path `crate::resolvers::DateTime`.
+value, or another application type; [Parse date-time values](#parse-date-time-values)
+replaces it with a validating implementation. Generated argument and result
+contracts use the stable path `crate::resolvers::DateTime`.
 
 ## Define the conversion paths
 
@@ -103,10 +104,88 @@ inserted because a value is absent uses `parse_literal`.
 NecrassRs owns nullability, omission, and list coercion around the scalar. Your
 implementation only converts one non-null scalar value at a time.
 
+## Parse date-time values
+
+This implementation stores an exact instant using the
+[jiff](https://docs.rs/jiff/1/jiff/) crate and exchanges it as an RFC 3339
+timestamp string. Add the dependency:
+
+```sh
+cargo add jiff@1
+```
+
+Replace the scaffold with:
+
+```rust title="src/resolvers/scalars.rs"
+use necrassrs::{JsonValue, Scalar, ScalarError, ScalarLiteral};
+
+/// An exact instant, exchanged as an RFC 3339 timestamp string.
+pub struct DateTime(pub jiff::Timestamp);
+
+impl DateTime {
+    fn parse(text: &str) -> Result<Self, ScalarError> {
+        text.parse()
+            .map(Self)
+            .map_err(|error| ScalarError::new(format!("invalid DateTime: {error}")))
+    }
+}
+
+impl Scalar for DateTime {
+    fn parse_literal(value: &ScalarLiteral) -> Result<Self, ScalarError> {
+        match value {
+            ScalarLiteral::String(value) => Self::parse(value),
+            _ => Err(ScalarError::new("expected a DateTime string literal")),
+        }
+    }
+
+    fn parse_value(value: &JsonValue) -> Result<Self, ScalarError> {
+        let text = value
+            .as_str()
+            .ok_or_else(|| ScalarError::new("expected a DateTime string value"))?;
+        Self::parse(text)
+    }
+
+    fn serialize(&self) -> Result<JsonValue, ScalarError> {
+        Ok(self.0.to_string().into())
+    }
+}
+```
+
+Both input paths share one parser, so a literal and a variable accept the same
+strings. `jiff::Timestamp` requires a date, a time, and a UTC offset, and it
+rejects calendar dates that do not exist. Later builds keep this file because
+its type and conversion bodies are application code.
+
 For the `echo` field above, the generated argument's `value` field and resolver
-output are both the application-owned `DateTime` type. Returning `args.value`
-therefore echoes the already converted value; add ordinary constructors or
-accessors to the scalar implementation when application logic needs them.
+output are both the application-owned `DateTime` type, so the resolver returns
+the already converted value:
+
+```rust title="src/resolvers.rs"
+impl<C: Sync> necrassrs::Resolver<crate::generated::fields::Query::echo, C> for Query {
+    type Output = crate::resolvers::DateTime;
+
+    async fn resolve(
+        &self,
+        _context: &C,
+        args: crate::generated::types::Query::echo::Args,
+    ) -> Result<Self::Output, necrassrs::ResolverError> {
+        Ok(args.value)
+    }
+}
+```
+
+| Input                         | Result                                 |
+| ----------------------------- | -------------------------------------- |
+| `"2026-11-16T09:30:00+09:00"` | `"2026-11-16T00:30:00Z"`               |
+| `"2026-11-16T00:30:00.123Z"`  | `"2026-11-16T00:30:00.123Z"`           |
+| `"2026-11-16"`                | Error: the time component is missing   |
+| `"2026-11-16T09:30:00"`       | Error: the offset component is missing |
+| `"2026-02-30T00:00:00Z"`      | Error: the date does not exist         |
+| `1700000000`                  | Error: expected a string literal       |
+
+A `Timestamp` represents an instant, not the offset the client wrote, so results
+are serialized in UTC. Store a `jiff::Zoned` or the original offset instead when
+the application must return the supplied offset.
 
 ## Handle conversion errors
 
