@@ -41,7 +41,7 @@ objects live under `generated::types`.
 Subscription root fields use the same input and result mappings.
 `Subscriber::Output` is one event's field value; `Subscriber::resolve` returns
 `Result<SourceStream<'a, Self::Output>, ResolverError>`. See
-[Subscriptions](/docs/subscriptions/) for a complete source and response-stream example.
+[Subscription Console](/docs/subscription-console/) for a complete source and response-stream example.
 
 List items have no undefined state. Input singleton coercion applies recursively:
 for `[[Int]]`, the input `3` becomes `[[3]]`. Enum literals are unquoted, as in

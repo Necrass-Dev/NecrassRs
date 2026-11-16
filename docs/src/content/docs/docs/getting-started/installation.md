@@ -88,6 +88,7 @@ existing projects, nonempty directories, and symbolic-link targets are rejected.
 
 Use `necrass --help` and `necrass init --help` for command usage. Without a terminal,
 supply an explicit command; bare `necrass` prints help and exits with an error.
+See the [CLI reference](/docs/cli/) for every argument and the generated files.
 
 The starter uses released NecrassRs packages from crates.io. Cargo records the
 resolved package versions in the new project's `Cargo.lock` on the first build.
@@ -144,7 +145,9 @@ attributes, or comments, synchronization stops until you remove or migrate it.
 After initialization, ordinary builds and runs use Cargo; the CLI is not needed
 for schema changes. The starter configures `panic = "abort"` in development and
 release builds, so calling an unimplemented resolver terminates the process.
-Return `ResolverError` for ordinary application errors.
+Return `ResolverError` for ordinary application errors. See
+[Build Configuration](/docs/build-configuration/) for the generated modules and
+build errors, and [Execution Model](/docs/execution-model/) for how requests run.
 
 ## Explore the documentation
 

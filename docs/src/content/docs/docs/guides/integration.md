@@ -56,8 +56,9 @@ The execution core does not depend on an HTTP framework or on `necrassrs-http`. 
 
 The runtime supports subscriptions through `necrassrs::subscribe`, which returns
 a stream of GraphQL responses after creating the event source. See
-[Subscriptions](/docs/subscriptions/) for generated resolvers, a runnable console
-example, error handling, and cancellation.
+[Subscriptions](/docs/subscriptions/) for generated resolvers, error handling, and
+cancellation, and [Subscription Console](/docs/subscription-console/) for a
+runnable console example.
 
 The current Axum and Actix adapters handle single-response HTTP execution. They
 do not provide WebSocket or Server-Sent Events (SSE) subscription transports.
@@ -90,7 +91,7 @@ the examples: selecting an unimplemented resolver terminates the process, while
 ordinary resolver errors produce GraphQL responses. Library Cargo profiles do
 not propagate to applications.
 
-If your framework is not listed, you can [write an adapter](#writing-an-adapter) using the same public runtime API.
+If your framework is not listed, you can [write an adapter](/docs/writing-an-adapter/) using the same public runtime API.
 
 ## Using an adapter
 
@@ -177,72 +178,11 @@ For public endpoints, set request-size limits at the HTTP boundary. Axum's `Defa
 
 ## HTTP behavior
 
-The [GraphQL over HTTP manual](/docs/graphql-over-http/) describes the maintained
-adapters against the September 2026 specification, including request support,
-HTTP 294, framework limitations, and verification coverage.
-
-### Media types
-
-Send JSON request bodies and prefer `Accept: application/graphql-response+json`.
-Both adapters also support legacy `application/json`. See the
-[media negotiation contract](/docs/graphql-over-http/#media-types) for quality
-weights, missing headers, legacy error labeling, and `Vary: Accept`.
-
-### Status and error contract
-
-Error-free execution uses 200. Execution with errors uses 294 for both JSON
-representations, including `data: null`; request errors remain 4xx. See the
-[complete status table](/docs/graphql-over-http/#status-and-error-contract) and
-[294 compatibility guidance](/docs/graphql-over-http/#http-294-and-compatibility).
+The [GraphQL over HTTP reference](/docs/graphql-over-http/) defines the request
+support, media-type negotiation, status and error contract, HTTP 294
+compatibility, framework limitations, and verification coverage of the
+maintained adapters.
 
 ## Writing an adapter
 
-An adapter can live in your application or in a separate crate. There is no adapter registration API or required adapter trait in the execution core. Implement your framework's native extraction and response conversion interfaces, or perform the conversion in a handler. The `GraphQLRequest` and `GraphQLResponse` names are conventions used by the maintained adapters.
-
-Use these implementations as references:
-
-- [Axum adapter source](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-axum/src/lib.rs): `FromRequest`, `IntoResponse`, and negotiation middleware.
-- [Actix Web adapter source](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-actix/src/lib.rs): `FromRequest`, `Responder`, and negotiation through the request object.
-- [Shared HTTP source](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-http/src/lib.rs): framework-independent response media-type selection.
-
-### Extract the request
-
-Use your framework's JSON parser and body-limit configuration. A POST body must be an object containing a required string `query`, optional object `variables` and `extensions`, and an optional string `operationName`; ignore unknown properties. The maintained adapters accept `null` for optional fields and treat it as absent. For GET, URL-decode `query` and `operationName`, parse `variables` and `extensions` as JSON objects, and normalize empty optional parameters as absent. Reject malformed JSON, missing or incorrectly typed fields, unsupported content types, and oversized bodies using the [status contract](#status-and-error-contract).
-
-Construct `Request::new(query)`, then call `with_variables(variables)` and `with_operation_name(operation_name)` when those values are present. Use `necrassrs::JsonMap` for variables. Request construction does not validate GraphQL; pass the request to execution and let the runtime handle document validation and coercion.
-
-### Negotiate the response type
-
-Depend directly on `necrassrs-http` to reuse `response_media_types`. Pass all `Accept` header values as strings, preserving multiple values. An empty iterator means the header is absent and selects legacy `application/json`. Reject malformed values and requests that accept neither JSON nor SSE before GraphQL execution. `response_media_type` remains available when only ordinary JSON negotiation is needed.
-
-Negotiation needs access to the incoming headers. If your framework's response conversion interface cannot access the request, select the type in route middleware or carry it from extraction to response conversion. Apply negotiation to the GraphQL execution route, preserving framework method rejections and separate HTML routes.
-
-### Convert the runtime response
-
-Let the application handler call `execute` or `execute_with_options`; it owns the schema, dispatcher, and Context. Convert the returned `Response` using its public classification methods:
-
-1. `requires_response_stream()` selects 406 for ordinary JSON delivery.
-2. Otherwise, `is_syntax_error()` selects 400.
-3. Otherwise, `is_request_error()` selects 422.
-4. Otherwise, `is_execution_error()` selects 294, including partial data and `data: null` with errors.
-5. Error-free execution selects 200.
-
-Serialize `Response` directly with Serde. Use the negotiated media type, switching a non-2xx response to `necrassrs_http::GRAPHQL_JSON` only when `ResponseMediaTypes::legacy_json` is true. Include `Vary: Accept` without discarding existing values. Keep framework extraction errors separate from GraphQL response serialization.
-
-Use the runtime classification methods rather than matching diagnostic text, counting serialized errors, or checking whether `data` is null. Those approaches lose the distinction between request and execution errors. Leave resolver errors, field paths, and null propagation to the runtime.
-
-### Verify and document the integration
-
-Exercise the adapter through your framework's HTTP test utilities. Cover request fields and types, variables and operation selection, per-request Context, the status table, and negotiation with absent, repeated, weighted, excluded, and invalid `Accept` values. Check that unacceptable response types prevent execution, body-limit configuration still works, and unrelated routes retain their own behavior.
-
-The [Axum HTTP tests](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-axum/tests/http.rs) and [Actix Web HTTP tests](https://github.com/Necrass-Dev/NecrassRs/blob/main/crates/necrassrs-actix/tests/http.rs) provide concrete cases. Include a runnable consumer showing handler registration, application state, and Context construction, and document any transport limitations or differences from this contract.
-
-A reusable adapter does not automatically become a CLI option. To add a maintained framework to this repository, add its adapter and tests to the Cargo workspace, supply a consumer example, and update this page's support table. If the CLI should generate projects for it, also add its framework choice, starter files, and generated-project checks in `necrassrs-cli`.
-
-## Scope and verification
-
-Use the [GraphQL over HTTP verification guidance](/docs/graphql-over-http/#verification-coverage)
-for adapter and real HTTP consumer checks. The maintained behavior follows the
-September 2026 edition; the [documented limitations](/docs/graphql-over-http/#limitations-and-deployment-boundaries)
-remain part of the support contract. Neither these tests nor an external checker
-establish complete HTTP conformance.
+To support another framework, see [Writing an Adapter](/docs/writing-an-adapter/).

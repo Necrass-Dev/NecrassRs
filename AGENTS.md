@@ -1,6 +1,6 @@
 # Agent instructions
 
-These instructions apply to AI agents working in the NecrassRs repository. See [AI_POLICY.md](AI_POLICY.md) for disclosure and contributor responsibilities, and the [contributing guide](docs/src/content/docs/docs/guide/contributing.md#package-boundaries) for the current package layout.
+These instructions apply to AI agents working in the NecrassRs repository. See [AI_POLICY.md](AI_POLICY.md) for disclosure and contributor responsibilities, and the [contributing guide](docs/src/content/docs/docs/contributing/contributing.md#package-boundaries) for the current package layout.
 
 ## Before making changes
 
@@ -25,7 +25,7 @@ These instructions apply to AI agents working in the NecrassRs repository. See [
 - SDL defines the public GraphQL contract. Do not synchronize Rust implementations back into SDL.
 - Reuse existing schema models and validation rather than duplicating them. Reed currently supplies these facilities; NecrassRs implements runtime execution. Package and module boundaries may change with the work being implemented.
 - Applications own their Context types and construction. Avoid introducing framework, CLI, or build-tool dependencies into runtime code without a concrete requirement.
-- Preserve retained resolver bodies and unrelated user code during source synchronization. Do not remove application-owned implementations automatically. Consult [Organizing Resolver Files](docs/src/content/docs/docs/manual/resolver-files.md) for current generated names, ownership rules, and limitations; changes to public names and synchronization behavior require compatibility review.
+- Preserve retained resolver bodies and unrelated user code during source synchronization. Do not remove application-owned implementations automatically. Consult [Organizing Resolver Files](docs/src/content/docs/docs/guides/resolver-files.md) for current generated names, ownership rules, and limitations; changes to public names and synchronization behavior require compatibility review.
 - Initialization must not overwrite existing files or symbolic links.
 - Check existing code, the standard library, and existing dependencies first. Do not add abstractions, configuration, crates, or dependencies without a concrete requirement.
 - Do not remove input validation, error handling, or user data protection to simplify an implementation.

@@ -9,7 +9,10 @@ export const collections = {
       generateId: ({ entry }) =>
         entry
           .replace(/\.[^.]+$/, "")
-          .replace(/^docs\/(?:introduction|guide|manual)\//, "docs/")
+          .replace(
+            /^docs\/(?:getting-started|example-projects|guides|reference|concepts|contributing)\//,
+            "docs/",
+          )
           .replace(/\/index$/, ""),
     }),
     schema: docsSchema(),

@@ -19,12 +19,54 @@ export default defineConfig({
       customCss: ["./src/styles/docs.css"],
       sidebar: [
         {
-          label: "Introduction",
+          label: "Getting Started",
           items: [
             {
               label: "What is NecrassRs?",
               slug: "docs",
             },
+            "docs/installation",
+            "docs/tutorial",
+          ],
+        },
+        {
+          label: "Example Projects",
+          items: ["docs/personnel-management", "docs/subscription-console"],
+        },
+        {
+          label: "Guides",
+          items: [
+            {
+              label: "Schema & Types",
+              items: ["docs/types", "docs/custom-scalars", "docs/resolver-files"],
+            },
+            {
+              label: "Serving",
+              items: ["docs/integration", "docs/graphiql"],
+            },
+            {
+              label: "Subscriptions",
+              items: ["docs/subscriptions"],
+            },
+            {
+              label: "Observability",
+              items: ["docs/opentelemetry"],
+            },
+          ],
+        },
+        {
+          label: "Reference",
+          items: [
+            "docs/cli",
+            "docs/build-configuration",
+            "docs/graphql-over-http",
+            "docs/tracing-spans",
+          ],
+        },
+        {
+          label: "Concepts",
+          items: [
+            "docs/execution-model",
             {
               label: "Reed",
               slug: "docs/reed",
@@ -32,26 +74,8 @@ export default defineConfig({
           ],
         },
         {
-          label: "Guide",
-          items: [
-            "docs/installation",
-            "docs/tutorial",
-            "docs/personnel-management",
-            "docs/contributing",
-          ],
-        },
-        {
-          label: "Manual",
-          items: [
-            "docs/types",
-            "docs/custom-scalars",
-            "docs/subscriptions",
-            "docs/opentelemetry",
-            "docs/resolver-files",
-            "docs/graphiql",
-            "docs/integration",
-            "docs/graphql-over-http",
-          ],
+          label: "Contributing",
+          items: ["docs/contributing", "docs/writing-an-adapter"],
         },
       ],
     }),
