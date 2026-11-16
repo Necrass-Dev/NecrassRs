@@ -98,9 +98,14 @@ fn validation_amplification(criterion: &mut Criterion) {
             ("shared_fragment", shared_fragment),
         ] {
             let request = Request::new(document).with_operation_name("Main");
-            assert_eq!(
-                serde_json::to_value(runtime.block_on(necrassrs.execute(&request))).unwrap(),
-                json!({ "data": { "immediate": 0 } })
+            let response =
+                serde_json::to_value(runtime.block_on(necrassrs.execute(&request))).unwrap();
+            assert!(
+                response == json!({ "data": { "immediate": 0 } })
+                    || (shape == "shared_fragment"
+                        && response
+                            == json!({ "errors": [{ "message": "executable document requires too much validation work" }] })),
+                "unexpected {shape} response: {response}"
             );
             group.bench_with_input(
                 BenchmarkId::new(shape, format!("{operations}_operations_{fields}_fields")),

@@ -90,31 +90,35 @@ pub(crate) fn validate_variable_definitions(
 ///
 /// Named fragments are "deduplicated": only visited once even if spread multiple times *in
 /// different locations*. This is only appropriate for certain kinds of validations, so reuser beware.
-pub(super) fn walk_selections_with_deduped_fragments<'doc>(
+pub(crate) fn walk_selections_with_deduped_fragments<'doc>(
     document: &'doc ExecutableDocument,
     selections: &'doc executable::SelectionSet,
-    mut f: impl FnMut(&'doc executable::Selection),
-) -> Result<(), RecursionLimitError> {
+    mut f: impl FnMut(&'doc executable::Selection) -> bool,
+) -> Result<bool, RecursionLimitError> {
     fn walk_selections_inner<'doc>(
         document: &'doc ExecutableDocument,
         selection_set: &'doc executable::SelectionSet,
         seen: &mut HashSet<&'doc Name>,
         mut guard: DepthGuard<'_>,
-        f: &mut dyn FnMut(&'doc executable::Selection),
-    ) -> Result<(), RecursionLimitError> {
+        f: &mut dyn FnMut(&'doc executable::Selection) -> bool,
+    ) -> Result<bool, RecursionLimitError> {
         for selection in &selection_set.selections {
             #[cfg(test)]
             super::record_executable_validation_visit();
-            f(selection);
+            if !f(selection) {
+                return Ok(false);
+            }
             match selection {
                 executable::Selection::Field(field) => {
-                    walk_selections_inner(
+                    if !walk_selections_inner(
                         document,
                         &field.selection_set,
                         seen,
                         guard.increment()?,
                         f,
-                    )?;
+                    )? {
+                        return Ok(false);
+                    }
                 }
                 executable::Selection::FragmentSpread(fragment) => {
                     let new = seen.insert(&fragment.fragment_name);
@@ -125,27 +129,31 @@ pub(super) fn walk_selections_with_deduped_fragments<'doc>(
                     if let Some(fragment_definition) =
                         document.fragments.get(&fragment.fragment_name)
                     {
-                        walk_selections_inner(
+                        if !walk_selections_inner(
                             document,
                             &fragment_definition.selection_set,
                             seen,
                             guard.increment()?,
                             f,
-                        )?;
+                        )? {
+                            return Ok(false);
+                        }
                     }
                 }
                 executable::Selection::InlineFragment(fragment) => {
-                    walk_selections_inner(
+                    if !walk_selections_inner(
                         document,
                         &fragment.selection_set,
                         seen,
                         guard.increment()?,
                         f,
-                    )?;
+                    )? {
+                        return Ok(false);
+                    }
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     // This has a much higher limit than comparable recursive walks, like the one in
@@ -246,6 +254,7 @@ pub(crate) fn validate_unused_variables(
                     }
                 }
             }
+            true
         });
     if walked.is_err() {
         diagnostics.push(None, DiagnosticData::RecursionError {});

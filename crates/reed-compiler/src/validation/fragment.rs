@@ -387,6 +387,7 @@ fn collect_used_fragments(
             if let executable::Selection::FragmentSpread(spread) = selection {
                 names.insert(&spread.fragment_name);
             }
+            true
         })?;
     }
     Ok(names)

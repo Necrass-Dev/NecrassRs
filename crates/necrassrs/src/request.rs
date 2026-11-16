@@ -228,6 +228,33 @@ mod tests {
     }
 
     #[test]
+    fn validation_work_limit_rejects_unselected_operations() {
+        let schema = Schema::parse_and_validate(
+            "type Query { immediate(value: Int!): Int! }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let fields = (0..128)
+            .map(|index| format!("f{index}: immediate(value: {index})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut document = String::from("query Main { immediate(value: 0) }");
+        for index in 0..32 {
+            document.push_str(&format!(" query Extra{index} {{ ...Shared }}"));
+        }
+        document.push_str(&format!(" fragment Shared on Query {{ {fields} }}"));
+
+        let request = Request::new(document).with_operation_name("Main");
+        let error = prepare_request(&schema, &request).unwrap_err();
+        assert!(!error.syntax_error);
+        assert_eq!(error.errors.len(), 1);
+        assert_eq!(
+            error.errors[0].message,
+            "executable document requires too much validation work"
+        );
+    }
+
+    #[test]
     fn unknown_operation_name_is_rejected() {
         let schema = operation_schema();
         let request = Request::new(MULTIPLE_OPERATIONS).with_operation_name("Missing");
