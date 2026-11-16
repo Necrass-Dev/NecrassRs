@@ -4,7 +4,7 @@
 //! `necrassrs-build` crate generates resolver traits, argument types, and a
 //! dispatcher from SDL. Applications implement resolver bodies, own their
 //! Context type, and pass a Context value to [`execute`] for each request.
-//! HTTP integration is provided separately by `necrassrs-axum`.
+//! HTTP integration is provided separately by `necrassrs-axum` and `necrassrs-actix`.
 //!
 //! # Request flow
 //!

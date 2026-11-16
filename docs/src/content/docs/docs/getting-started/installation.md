@@ -88,6 +88,7 @@ existing projects, nonempty directories, and symbolic-link targets are rejected.
 
 Use `necrass --help` and `necrass init --help` for command usage. Without a terminal,
 supply an explicit command; bare `necrass` prints help and exits with an error.
+See the [CLI reference](/docs/cli/) for every argument and the generated files.
 
 The starter uses released NecrassRs packages from crates.io. Cargo records the
 resolved package versions in the new project's `Cargo.lock` on the first build.
@@ -144,19 +145,24 @@ attributes, or comments, synchronization stops until you remove or migrate it.
 After initialization, ordinary builds and runs use Cargo; the CLI is not needed
 for schema changes. The starter configures `panic = "abort"` in development and
 release builds, so calling an unimplemented resolver terminates the process.
-Return `ResolverError` for ordinary application errors.
+Return `ResolverError` for ordinary application errors. See
+[Build Configuration](/docs/build-configuration/) for the generated modules and
+build errors, and [Execution Model](/docs/execution-model/) for how requests run.
 
 ## Explore the documentation
 
 - [Tutorial](/docs/tutorial/): build a web server and query it with GraphiQL or HTTP.
-- [Personnel Management System](/docs/personnel-management/): add Object, Interface,
-  and Union results to a working server.
-- [Types](/docs/types/): Rust type mappings, input presence, defaults, OneOf, and recursion.
-- [Custom Scalars](/docs/custom-scalars/): define scalar storage, coercion, and
-  serialization.
-- [Organizing Resolver Files](/docs/resolver-files/): split implementations across
-  Rust modules and understand synchronization safety.
-- [Introspection and GraphiQL](/docs/graphiql/): development UI and introspection settings.
+- Example projects: [Personnel Management System](/docs/personnel-management/)
+  for Object, Interface, and Union results, and
+  [Subscription Console](/docs/subscription-console/) for subscriptions.
+- Guides: [Custom Scalars](/docs/custom-scalars/),
+  [Organizing Resolver Files](/docs/resolver-files/),
+  [Integration](/docs/integration/), [Subscriptions](/docs/subscriptions/), and
+  [OpenTelemetry](/docs/opentelemetry/).
+- Reference: [CLI](/docs/cli/), [Build Configuration](/docs/build-configuration/),
+  [Type Mappings](/docs/types/), and [GraphQL over HTTP](/docs/graphql-over-http/).
+- Concepts: [Schema-first Workflow](/docs/schema-first-workflow/) and
+  [Execution Model](/docs/execution-model/).
 
 These pages follow the source checkout from which this site is built; they do not
 describe a versioned release. Use [docs.rs](https://docs.rs/necrassrs/) for the

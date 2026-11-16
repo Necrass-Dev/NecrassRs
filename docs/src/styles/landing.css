@@ -652,6 +652,15 @@ h2 {
     display: none;
   }
 }
+@media (max-width: 410px) {
+  /* Keep the logo but drop the wordmark text so four nav links fit. */
+  .site-header .wordmark {
+    font-size: 0;
+  }
+  .site-header .wordmark img {
+    margin-right: 0;
+  }
+}
 @media (min-width: 901px) and (max-height: 900px) {
   .enhanced .story-stage {
     padding-top: 20px;

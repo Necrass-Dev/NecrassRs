@@ -2,7 +2,7 @@
 
 NecrassRs welcomes bug reports, design discussions, documentation improvements,
 and code contributions. Before changing the repository, read the relevant issue,
-[package boundaries](docs/src/content/docs/docs/guide/contributing.md#package-boundaries), and
+[package boundaries](docs/src/content/docs/docs/contributing/contributing.md#package-boundaries), and
 [`AI_POLICY.md`](AI_POLICY.md). Use an issue's specified branch when it has one,
 and keep unrelated changes in separate commits.
 
@@ -241,7 +241,7 @@ After pushing the prepared commit and tag, the same workflow builds CLI archives
 from that exact commit for Linux x86_64, macOS x86_64 and ARM64, and Windows
 x86_64. Each build extracts its archive and checks the CLI version and project
 initialization on its native runner. All four builds must succeed before
-publication starts. See the [installation guide](docs/src/content/docs/docs/guide/installation.md#prebuilt-binaries)
+publication starts. See the [installation guide](docs/src/content/docs/docs/getting-started/installation.md#prebuilt-binaries)
 for archive names and the supported platform matrix.
 
 The publish job downloads the archives, obtains a short-lived crates.io token
