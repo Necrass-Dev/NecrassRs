@@ -14,6 +14,7 @@ const [schemaBefore, schemaAfter, resolverBefore, resolverAfter] = await Promise
   codeToHtml(evolvedResolver, { lang: "rust", theme: "vesper" }),
 ]);
 const repository = "https://github.com/Necrass-Dev/NecrassRs";
+const crate = "https://crates.io/crates/necrassrs";
 const installCommand = "cargo install necrassrs-cli --locked";
 ---
 
@@ -47,6 +48,7 @@ const installCommand = "cargo install necrassrs-cli --locked";
       <nav aria-label="Main navigation">
         <a href="/docs/">Documentation <span aria-hidden="true">↗</span></a>
         <a href={repository}>GitHub <span aria-hidden="true">↗</span></a>
+        <a href={crate}>crates.io <span aria-hidden="true">↗</span></a>
         <a href="https://hackers.pub/@gaebalgom/articles">Blog <span aria-hidden="true">↗</span></a>
       </nav>
     </header>
