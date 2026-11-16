@@ -56,7 +56,16 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 Official repository documents must be written in English, including policies, architecture documents, READMEs, and contribution guides. Follow the user's requested language in conversation. Keep code, comments, documents, and other repository artifacts professional and free of conversational roleplay.
 
-The website groups its pages under `docs/src/content/docs/docs/` to match the sidebar: `introduction/`, `guide/`, and `manual/`. Keep step-by-step server setup in the tutorial and type mappings and `GraphQLInput` semantics in the Types manual. Maintain current user and contributor guidance in the relevant documentation pages. Track proposals, remaining work, and historical validation results in issues and pull requests rather than separate archive documents. Update repository references when removing or moving documentation.
+The website keeps its pages under `docs/src/content/docs/docs/`, with directories mirroring the sidebar sections in `docs/astro.config.mjs`. Organize pages by reader purpose:
+
+- Getting Started: what NecrassRs is, installation, and the first tutorial.
+- Example Projects: complete applications built step by step.
+- Guides: task-oriented pages grouped by topic, such as schema and types, serving, subscriptions, and observability.
+- Reference: exact contracts, such as the CLI, build configuration, GraphQL over HTTP, type mappings, and tracing spans. Link to docs.rs for Rust API details.
+- Concepts: design and behavior explanations, such as the schema-first workflow, source ownership, the execution model, and Reed.
+- Contributing: guidance for contributors, including writing framework adapters.
+
+Give each page one purpose. Split a page that mixes a walkthrough with reference material, and keep each contract in a single page that others link to. Maintain current user and contributor guidance in the relevant documentation pages. Track proposals, remaining work, and historical validation results in issues and pull requests rather than separate archive documents. Update repository references when removing or moving documentation.
 
 In reviews, lead with reproducible defects and risks, identifying locations and impact. Distinguish findings from hypotheses.
 
