@@ -104,11 +104,11 @@ pub trait Dispatcher<C> {
 
 /// Server-controlled execution settings.
 ///
-/// [`Default`] enables introspection, disables scalar tracing, and sets the
-/// validation-work multiplier to 8. The multiplier is applied to the number of
-/// selection, directive, argument, and nested-value nodes physically present
-/// in the document; the minimum allowed work is 2,048. Request input cannot
-/// change these settings.
+/// [`Default`] enables introspection, disables scalar tracing, sets the
+/// validation-work multiplier to 8, and sets the token limit to 15,000. The
+/// multiplier is applied to the number of selection, directive, argument, and
+/// nested-value nodes physically present in the document; the minimum allowed
+/// work is 2,048. Request input cannot change these settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExecutionOptions {
     /// Whether `__schema` and `__type` may be queried. Enabled by default.
@@ -121,10 +121,11 @@ pub struct ExecutionOptions {
     /// values permit more repeated work from shared fragments before rejection.
     /// This is controlled by the application, not by GraphQL request input.
     pub validation_work_multiplier: usize,
-    /// Allowed token limit to parse
+    /// Maximum number of lexical tokens parsed from a request document.
     ///
-    /// Defaults to 15_000, Same value with  `parser_max_tokens` of Apollo Router
-    /// It counts space, comments as token also.
+    /// Defaults to 15,000, matching Apollo Router's `parser_max_tokens`.
+    /// Whitespace, commas, comments, and lexical errors count as tokens.
+    /// Longer documents are rejected as syntax errors.
     pub token_limit: usize,
 }
 

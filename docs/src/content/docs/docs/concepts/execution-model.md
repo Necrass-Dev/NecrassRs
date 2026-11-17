@@ -106,6 +106,7 @@ setup. Return `ResolverError` for every failure that should reach the client.
 | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `introspection` | `true`  | When `false`, selected `__schema` and `__type` fields are rejected before resolver calls; `__typename` remains available |
 | `trace_scalars` | `false` | Adds tracing spans for scalar and enum fields; see [Tracing Spans](/docs/tracing-spans/#field-spans)                     |
+| `token_limit`   | `15000` | Rejects request documents with more lexical tokens as syntax errors; see [GraphQL over HTTP](/docs/graphql-over-http/)   |
 
 Construct options with `..Default::default()` so that new fields keep their
 defaults. See [GraphiQL](/docs/graphiql/) for introspection policy.

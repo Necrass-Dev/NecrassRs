@@ -141,6 +141,14 @@ services define these options in `src/options.rs`. This is a GraphQL validation
 error: the maintained adapters return 422 with `errors` and no `data`. HTTP body
 limits remain independent.
 
+Before validation, the request parser stops after 15,000 lexical tokens by
+default, matching Apollo Router's `parser_max_tokens`. Whitespace, commas,
+comments, and lexical errors count as tokens, which also bounds the number of
+syntax errors a malformed document can produce. A document that exceeds the
+limit is a syntax error: the maintained adapters return 400 with `errors` and no
+`data`. Applications can set `token_limit` with `ExecutionOptions`; requests
+cannot change it.
+
 The runtime implements subscription execution and cancellation, but the adapters
 do not provide SSE framing or the `graphql-transport-ws` protocol. These remain
 separate work in [#32](https://github.com/Necrass-Dev/NecrassRs/issues/32) and

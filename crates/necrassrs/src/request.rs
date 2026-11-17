@@ -109,9 +109,7 @@ pub(crate) fn prepare_request(
     schema: &Valid<reed_compiler::Schema>,
     request: &Request,
 ) -> Result<PreparedRequest, RequestError> {
-    use crate::ExecutionOptions;
-
-    let ast = parse_request(request, ExecutionOptions::default().token_limit)?;
+    let ast = parse_request(request, crate::ExecutionOptions::default().token_limit)?;
     let operation = validate_request(
         schema,
         request,
