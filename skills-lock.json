@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "skills": {
+    "sacho": {
+      "source": "dahlia/sacho",
+      "commit": "1da4f852a773b1f12d679c8e2cac12f512f02ab7",
+      "sourceType": "github",
+      "skillPath": "skills/sacho/SKILL.md",
+      "computedHash": "cbbb883bc2e2735db8af7de7430b7d8bb56e5e957a9cef27b421b1b5756c6a69"
+    }
+  }
+}
