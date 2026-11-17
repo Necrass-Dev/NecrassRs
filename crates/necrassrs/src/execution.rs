@@ -4086,4 +4086,40 @@ mod tests {
         .await;
         assert!(!invalid.requires_response_stream());
     }
+
+    #[tokio::test]
+    async fn default_token_limit_bounds_syntax_errors() {
+        let schema =
+            Schema::parse_and_validate("type Query { immediate: Int! }", "schema.graphql").unwrap();
+        let dispatcher = ValueDispatcher(json!(0));
+
+        for unit in ["?", "}", "a "] {
+            let request = Request::new(unit.repeat(100_000));
+
+            let response = super::execute_with_options(
+                &schema,
+                &request,
+                &dispatcher,
+                &(),
+                super::ExecutionOptions::default(),
+            )
+            .await;
+
+            assert!(
+                response.is_syntax_error(),
+                "{unit:?}: expected a syntax error"
+            );
+
+            let body = to_value(response).unwrap();
+            let errors = body["errors"].as_array().unwrap();
+            assert!(errors.len() <= 15_001, "{unit:?}: {} errors", errors.len());
+            assert!(
+                errors.iter().any(|error| error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("token limit reached")),
+                "{unit:?}: missing token limit error"
+            );
+        }
+    }
 }
