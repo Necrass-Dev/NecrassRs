@@ -4120,7 +4120,11 @@ mod tests {
 
             let body = to_value(response).unwrap();
             let errors = body["errors"].as_array().unwrap();
-            assert!(errors.len() <= 15_001, "{unit:?}: {} errors", errors.len());
+            assert!(
+                errors.len() <= super::ExecutionOptions::default().token_limit + 1,
+                "{unit:?}: {} errors",
+                errors.len()
+            );
             assert!(
                 errors.iter().any(|error| error["message"]
                     .as_str()
@@ -4129,5 +4133,39 @@ mod tests {
                 "{unit:?}: missing token limit error"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn server_token_limit_controls_request_parsing() {
+        let schema =
+            Schema::parse_and_validate("type Query { immediate: Int! }", "schema.graphql").unwrap();
+        let request = Request::new(format!("{{ immediate {} }}", ",".repeat(20_000)));
+        let dispatcher = ValueDispatcher(json!(0));
+
+        let rejected = super::execute_with_options(
+            &schema,
+            &request,
+            &dispatcher,
+            &(),
+            super::ExecutionOptions::default(),
+        )
+        .await;
+        assert!(rejected.is_syntax_error());
+
+        let accepted = super::execute_with_options(
+            &schema,
+            &request,
+            &dispatcher,
+            &(),
+            super::ExecutionOptions {
+                token_limit: 30_000,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            to_value(accepted).unwrap(),
+            json!({ "data": { "immediate": 0 } })
+        );
     }
 }
