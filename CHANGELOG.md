@@ -1,6 +1,23 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+To be released.
+
+### necrassrs
+
+ -  Added `ExecutionOptions::token_limit` and applied it to request parsing.
+    The default is 15,000 lexical tokens, matching Apollo Router's
+    `parser_max_tokens` default. Whitespace, commas, comments, and lexical
+    errors count toward the limit, so documents of repeated invalid characters
+    no longer produce one error per character. Documents that exceed the limit
+    are rejected as syntax errors; applications with larger documents can raise
+    the limit. Existing exhaustive `ExecutionOptions` struct literals must add
+    this field or use `..Default::default()`.
+
+
 Version 0.4.2
 -------------
 

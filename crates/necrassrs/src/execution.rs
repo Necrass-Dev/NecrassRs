@@ -104,11 +104,11 @@ pub trait Dispatcher<C> {
 
 /// Server-controlled execution settings.
 ///
-/// [`Default`] enables introspection, disables scalar tracing, and sets the
-/// validation-work multiplier to 8. The multiplier is applied to the number of
-/// selection, directive, argument, and nested-value nodes physically present
-/// in the document; the minimum allowed work is 2,048. Request input cannot
-/// change these settings.
+/// [`Default`] enables introspection, disables scalar tracing, sets the
+/// validation-work multiplier to 8, and sets the token limit to 15,000. The
+/// multiplier is applied to the number of selection, directive, argument, and
+/// nested-value nodes physically present in the document; the minimum allowed
+/// work is 2,048. Request input cannot change these settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExecutionOptions {
     /// Whether `__schema` and `__type` may be queried. Enabled by default.
@@ -121,6 +121,12 @@ pub struct ExecutionOptions {
     /// values permit more repeated work from shared fragments before rejection.
     /// This is controlled by the application, not by GraphQL request input.
     pub validation_work_multiplier: usize,
+    /// Maximum number of lexical tokens parsed from a request document.
+    ///
+    /// Defaults to 15,000, matching Apollo Router's `parser_max_tokens`.
+    /// Whitespace, commas, comments, and lexical errors count as tokens.
+    /// Longer documents are rejected as syntax errors.
+    pub token_limit: usize,
 }
 
 impl Default for ExecutionOptions {
@@ -130,6 +136,7 @@ impl Default for ExecutionOptions {
             trace_scalars: false,
             validation_work_multiplier: reed_compiler::validation::ValidationOptions::default()
                 .work_multiplier,
+            token_limit: 15_000,
         }
     }
 }
@@ -230,7 +237,8 @@ where
     D: Dispatcher<C>,
 {
     let parse = operation_span.in_scope(|| Span::phase("necrassrs.parse"));
-    let ast = operation_span.in_scope(|| request_phase(&parse, || parse_request(request)))?;
+    let ast = operation_span
+        .in_scope(|| request_phase(&parse, || parse_request(request, options.token_limit)))?;
 
     let validate = operation_span.in_scope(|| Span::phase("necrassrs.validate"));
     let operation = operation_span.in_scope(|| {
@@ -4085,5 +4093,79 @@ mod tests {
         )
         .await;
         assert!(!invalid.requires_response_stream());
+    }
+
+    #[tokio::test]
+    async fn default_token_limit_bounds_syntax_errors() {
+        let schema =
+            Schema::parse_and_validate("type Query { immediate: Int! }", "schema.graphql").unwrap();
+        let dispatcher = ValueDispatcher(json!(0));
+
+        for unit in ["?", "}", "a "] {
+            let request = Request::new(unit.repeat(100_000));
+
+            let response = super::execute_with_options(
+                &schema,
+                &request,
+                &dispatcher,
+                &(),
+                super::ExecutionOptions::default(),
+            )
+            .await;
+
+            assert!(
+                response.is_syntax_error(),
+                "{unit:?}: expected a syntax error"
+            );
+
+            let body = to_value(response).unwrap();
+            let errors = body["errors"].as_array().unwrap();
+            assert!(
+                errors.len() <= super::ExecutionOptions::default().token_limit + 1,
+                "{unit:?}: {} errors",
+                errors.len()
+            );
+            assert!(
+                errors.iter().any(|error| error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("token limit reached")),
+                "{unit:?}: missing token limit error"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn server_token_limit_controls_request_parsing() {
+        let schema =
+            Schema::parse_and_validate("type Query { immediate: Int! }", "schema.graphql").unwrap();
+        let request = Request::new(format!("{{ immediate {} }}", ",".repeat(20_000)));
+        let dispatcher = ValueDispatcher(json!(0));
+
+        let rejected = super::execute_with_options(
+            &schema,
+            &request,
+            &dispatcher,
+            &(),
+            super::ExecutionOptions::default(),
+        )
+        .await;
+        assert!(rejected.is_syntax_error());
+
+        let accepted = super::execute_with_options(
+            &schema,
+            &request,
+            &dispatcher,
+            &(),
+            super::ExecutionOptions {
+                token_limit: 30_000,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            to_value(accepted).unwrap(),
+            json!({ "data": { "immediate": 0 } })
+        );
     }
 }
