@@ -8,14 +8,16 @@ To be released.
 
 ### necrassrs
 
- -  Added `ExecutionOptions::token_limit` and applied it to request parsing.
-    The default is 15,000 lexical tokens, matching Apollo Router's
-    `parser_max_tokens` default. Whitespace, commas, comments, and lexical
-    errors count toward the limit, so documents of repeated invalid characters
-    no longer produce one error per character. Documents that exceed the limit
-    are rejected as syntax errors; applications with larger documents can raise
-    the limit. Existing exhaustive `ExecutionOptions` struct literals must add
+ -  Added `ExecutionOptions::token_limit` so applications can change the
+    request parser token limit. GraphQL requests cannot override this server
+    setting. Existing exhaustive `ExecutionOptions` struct literals must add
     this field or use `..Default::default()`.
+ -  Fixed malformed GraphQL documents producing one syntax error per invalid
+    character, which let a small request allocate and return a very large
+    error response. Request parsing now stops after 15,000 lexical tokens by
+    default, matching Apollo Router's `parser_max_tokens`. Whitespace, commas,
+    comments, and invalid characters count as tokens, and documents over the
+    limit are rejected as syntax errors.
 
 
 Version 0.4.2
