@@ -109,7 +109,9 @@ pub(crate) fn prepare_request(
     schema: &Valid<reed_compiler::Schema>,
     request: &Request,
 ) -> Result<PreparedRequest, RequestError> {
-    let ast = parse_request(request)?;
+    use crate::ExecutionOptions;
+
+    let ast = parse_request(request, ExecutionOptions::default().token_limit)?;
     let operation = validate_request(
         schema,
         request,
@@ -119,15 +121,21 @@ pub(crate) fn prepare_request(
     coerce_request_variables(schema, request, operation)
 }
 
-pub(crate) fn parse_request(request: &Request) -> Result<Document, RequestError> {
-    Document::parse(request.document.as_str(), "request.graphql").map_err(|error| RequestError {
-        errors: error
-            .errors
-            .iter()
-            .map(|diagnostic| diagnostic.to_json())
-            .collect(),
-        syntax_error: true,
-    })
+pub(crate) fn parse_request(
+    request: &Request,
+    token_limit: usize,
+) -> Result<Document, RequestError> {
+    Document::parser()
+        .token_limit(token_limit)
+        .parse_ast(request.document.as_str(), "request.graphql")
+        .map_err(|error| RequestError {
+            errors: error
+                .errors
+                .iter()
+                .map(|diagnostic| diagnostic.to_json())
+                .collect(),
+            syntax_error: true,
+        })
 }
 
 pub(crate) fn validate_request(
@@ -182,6 +190,7 @@ pub(crate) fn coerce_request_variables(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExecutionOptions;
     use reed_compiler::Schema;
     use reed_compiler::response::serde_json_bytes::json;
 
@@ -265,7 +274,7 @@ mod tests {
             error.errors[0].message,
             "executable document requires too much validation work"
         );
-        let ast = parse_request(&request).unwrap();
+        let ast = parse_request(&request, ExecutionOptions::default().token_limit).unwrap();
         assert!(validate_request(&schema, &request, ast, 64).is_ok());
     }
 

@@ -121,6 +121,11 @@ pub struct ExecutionOptions {
     /// values permit more repeated work from shared fragments before rejection.
     /// This is controlled by the application, not by GraphQL request input.
     pub validation_work_multiplier: usize,
+    /// Allowed token limit to parse
+    ///
+    /// Defaults to 15_000, Same value with  `parser_max_tokens` of Apollo Router
+    /// It counts space, comments as token also.
+    pub token_limit: usize,
 }
 
 impl Default for ExecutionOptions {
@@ -130,6 +135,7 @@ impl Default for ExecutionOptions {
             trace_scalars: false,
             validation_work_multiplier: reed_compiler::validation::ValidationOptions::default()
                 .work_multiplier,
+            token_limit: 15_000,
         }
     }
 }
@@ -230,7 +236,8 @@ where
     D: Dispatcher<C>,
 {
     let parse = operation_span.in_scope(|| Span::phase("necrassrs.parse"));
-    let ast = operation_span.in_scope(|| request_phase(&parse, || parse_request(request)))?;
+    let ast = operation_span
+        .in_scope(|| request_phase(&parse, || parse_request(request, options.token_limit)))?;
 
     let validate = operation_span.in_scope(|| Span::phase("necrassrs.validate"));
     let operation = operation_span.in_scope(|| {
