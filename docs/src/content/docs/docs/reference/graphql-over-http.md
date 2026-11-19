@@ -141,6 +141,15 @@ services define these options in `src/options.rs`. This is a GraphQL validation
 error: the maintained adapters return 422 with `errors` and no `data`. HTTP body
 limits remain independent.
 
+Reed also bounds the selection depth of every operation and fragment, including
+unused fragments, after fragment spreads are composed. A definition's own
+selection set has depth 1, and each nested selection set entered through a
+field, an inline fragment, or a fragment spread adds one level. A document whose
+depth exceeds 500 is rejected before the rest of validation runs, with a single
+`too much recursion` error. This is a GraphQL validation error: the maintained
+adapters return 422 with `errors` and no `data`. The limit is fixed; neither
+applications nor requests can change it.
+
 Before validation, the request parser stops after 15,000 lexical tokens by
 default, matching Apollo Router's `parser_max_tokens`. Whitespace, commas,
 comments, and lexical errors count as tokens, which also bounds the number of

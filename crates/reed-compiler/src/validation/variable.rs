@@ -9,6 +9,7 @@ use crate::validation::DepthGuard;
 use crate::validation::DiagnosticList;
 use crate::validation::RecursionLimitError;
 use crate::validation::SourceSpan;
+use crate::validation::SELECTION_DEPTH_LIMIT;
 use crate::ExecutableDocument;
 use crate::Name;
 use crate::Node;
@@ -160,7 +161,7 @@ pub(crate) fn walk_selections_with_deduped_fragments<'doc>(
     // `validate_fragment_cycles`, despite doing similar work. This is because this limit
     // was introduced later and should not break (reasonable) existing queries that are
     // under that pre-existing limit. Luckily the existing limit was very conservative.
-    let mut depth = DepthCounter::new().with_limit(500);
+    let mut depth = DepthCounter::new().with_limit(SELECTION_DEPTH_LIMIT);
     walk_selections_inner(
         document,
         selections,

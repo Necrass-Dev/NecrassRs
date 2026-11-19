@@ -14,6 +14,7 @@ use crate::validation::DiagnosticList;
 use crate::validation::ExecutableValidationContext;
 use crate::validation::Valid;
 use crate::validation::ValidationOptions;
+use crate::validation::SELECTION_DEPTH_LIMIT;
 use crate::ExecutableDocument;
 use crate::Name;
 use crate::Node;
@@ -84,15 +85,6 @@ pub(crate) fn validate_with_or_without_schema(
     validate_defer(document, errors);
     true
 }
-
-/// Maximum composed selection depth of an operation or fragment definition.
-///
-/// The definition's own selection set has depth 1. Each non-empty selection set entered
-/// through a field, an inline fragment, or a fragment spread adds one level, so fragment
-/// spreads compose the depth of the fragments they reference. Later validation and
-/// execution recurse over composed selection sets; rejecting deeper documents up front
-/// bounds their stack use. The limit matches the existing selection walks.
-const SELECTION_DEPTH_LIMIT: usize = 500;
 
 /// Selection depth facts of one definition, collected without following fragment spreads.
 struct LocalDepth {
@@ -292,7 +284,8 @@ fn exceeds_validation_work(document: &ExecutableDocument, options: ValidationOpt
     let mut expanded = 0usize;
     for operation in document.operations.iter() {
         let mut seen_fragments = HashSet::default();
-        if let Ok(false) = walk_selections_with_deduped_fragments(
+        // A recursion limit error counts as exceeded work so that the check fails closed.
+        let within_limit = walk_selections_with_deduped_fragments(
             document,
             &operation.selection_set,
             |selection| {
@@ -307,7 +300,9 @@ fn exceeds_validation_work(document: &ExecutableDocument, options: ValidationOpt
                 }
                 expanded <= limit
             },
-        ) {
+        )
+        .unwrap_or(false);
+        if !within_limit {
             return true;
         }
     }
