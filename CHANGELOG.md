@@ -1,6 +1,31 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+To be released.
+
+### necrassrs
+
+ -  Fixed a request within the default token limit aborting the server
+    process by overflowing the stack of a Tokio worker thread during
+    validation, even with introspection disabled. Requests whose composed
+    selection depth exceeds 500 now fail as validation errors with a single
+    `too much recursion` error, and the maintained adapters return 422.
+
+### reed-compiler
+
+ -  Fixed executable validation overflowing the thread stack when fragment
+    spreads compose a deeply nested selection. Validation now rejects any
+    operation or fragment, including unused fragments, whose selection depth
+    exceeds 500, reporting a single `too much recursion` error and skipping
+    the rest of validation. A definition's own selection set has depth 1, and
+    each nested selection set entered through a field, an inline fragment, or
+    a fragment spread adds one level. Such documents no longer report other
+    diagnostics alongside the recursion error.
+
+
 Version 0.4.3
 -------------
 

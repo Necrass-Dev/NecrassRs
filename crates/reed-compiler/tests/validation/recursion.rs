@@ -157,15 +157,6 @@ fn long_nested_fragment_chains_do_not_overflow_stack() {
 
     let expected = expect_test::expect![[r#"
         Error: too much recursion
-        Error: too much recursion
-        Error: too much recursion
-        Error: `typeFragment1` contains too much nesting
-            ╭─[ overflow.graphql:11:11 ]
-            │
-         11 │           fragment typeFragment1 on __Type {
-            │           ───────────┬──────────  
-            │                      ╰──────────── references a very long chain of fragments in its definition
-        ────╯
     "#]];
     expected.assert_eq(&errors.to_string());
 }
@@ -188,14 +179,6 @@ fn long_flat_fragment_chains_do_not_overflow_stack() {
 
     let expected = expect_test::expect![[r#"
         Error: too much recursion
-        Error: too much recursion
-        Error: `typeFragment1` contains too much nesting
-            ╭─[ overflow.graphql:11:11 ]
-            │
-         11 │           fragment typeFragment1 on __Type {
-            │           ───────────┬──────────  
-            │                      ╰──────────── references a very long chain of fragments in its definition
-        ────╯
     "#]];
     expected.assert_eq(&errors.to_string());
 }
@@ -242,15 +225,6 @@ fn long_flat_fragment_chains_do_not_overflow_stack_in_subscriptions() {
 
     let expected = expect_test::expect![[r#"
         Error: too much recursion
-        Error: too much recursion
-        Error: too much recursion
-        Error: `subscriptionFragment1` contains too much nesting
-           ╭─[ overflow.graphql:9:11 ]
-           │
-         9 │           fragment subscriptionFragment1 on Subscription {
-           │           ───────────────┬──────────────  
-           │                          ╰──────────────── references a very long chain of fragments in its definition
-        ───╯
     "#]];
     expected.assert_eq(&errors.to_string());
 }

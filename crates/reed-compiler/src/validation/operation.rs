@@ -10,6 +10,7 @@ use crate::validation::DepthGuard;
 use crate::validation::DiagnosticList;
 use crate::validation::ExecutableValidationContext;
 use crate::validation::RecursionLimitError;
+use crate::validation::SELECTION_DEPTH_LIMIT;
 use crate::ExecutableDocument;
 use crate::Name;
 use crate::Node;
@@ -80,7 +81,7 @@ fn walk_selections<'doc>(
     // `validate_fragment_cycles`, despite doing similar work. This is because this limit
     // was introduced later and should not break (reasonable) existing queries that are
     // under that pre-existing limit. Luckily the existing limit was very conservative.
-    let mut depth = DepthCounter::new().with_limit(500);
+    let mut depth = DepthCounter::new().with_limit(SELECTION_DEPTH_LIMIT);
 
     walk_selections_inner(
         document,
@@ -210,7 +211,9 @@ pub(crate) fn validate_defer(document: &ExecutableDocument, diagnostics: &mut Di
             operation.operation_type,
             diagnostics,
             &mut HashSet::default(),
-            DepthCounter::new().with_limit(500).guard(),
+            DepthCounter::new()
+                .with_limit(SELECTION_DEPTH_LIMIT)
+                .guard(),
         );
         if operation.is_subscription() {
             let _ = forbid_unconditional_defer(
@@ -218,7 +221,9 @@ pub(crate) fn validate_defer(document: &ExecutableDocument, diagnostics: &mut Di
                 &operation.selection_set,
                 diagnostics,
                 &mut HashSet::default(),
-                DepthCounter::new().with_limit(500).guard(),
+                DepthCounter::new()
+                    .with_limit(SELECTION_DEPTH_LIMIT)
+                    .guard(),
             );
         }
     }
@@ -233,7 +238,9 @@ fn validate_defer_labels(document: &ExecutableDocument, diagnostics: &mut Diagno
         let _ = walk_defers_in_selection_set(
             selection_set,
             &mut |directive| check_defer_label(directive, diagnostics, seen),
-            DepthCounter::new().with_limit(500).guard(),
+            DepthCounter::new()
+                .with_limit(SELECTION_DEPTH_LIMIT)
+                .guard(),
         );
     };
     for operation in document.operations.iter() {

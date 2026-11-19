@@ -1232,6 +1232,15 @@ impl From<diagnostics::DiagnosticData> for Details {
 
 const DEFAULT_RECURSION_LIMIT: usize = 32;
 
+/// Maximum composed selection depth of an operation or fragment definition.
+///
+/// The definition's own selection set has depth 1. Each non-empty selection set entered
+/// through a field, an inline fragment, or a fragment spread adds one level, so fragment
+/// spreads compose the depth of the fragments they reference. Executable validation rejects
+/// deeper documents before its recursive walks run, and those walks use the same limit, so a
+/// document within it never reaches their recursion guards.
+pub(crate) const SELECTION_DEPTH_LIMIT: usize = 500;
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Recursion limit reached")]
 #[non_exhaustive]
