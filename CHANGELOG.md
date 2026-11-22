@@ -1,10 +1,10 @@
 Changelog
 =========
 
-Unreleased
-----------
+Version 0.4.6
+-------------
 
-To be released.
+Released on November 22, 2026.
 
 ### necrassrs
 
