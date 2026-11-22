@@ -163,7 +163,10 @@ source item order needed by workspace lints, and regression tests are adapted
 for the Reed package; the parser module organization is retained. The
 restored upstream fixture corpus reclassifies operation descriptions and empty
 selection sets and updates Unicode diagnostics to match the maintained September
-2025 language corrections.
+2025 language corrections. The upstream `*_with_missing_requirements` parser
+error fixtures are renamed `*_without_directives_or_members`, which describes
+the type extensions they contain and keeps dependency scanners from reading
+them as Python requirements files.
 
 [apollo-rs: spec-compliant GraphQL Tools in Rust]: https://www.apollographql.com/blog/announcement/tooling/apollo-rs-graphql-tools-in-rust/
 [examples directory]: https://github.com/apollographql/apollo-rs/tree/main/crates/apollo-parser/examples

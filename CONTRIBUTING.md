@@ -33,6 +33,30 @@ Generator changes must also compile a generated consumer. Report checks that
 could not run and do not replace a failing assertion with an incorrect
 expectation.
 
+### Audit dependencies
+
+The Audit workflow runs [`cargo audit`](https://github.com/rustsec/rustsec/tree/main/cargo-audit)
+against the root `Cargo.lock` and the [RustSec Advisory Database](https://rustsec.org/).
+It runs on pull requests and pushes to `main` that change a Cargo manifest,
+`Cargo.lock`, `.cargo/audit.toml`, or the workflow; daily on `main`, because a
+new advisory can affect an unchanged lockfile; and on manual dispatch. GitHub
+notifies the maintainer who last changed the schedule when a scheduled run
+fails. Dependabot alerts cover only advisories in the GitHub Advisory Database,
+so they do not replace this check.
+
+Vulnerabilities and yanked crates fail the check; `unmaintained` and `unsound`
+advisories are reported as warnings. The Release workflow does not run the
+audit, so dispatch the Audit workflow before preparing a release. Run the same
+check locally with `cargo install cargo-audit --locked` and `cargo audit`.
+
+When the check fails, update the affected dependency with a targeted
+`cargo update -p <crate>`, or remove it from the graph if NecrassRs does not
+need the feature that pulls it in. If neither is possible, add the advisory ID
+to `ignore` in `.cargo/audit.toml` with a comment that explains why the
+affected code path is unreachable or acceptable and links the issue that tracks
+removing the entry. An advisory in NecrassRs's own code is handled under
+[`SECURITY.md`](SECURITY.md), not through this check.
+
 ## Write changelog fragments
 
 ### Set up Sacho

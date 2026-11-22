@@ -59,6 +59,8 @@ pnpm build
 
 Bug fixes and nontrivial behavior changes need a runnable regression check. Generator changes must also compile a generated consumer. Report checks that could not run and do not replace a failing assertion with an incorrect expectation.
 
+The Audit workflow checks the root `Cargo.lock` against the RustSec Advisory Database with `cargo audit` on dependency changes and daily. See [Audit dependencies](https://github.com/Necrass-Dev/NecrassRs/blob/main/CONTRIBUTING.md#audit-dependencies) for how to respond to a failure.
+
 Parsing, validation, introspection, and input-coercion rule tests currently live
 in Reed. NecrassRs tests cover integration, execution, generated consumers, Cargo,
 and filesystem behavior. Place regressions with the behavior they exercise.

@@ -10,7 +10,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-actix-web = "4"
+actix-web = { version = "4.19", default-features = false, features = ["macros"] }
 necrassrs = { workspace = true, features = ["tracing"] }
 necrassrs-actix.workspace = true
 opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }

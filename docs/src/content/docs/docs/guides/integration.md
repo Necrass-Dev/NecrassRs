@@ -147,6 +147,8 @@ Without this middleware, `GraphQLResponse` preserves the existing `application/j
 
 Use `web::Data` for application state and construct Context inside the handler. Configure JSON limits with `web::JsonConfig::limit`. Standard JSON extraction errors follow the [HTTP status contract](/docs/graphql-over-http/#status-and-error-contract); custom JSON error handlers returning other error types retain their own responses.
 
+`necrassrs-actix` depends on `actix-web` 4.19 or later with default features disabled. Actix Web features such as HTTP/2, response compression, cookies, and the `#[actix_web::main]` macro are enabled by the application's own `actix-web` dependency; `actix-web = "4"` enables all of the defaults.
+
 ```rust
 use actix_web::web;
 use necrassrs_actix::{GraphQLRequest, GraphQLResponse};
