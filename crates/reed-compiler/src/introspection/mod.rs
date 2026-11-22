@@ -27,7 +27,14 @@ use crate::Schema;
 mod max_depth;
 pub(crate) mod resolvers;
 
-/// Check that the nesting level of some list fields does not exceed a fixed depth limit.
+/// The list depth limit applied by [`check_max_depth`].
+///
+/// A query may nest up to two of the introspection list fields `fields`, `inputFields`,
+/// `interfaces`, and `possibleTypes`; a third nested list is rejected.
+pub const DEFAULT_MAX_LIST_DEPTH: usize = 2;
+
+/// Check that the nesting level of some list fields does not exceed
+/// [`DEFAULT_MAX_LIST_DEPTH`].
 ///
 /// Since [the schema-introspection schema][s] is recursive,
 /// a malicious query could cause huge responses that grow exponentially to the nesting depth.
@@ -43,10 +50,25 @@ pub fn check_max_depth(
     document: &Valid<ExecutableDocument>,
     operation: &Operation,
 ) -> Result<(), RequestError> {
+    check_max_depth_with_limit(document, operation, DEFAULT_MAX_LIST_DEPTH)
+}
+
+/// Like [`check_max_depth`], but with a caller-chosen limit.
+///
+/// `max_list_depth` is the greatest number of nested introspection list fields
+/// (`fields`, `inputFields`, `interfaces`, and `possibleTypes`) the operation may select,
+/// counting through inline fragments and fragment spreads.
+/// Zero rejects any selection of those fields.
+pub fn check_max_depth_with_limit(
+    document: &Valid<ExecutableDocument>,
+    operation: &Operation,
+    max_list_depth: usize,
+) -> Result<(), RequestError> {
     let initial_depth = 0;
     max_depth::check_selection_set(
         document,
         &mut HashMap::default(),
+        max_list_depth,
         initial_depth,
         &operation.selection_set,
     )
