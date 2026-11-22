@@ -69,7 +69,7 @@ layer. A stdout exporter does **not** send anything to Jaeger.
 In `examples/axum-server/Cargo.toml`, add this entry to `[dependencies]`:
 
 ```toml
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
 ```
 
 Also add `signal` to the existing Tokio feature list for graceful Ctrl-C shutdown:
@@ -79,8 +79,8 @@ tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "s
 ```
 
 Keep the example's other dependencies. These versions match its OpenTelemetry
-`0.31` / `tracing-opentelemetry` `0.32` combination. The
-[OTLP exporter documentation](https://docs.rs/opentelemetry-otlp/0.31.0/opentelemetry_otlp/)
+`0.33` / `tracing-opentelemetry` `0.34` combination. The
+[OTLP exporter documentation](https://docs.rs/opentelemetry-otlp/0.33.1/opentelemetry_otlp/)
 describes its HTTP and gRPC transports; this walkthrough uses HTTP with protobuf.
 
 ### 3. Replace the stdout setup
@@ -255,10 +255,10 @@ Add the SDK, bridge, subscriber, and exporter to your application dependencies:
 
 ```toml
 [dependencies]
-opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
-opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace"] }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
-tracing-opentelemetry = { version = "0.32", default-features = false }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 ```
 
