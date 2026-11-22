@@ -26,11 +26,13 @@ To be released.
 ### necrassrs-cli
 
  -  Changed the Actix Web project created by `necrass init --framework actix`
-    to require `actix-web` 4.19 or later, so a new project's lockfile does not
-    resolve releases affected by recent Actix Web and Actix HTTP advisories.
-    The template keeps Actix Web's default features, which include HTTP/2
-    through `h2` 0.3 and are affected by RUSTSEC-2026-0258; disable
-    the `http2` feature if the application does not need it. [[#101]]
+    to depend on `actix-web` 4.19 or later with default features disabled and
+    only the `macros` feature enabled. New projects no longer resolve Actix Web
+    and Actix HTTP releases affected by recent advisories, and no longer pull in
+    `h2` 0.3, which is affected by RUSTSEC-2026-0258, or `brotli` and `zstd`.
+    Enable features such as `http2` or the `compress-*` features on the
+    project's `actix-web` dependency when the application needs them.
+    [[#101]]
 
 
 Version 0.4.5
