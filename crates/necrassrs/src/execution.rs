@@ -127,6 +127,15 @@ pub struct ExecutionOptions {
     /// Whitespace, commas, comments, and lexical errors count as tokens.
     /// Longer documents are rejected as syntax errors.
     pub token_limit: usize,
+    /// Maximum nesting of the introspection list fields `fields`, `inputFields`,
+    /// `interfaces`, and `possibleTypes`.
+    ///
+    /// Defaults to 2, matching graphql-js. Nesting is counted through inline
+    /// fragments and fragment spreads. Operations that select `__schema` or
+    /// `__type` with deeper nesting are rejected as request errors before
+    /// introspection runs. Zero rejects any selection of those fields. This is
+    /// controlled by the application, not by GraphQL request input.
+    pub introspection_list_depth_limit: usize,
 }
 
 impl Default for ExecutionOptions {
@@ -137,6 +146,7 @@ impl Default for ExecutionOptions {
             validation_work_multiplier: reed_compiler::validation::ValidationOptions::default()
                 .work_multiplier,
             token_limit: 15_000,
+            introspection_list_depth_limit: reed_compiler::introspection::DEFAULT_MAX_LIST_DEPTH,
         }
     }
 }
@@ -652,8 +662,11 @@ where
     let mut introspection_data = JsonMap::new();
     let mut errors = Vec::new();
     if introspection_field.is_some() {
-        if let Err(error) = introspection::check_max_depth(&prepared.document, &prepared.operation)
-        {
+        if let Err(error) = introspection::check_max_depth_with_limit(
+            &prepared.document,
+            &prepared.operation,
+            options.introspection_list_depth_limit,
+        ) {
             telemetry::record_request_error();
             return Response::request_error(error.to_graphql_error(&prepared.document.sources));
         }
@@ -3986,6 +3999,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(typename, json!({ "data": { "__typename": "Query" } }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn introspection_list_depth_limit_applies_to_reused_fragments() {
+        let schema =
+            Schema::parse_and_validate("type Query { hello: String! }", "schema.graphql").unwrap();
+        let dispatcher = CountingDispatcher(AtomicUsize::new(0));
+        let request = Request::new(
+            "{
+              shallow: __type(name: \"Query\") { ...OneList }
+              deep: __type(name: \"Query\") { fields { type { fields { type { ...OneList } } } } }
+              hello
+            }
+            fragment OneList on __Type { fields { name } }",
+        );
+
+        let rejected = to_value(
+            super::execute_with_options(
+                &schema,
+                &request,
+                &dispatcher,
+                &(),
+                super::ExecutionOptions::default(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(rejected.get("data").is_none());
+        assert_eq!(
+            rejected["errors"][0]["message"],
+            json!("Maximum introspection depth exceeded")
+        );
+        assert_eq!(dispatcher.0.load(Ordering::Relaxed), 0);
+
+        let accepted = to_value(
+            super::execute_with_options(
+                &schema,
+                &request,
+                &dispatcher,
+                &(),
+                super::ExecutionOptions {
+                    introspection_list_depth_limit: 3,
+                    ..Default::default()
+                },
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(accepted.get("errors").is_none(), "{accepted}");
+        assert_eq!(
+            accepted["data"]["shallow"]["fields"][0]["name"],
+            json!("hello")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

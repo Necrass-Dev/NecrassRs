@@ -150,6 +150,18 @@ depth exceeds 500 is rejected before the rest of validation runs, with a single
 adapters return 422 with `errors` and no `data`. The limit is fixed; neither
 applications nor requests can change it.
 
+An operation that selects `__schema` or `__type` may nest at most two of the
+introspection list fields `fields`, `inputFields`, `interfaces`, and
+`possibleTypes` by default, because the introspection schema is recursive and
+each nested list can multiply the response size. Nesting is counted through
+inline fragments and fragment spreads, including spreads that `@skip` or
+`@include` would omit and ordinary fields with these names. A deeper operation
+is rejected before introspection or resolvers run, with a
+`Maximum introspection depth exceeded` error. This is a GraphQL request error:
+the maintained adapters return 422 with `errors` and no `data`. Applications
+can set `introspection_list_depth_limit` with `ExecutionOptions`; requests
+cannot change it.
+
 Before validation, the request parser stops after 15,000 lexical tokens by
 default, matching Apollo Router's `parser_max_tokens`. Whitespace, commas,
 comments, and lexical errors count as tokens, which also bounds the number of

@@ -102,12 +102,13 @@ setup. Return `ResolverError` for every failure that should reach the client.
 `ExecutionOptions` holds server-controlled settings passed to
 `execute_with_options` or `subscribe_with_options`:
 
-| Field                        | Default | Effect                                                                                                                                                                                                           |
-| ---------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `introspection`              | `true`  | When `false`, selected `__schema` and `__type` fields are rejected before resolver calls; `__typename` remains available                                                                                         |
-| `trace_scalars`              | `false` | Adds tracing spans for scalar and enum fields; see [Tracing Spans](/docs/tracing-spans/#field-spans)                                                                                                             |
-| `validation_work_multiplier` | `8`     | Rejects documents whose validation work exceeds this multiple of their size, with a 2,048 minimum, as validation errors; see [GraphQL over HTTP](/docs/graphql-over-http/#limitations-and-deployment-boundaries) |
-| `token_limit`                | `15000` | Rejects request documents with more lexical tokens as syntax errors; see [GraphQL over HTTP](/docs/graphql-over-http/#limitations-and-deployment-boundaries)                                                     |
+| Field                            | Default | Effect                                                                                                                                                                                                           |
+| -------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `introspection`                  | `true`  | When `false`, selected `__schema` and `__type` fields are rejected before resolver calls; `__typename` remains available                                                                                         |
+| `introspection_list_depth_limit` | `2`     | Rejects introspection operations that nest more introspection list fields as request errors; see [GraphQL over HTTP](/docs/graphql-over-http/#limitations-and-deployment-boundaries)                             |
+| `trace_scalars`                  | `false` | Adds tracing spans for scalar and enum fields; see [Tracing Spans](/docs/tracing-spans/#field-spans)                                                                                                             |
+| `validation_work_multiplier`     | `8`     | Rejects documents whose validation work exceeds this multiple of their size, with a 2,048 minimum, as validation errors; see [GraphQL over HTTP](/docs/graphql-over-http/#limitations-and-deployment-boundaries) |
+| `token_limit`                    | `15000` | Rejects request documents with more lexical tokens as syntax errors; see [GraphQL over HTTP](/docs/graphql-over-http/#limitations-and-deployment-boundaries)                                                     |
 
 Construct options with `..Default::default()` so that new fields keep their
 defaults. See [GraphiQL](/docs/graphiql/) for introspection policy.
