@@ -1,6 +1,38 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+To be released.
+
+### necrassrs-actix
+
+ -  Changed the `actix-web` dependency to require 4.19 or later and to disable
+    its default features. `necrassrs-actix` no longer enables Actix Web's
+    HTTP/2, compression, cookie, WebSocket, or macro features on the
+    application's behalf, so applications that disable them no longer pull in
+    `h2` 0.3, `brotli`, or `zstd`. An application that uses one of these
+    features must enable it on its own `actix-web` dependency; applications
+    that declare `actix-web = "4"` keep the defaults. Run
+    `cargo update -p actix-web -p actix-http` to pick up the fixed Actix Web
+    and Actix HTTP releases for RUSTSEC-2026-0446, RUSTSEC-2026-0447,
+    RUSTSEC-2026-0448, RUSTSEC-2026-0455, RUSTSEC-2026-0552,
+    RUSTSEC-2026-0553, and RUSTSEC-2026-0554; `actix-http` 3.21.3 or later
+    includes every fix. [[#101]]
+
+[#101]: https://github.com/Necrass-Dev/NecrassRs/issues/101
+
+### necrassrs-cli
+
+ -  Changed the Actix Web project created by `necrass init --framework actix`
+    to require `actix-web` 4.19 or later, so a new project's lockfile does not
+    resolve releases affected by recent Actix Web and Actix HTTP advisories.
+    The template keeps Actix Web's default features, which include HTTP/2
+    through `h2` 0.3 and are affected by RUSTSEC-2026-0258; disable
+    the `http2` feature if the application does not need it. [[#101]]
+
+
 Version 0.4.5
 -------------
 
