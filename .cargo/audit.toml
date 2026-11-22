@@ -1,0 +1,18 @@
+# Configuration for `cargo audit`, which the Audit workflow runs against the
+# root Cargo.lock. See the contributing guide for how to respond to a failure.
+
+[advisories]
+# Each ignored advisory needs a comment that names the advisory, explains why
+# the affected code path is unreachable or acceptable, and links the issue that
+# tracks removing the entry.
+ignore = []
+# Report these advisory categories without failing the check.
+informational_warnings = ["unmaintained", "unsound"]
+
+[output]
+# Fail the check on yanked crates in addition to vulnerabilities.
+deny = ["yanked"]
+quiet = false
+
+[yanked]
+enabled = true
