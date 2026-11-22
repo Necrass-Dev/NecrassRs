@@ -1,6 +1,37 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+To be released.
+
+### necrassrs
+
+ -  Fixed introspection requests bypassing the introspection list depth limit
+    by reusing a named fragment deeper than its first use, which let a small
+    request produce exponentially large introspection responses. Such requests
+    now fail as request errors before introspection runs, and the maintained
+    adapters return 422. Added
+    `ExecutionOptions::introspection_list_depth_limit` so applications can
+    change the limit; the default of 2 keeps the previous limit. GraphQL
+    requests cannot override this server setting. Existing exhaustive
+    `ExecutionOptions` struct literals must add this field or use
+    `..Default::default()`.
+
+### reed-compiler
+
+ -  Fixed `introspection::check_max_depth` accepting operations that nest more
+    introspection list fields than its limit when a named fragment is reused
+    deeper than its first use or inside another fragment, including reuse
+    primed by spreads skipped with `@skip`. Reused fragments now count toward
+    the same limit as fragments traversed for the first time. Added
+    `introspection::check_max_depth_with_limit` and
+    `introspection::DEFAULT_MAX_LIST_DEPTH` so callers can choose how many
+    nested `fields`, `inputFields`, `interfaces`, and `possibleTypes` lists
+    an operation may select.
+
+
 Version 0.4.4
 -------------
 
