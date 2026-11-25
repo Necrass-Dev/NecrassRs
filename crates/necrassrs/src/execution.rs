@@ -19,6 +19,13 @@ use reed_compiler::{
     schema::{ExtendedType, FieldDefinition, ObjectType},
     validation::Valid,
 };
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 /// Original SDL coordinates of a field to resolve, independent of query aliases.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,10 +112,11 @@ pub trait Dispatcher<C> {
 /// Server-controlled execution settings.
 ///
 /// [`Default`] enables introspection, disables scalar tracing, sets the
-/// validation-work multiplier to 8, and sets the token limit to 15,000. The
-/// multiplier is applied to the number of selection, directive, argument, and
-/// nested-value nodes physically present in the document; the minimum allowed
-/// work is 2,048. Request input cannot change these settings.
+/// validation-work multiplier to 8, sets the token limit to 15,000, and sets the
+/// argument work limit to 1,000,000. The multiplier is applied to the number of
+/// selection, directive, argument, and nested-value nodes physically present in
+/// the document; the minimum allowed work is 2,048. Request input cannot change
+/// these settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExecutionOptions {
     /// Whether `__schema` and `__type` may be queried. Enabled by default.
@@ -136,6 +144,18 @@ pub struct ExecutionOptions {
     /// introspection runs. Zero rejects any selection of those fields. This is
     /// controlled by the application, not by GraphQL request input.
     pub introspection_list_depth_limit: usize,
+    /// Maximum number of argument value nodes passed to resolvers for one response.
+    ///
+    /// Defaults to 1,000,000. Every resolver call adds the size of its coerced
+    /// arguments, counting each null, scalar, enum, list, and input object value
+    /// once, including list items and input object fields. A call is charged
+    /// again when aliases or list items repeat it, because each call receives
+    /// its own arguments. A field whose arguments would exceed the limit is not
+    /// resolved and produces a field error; for a subscription root field, the
+    /// subscription fails with a request error instead. Each subscription event
+    /// starts with a new budget. Zero allows only fields without argument values.
+    /// This is controlled by the application, not by GraphQL request input.
+    pub argument_work_limit: usize,
 }
 
 impl Default for ExecutionOptions {
@@ -147,9 +167,12 @@ impl Default for ExecutionOptions {
                 .work_multiplier,
             token_limit: 15_000,
             introspection_list_depth_limit: reed_compiler::introspection::DEFAULT_MAX_LIST_DEPTH,
+            argument_work_limit: DEFAULT_ARGUMENT_WORK_LIMIT,
         }
     }
 }
+
+const DEFAULT_ARGUMENT_WORK_LIMIT: usize = 1_000_000;
 
 /// Validates and executes a request with introspection enabled.
 ///
@@ -267,6 +290,8 @@ where
             let mut prepared = coerce_request_variables(schema, request, operation)?;
             validate_custom_scalar_variables::<C, D>(schema, &mut prepared, dispatcher)
                 .map_err(|error| RequestError::from(vec![*error]))?;
+            prepared.argument_work =
+                ArgumentWork::new(options.argument_work_limit, &prepared.variables);
             Ok(prepared)
         })
     })
@@ -350,16 +375,15 @@ where
                 .type_field(object_type.name.as_str(), field.name.as_str())
                 .expect("validated subscription selection must have a field definition");
             let path = vec![ResponseDataPathSegment::Field(response_key.clone())];
-            let arguments =
-                match coerce_argument_values(schema, &prepared, &path, field, definition) {
-                    Ok(arguments) => arguments,
-                    Err(error) => {
-                        telemetry::record_request_error();
-                        let response = Response::request_error(*error);
-                        operation_span.finish_response(&response);
-                        return Err(response);
-                    }
-                };
+            let arguments = match field_arguments(schema, &prepared, &path, field, definition) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    telemetry::record_request_error();
+                    let response = Response::request_error(*error);
+                    operation_span.finish_response(&response);
+                    return Err(response);
+                }
+            };
             let source = match dispatcher
                 .resolve_event_stream(
                     context,
@@ -492,6 +516,7 @@ async fn execute_subscription_event<C>(
 where
     C: Sync,
 {
+    prepared.argument_work.reset_usage();
     let fields = collect_fields(schema, prepared);
     let (response_key, fields) = fields
         .into_iter()
@@ -967,7 +992,7 @@ where
                 )),
                 false,
             ),
-            _ => match coerce_argument_values(schema, prepared, &path, field, definition) {
+            _ => match field_arguments(schema, prepared, &path, field, definition) {
                 Ok(arguments) => match dispatcher
                     .resolve_with_literals(
                         context,
@@ -1129,6 +1154,188 @@ fn does_fragment_type_apply(
 struct CoercedArguments {
     values: JsonMap,
     literals: ScalarLiteralMap,
+}
+
+type CachedArguments = Result<(Arc<CoercedArguments>, usize), Box<GraphQLError>>;
+
+/// Request-scoped field argument cache and work budget.
+///
+/// Entries are keyed by the addresses of the selected field node and its field
+/// definition, which stay fixed while the prepared document and schema are
+/// borrowed. List items that select the same field therefore share one coerced
+/// argument map. Successful entries are inserted only after their first charge
+/// fits, so retained argument values never exceed the limit.
+///
+/// Before coercing a field for the first time, the variables its arguments
+/// reference are checked against the remaining budget. Coerced arguments contain
+/// those variable values unchanged, so their size is a lower bound and a field
+/// that cannot fit is rejected without copying them.
+#[derive(Debug)]
+pub(crate) struct ArgumentWork {
+    limit: usize,
+    used: AtomicUsize,
+    variable_sizes: HashMap<Name, usize>,
+    cache: Mutex<HashMap<(usize, usize), CachedArguments>>,
+    empty: Arc<CoercedArguments>,
+}
+
+impl Default for ArgumentWork {
+    fn default() -> Self {
+        Self::new(DEFAULT_ARGUMENT_WORK_LIMIT, &JsonMap::new())
+    }
+}
+
+impl ArgumentWork {
+    pub(crate) fn new(limit: usize, variables: &JsonMap) -> Self {
+        Self {
+            limit,
+            used: AtomicUsize::new(0),
+            variable_sizes: variables
+                .iter()
+                .map(|(name, value)| (Name::new_unchecked(name.as_str()), json_value_size(value)))
+                .collect(),
+            cache: Mutex::default(),
+            empty: Arc::default(),
+        }
+    }
+
+    fn reset_usage(&self) {
+        self.used.store(0, Ordering::Relaxed);
+    }
+
+    /// Whether `work` more values fit in the remaining budget, without charging them.
+    fn fits(&self, work: usize) -> bool {
+        self.used
+            .load(Ordering::Relaxed)
+            .checked_add(work)
+            .is_some_and(|total| total <= self.limit)
+    }
+
+    /// Adds `work` to the budget if the total stays within the limit.
+    fn charge(&self, work: usize) -> bool {
+        let mut used = self.used.load(Ordering::Relaxed);
+        loop {
+            let Some(total) = used.checked_add(work).filter(|total| *total <= self.limit) else {
+                return false;
+            };
+            match self
+                .used
+                .compare_exchange_weak(used, total, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return true,
+                Err(current) => used = current,
+            }
+        }
+    }
+
+    fn cache(&self) -> MutexGuard<'_, HashMap<(usize, usize), CachedArguments>> {
+        self.cache.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Sums the sizes of the variables referenced anywhere in `value`.
+    fn referenced_variable_size(&self, value: &Value) -> usize {
+        let mut size = 0usize;
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::Variable(name) => {
+                    size = size.saturating_add(self.variable_sizes.get(name).copied().unwrap_or(0));
+                }
+                Value::List(items) => pending.extend(items.iter().map(|item| &**item)),
+                Value::Object(fields) => pending.extend(fields.iter().map(|(_, value)| &**value)),
+                _ => {}
+            }
+        }
+        size
+    }
+}
+
+/// Returns the coerced arguments for one resolver call, charging them to the
+/// request's argument work budget.
+fn field_arguments(
+    schema: &Valid<Schema>,
+    prepared: &PreparedRequest,
+    path: &[ResponseDataPathSegment],
+    field: &Field,
+    field_definition: &FieldDefinition,
+) -> Result<Arc<CoercedArguments>, Box<GraphQLError>> {
+    let work = &prepared.argument_work;
+    if field_definition.arguments.is_empty() {
+        return Ok(work.empty.clone());
+    }
+
+    let key = (
+        std::ptr::from_ref(field) as usize,
+        std::ptr::from_ref(field_definition) as usize,
+    );
+    let cached = work.cache().get(&key).cloned();
+    let (arguments, size, inserted) = match cached {
+        Some(Ok((arguments, size))) => (arguments, size, true),
+        Some(Err(mut error)) => {
+            error.path = path.to_vec();
+            return Err(error);
+        }
+        None => {
+            let minimum = field.arguments.iter().fold(0usize, |size, argument| {
+                size.saturating_add(work.referenced_variable_size(&argument.value))
+            });
+            if !work.fits(minimum) {
+                return Err(argument_work_limit_error(prepared, path, field, work.limit));
+            }
+            match coerce_argument_values(schema, prepared, path, field, field_definition) {
+                Ok(arguments) => {
+                    let size = arguments.values.values().fold(0usize, |size, value| {
+                        size.saturating_add(json_value_size(value))
+                    });
+                    (Arc::new(arguments), size, false)
+                }
+                Err(error) => {
+                    work.cache().insert(key, Err(error.clone()));
+                    return Err(error);
+                }
+            }
+        }
+    };
+
+    if !work.charge(size) {
+        return Err(argument_work_limit_error(prepared, path, field, work.limit));
+    }
+    if !inserted {
+        work.cache().insert(key, Ok((arguments.clone(), size)));
+    }
+    Ok(arguments)
+}
+
+fn argument_work_limit_error(
+    prepared: &PreparedRequest,
+    path: &[ResponseDataPathSegment],
+    field: &Field,
+    limit: usize,
+) -> Box<GraphQLError> {
+    new_execution_error(
+        prepared,
+        path,
+        format!(
+            "Argument work limit exceeded: resolving '{}' would pass more than {limit} argument values in this response.",
+            field.name
+        ),
+        field.name.location(),
+    )
+}
+
+/// Counts the value nodes in `value`, including nested list items and object fields.
+fn json_value_size(value: &JsonValue) -> usize {
+    let mut size = 0;
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        size += 1;
+        match value {
+            JsonValue::Array(items) => pending.extend(items),
+            JsonValue::Object(fields) => pending.extend(fields.values()),
+            _ => {}
+        }
+    }
+    size
 }
 
 fn coerce_argument_values(
@@ -1859,7 +2066,7 @@ where
     C: Sync,
 {
     let field = fields[0];
-    let arguments = match coerce_argument_values(schema, prepared, path, field, definition) {
+    let arguments = match field_arguments(schema, prepared, path, field, definition) {
         Ok(arguments) => arguments,
         Err(error) => {
             telemetry::record_error(path, "necrassrs.argument_error");

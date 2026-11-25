@@ -1,10 +1,10 @@
 use reed_compiler::{
+    ExecutableDocument, Node,
     ast::{Definition, Document, OperationType},
     executable::Operation,
     request::coerce_variable_values,
     response::{GraphQLError, JsonMap},
     validation::{Valid, ValidationOptions},
-    ExecutableDocument, Node,
 };
 
 /// An owned GraphQL document, optional operation name, and variable values.
@@ -86,6 +86,8 @@ pub(crate) struct PreparedRequest {
     /// `execution::prepare_variable_literals` before execution.
     pub(crate) variable_literals:
         std::collections::HashMap<reed_compiler::Name, Node<reed_compiler::ast::Value>>,
+    /// Request-scoped argument coercion cache and work budget.
+    pub(crate) argument_work: crate::execution::ArgumentWork,
 }
 
 pub(crate) struct PreparedOperation {
@@ -190,6 +192,7 @@ pub(crate) fn coerce_request_variables(
         provided_variables: request.variables.clone(),
         variables,
         variable_literals: Default::default(),
+        argument_work: Default::default(),
     })
 }
 
@@ -197,8 +200,8 @@ pub(crate) fn coerce_request_variables(
 mod tests {
     use super::*;
     use crate::ExecutionOptions;
-    use reed_compiler::response::serde_json_bytes::json;
     use reed_compiler::Schema;
+    use reed_compiler::response::serde_json_bytes::json;
 
     const MULTIPLE_OPERATIONS: &str = r#"
         query First {
