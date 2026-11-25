@@ -549,3 +549,107 @@ fn variables_in_const_contexts() {
         expected_schema_errors + expected_executable_errors
     )
 }
+
+fn variable_reference_validation_time(
+    count: usize,
+    document: impl Fn(usize) -> String,
+    check: impl Fn(Result<(), Vec<String>>),
+) -> std::time::Duration {
+    let schema = reed_compiler::Schema::parse_and_validate(
+        "type Query { hello(name: String!): String list(names: [String!]!): String }",
+        "schema.graphql",
+    )
+    .unwrap();
+    let source = document(count);
+    let start = std::time::Instant::now();
+    let result =
+        reed_compiler::ExecutableDocument::parse_and_validate(&schema, source, "query.graphql")
+            .map(|_| ())
+            .map_err(|errors| {
+                errors
+                    .errors
+                    .iter()
+                    .map(|error| error.error.to_string())
+                    .collect()
+            });
+    let elapsed = start.elapsed();
+    check(result);
+    elapsed
+}
+
+fn variable_definitions(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("$v{index}: String!"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn assert_linear_variable_reference_validation(
+    document: impl Fn(usize) -> String,
+    check: impl Fn(Result<(), Vec<String>>),
+) {
+    let small = variable_reference_validation_time(10_000, &document, &check);
+    let large = variable_reference_validation_time(30_000, &document, &check);
+
+    assert!(
+        large < small * 5,
+        "validating 3x more variable references took {large:?} versus {small:?}"
+    );
+}
+
+#[test]
+fn aliased_variable_references_validate_linearly() {
+    assert_linear_variable_reference_validation(
+        |count| {
+            let fields = (0..count)
+                .map(|index| format!("a{index}: hello(name: $v{})", count - 1 - index))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("query({}) {{ {fields} }}", variable_definitions(count))
+        },
+        |result| assert_eq!(result, Ok(())),
+    );
+}
+
+#[test]
+fn duplicate_argument_variable_references_validate_linearly() {
+    assert_linear_variable_reference_validation(
+        |count| {
+            let arguments = (0..count)
+                .map(|index| format!("name: $v{}", count - 1 - index))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "query({}) {{ hello({arguments}) }}",
+                variable_definitions(count)
+            )
+        },
+        |result| {
+            let errors = result.unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error == "the argument `name` is provided multiple times"),
+                "missing duplicate argument error: {:?}",
+                errors.first()
+            );
+        },
+    );
+}
+
+#[test]
+fn list_variable_references_validate_linearly() {
+    assert_linear_variable_reference_validation(
+        |count| {
+            let items = (0..count)
+                .map(|index| format!("$v{}", count - 1 - index))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "query({}) {{ list(names: [{items}]) }}",
+                variable_definitions(count)
+            )
+        },
+        |result| assert_eq!(result, Ok(())),
+    );
+}

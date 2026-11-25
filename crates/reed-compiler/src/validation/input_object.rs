@@ -111,7 +111,13 @@ pub(crate) fn validate_input_object_definition(
 
     for field in input_object.fields.values() {
         if let Some(default) = &field.default_value {
-            super::value::value_of_correct_type(diagnostics, schema, &field.ty, default, &[]);
+            super::value::value_of_correct_type(
+                diagnostics,
+                schema,
+                &field.ty,
+                default,
+                Default::default(),
+            );
         }
         if field.is_required() {
             if let Some(deprecated) = field.directives.get("deprecated") {

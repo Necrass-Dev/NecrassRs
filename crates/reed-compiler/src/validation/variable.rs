@@ -15,6 +15,41 @@ use crate::Name;
 use crate::Node;
 use std::collections::hash_map::Entry;
 
+/// Variable definitions in scope for validation, indexed by name.
+///
+/// The default value is an empty scope, used where variables cannot be referenced,
+/// such as in default values and schema directive applications.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct VariableScope<'a> {
+    definitions: Option<&'a VariableIndex<'a>>,
+}
+
+/// Index from variable name to its first definition in an operation.
+pub(crate) type VariableIndex<'a> = HashMap<&'a Name, &'a Node<ast::VariableDefinition>>;
+
+impl<'a> VariableScope<'a> {
+    pub(crate) fn new(definitions: &'a VariableIndex<'a>) -> Self {
+        Self {
+            definitions: Some(definitions),
+        }
+    }
+
+    /// Builds an index of `variables`. Duplicate definitions are reported separately, so
+    /// lookups resolve to the first definition of each name.
+    pub(crate) fn index(variables: &'a [Node<ast::VariableDefinition>]) -> VariableIndex<'a> {
+        let mut index =
+            VariableIndex::with_capacity_and_hasher(variables.len(), Default::default());
+        for variable in variables {
+            index.entry(&variable.name).or_insert(variable);
+        }
+        index
+    }
+
+    pub(crate) fn get(&self, name: &Name) -> Option<&'a Node<ast::VariableDefinition>> {
+        self.definitions?.get(name).copied()
+    }
+}
+
 pub(crate) fn validate_variable_definitions(
     diagnostics: &mut DiagnosticList,
     schema: Option<&crate::Schema>,
@@ -40,8 +75,13 @@ pub(crate) fn validate_variable_definitions(
                 Some(type_definition) if type_definition.is_input_type() => {
                     if let Some(default) = &variable.default_value {
                         // Default values are "const", not allowed to refer to other variables:
-                        let var_defs_in_scope = &[];
-                        value_of_correct_type(diagnostics, schema, ty, default, var_defs_in_scope);
+                        value_of_correct_type(
+                            diagnostics,
+                            schema,
+                            ty,
+                            default,
+                            VariableScope::default(),
+                        );
                     }
                 }
                 Some(type_definition) => {
@@ -275,13 +315,13 @@ pub(crate) fn validate_unused_variables(
 pub(crate) fn validate_variable_usage(
     diagnostics: &mut DiagnosticList,
     var_usage: &Node<ast::InputValueDefinition>,
-    var_defs: &[Node<ast::VariableDefinition>],
+    var_defs: VariableScope<'_>,
     argument: &Node<ast::Argument>,
 ) -> Result<(), ()> {
     if let ast::Value::Variable(var_name) = &*argument.value {
         // Let var_def be the VariableDefinition named
         // variable_name defined within operation.
-        let var_def = var_defs.iter().find(|v| v.name == *var_name);
+        let var_def = var_defs.get(var_name);
         if let Some(var_def) = var_def {
             let is_allowed = is_variable_usage_allowed(var_def, var_usage);
             if !is_allowed {

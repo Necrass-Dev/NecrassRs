@@ -164,7 +164,13 @@ pub(crate) fn validate_field_definition(
     );
     for argument in &field.arguments {
         if let Some(default) = &argument.default_value {
-            super::value::value_of_correct_type(diagnostics, schema, &argument.ty, default, &[]);
+            super::value::value_of_correct_type(
+                diagnostics,
+                schema,
+                &argument.ty,
+                default,
+                Default::default(),
+            );
         }
         if argument.is_required() {
             if let Some(deprecated) = argument.directives.get("deprecated") {
