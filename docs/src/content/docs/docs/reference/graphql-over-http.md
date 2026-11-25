@@ -170,6 +170,21 @@ limit is a syntax error: the maintained adapters return 400 with `errors` and no
 `data`. Applications can set `token_limit` with `ExecutionOptions`; requests
 cannot change it.
 
+During execution, each response may pass at most 1,000,000 argument values to
+resolvers by default. Every resolver call adds the size of its coerced
+arguments: each null, scalar, enum, list, and input object counts once,
+including the items of a list and the fields of an input object. A call is
+charged each time it runs, so a large variable used under many aliases or by
+every item of a returned list is charged for every use. A field whose arguments
+would exceed the limit is not resolved; it fails with an
+`Argument work limit exceeded` field error, and null propagates as for any
+other field error. This is an execution error: the maintained adapters return
+294 with `data` and `errors`. A subscription root field over the limit fails as
+a request error before its source is created. Each subscription event starts
+with a new budget.
+Applications can set `argument_work_limit` with `ExecutionOptions`; requests
+cannot change it.
+
 The runtime implements subscription execution and cancellation, but the adapters
 do not provide SSE framing or the `graphql-transport-ws` protocol. These remain
 separate work in [#32](https://github.com/Necrass-Dev/NecrassRs/issues/32) and
