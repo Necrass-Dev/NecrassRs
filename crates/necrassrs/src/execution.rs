@@ -264,8 +264,8 @@ where
     let coerce = operation_span.in_scope(|| Span::phase("necrassrs.coerce_variables"));
     operation_span.in_scope(|| {
         request_phase(&coerce, || {
-            let prepared = coerce_request_variables(schema, request, operation)?;
-            validate_custom_scalar_variables::<C, D>(schema, &prepared, dispatcher)
+            let mut prepared = coerce_request_variables(schema, request, operation)?;
+            validate_custom_scalar_variables::<C, D>(schema, &mut prepared, dispatcher)
                 .map_err(|error| RequestError::from(vec![*error]))?;
             Ok(prepared)
         })
@@ -749,24 +749,18 @@ where
 
 fn validate_custom_scalar_variables<C, D>(
     schema: &Valid<Schema>,
-    prepared: &PreparedRequest,
+    prepared: &mut PreparedRequest,
     dispatcher: &D,
 ) -> Result<(), Box<GraphQLError>>
 where
     D: Dispatcher<C>,
 {
-    for definition in &prepared.operation.variables {
-        let Some(value) = prepared.variables.get(definition.name.as_str()) else {
-            continue;
-        };
-
-        let literal = variable_literal(schema, prepared, definition, value, &[])?;
-
+    prepare_variable_literals(schema, prepared, |prepared, definition, value, literal| {
         validate_custom_scalar_value::<C, D>(
             schema,
             &definition.ty,
             value,
-            Some(&literal),
+            Some(literal),
             dispatcher,
         )
         .map_err(
@@ -779,9 +773,37 @@ where
                 error.extensions = extensions.unwrap_or_default();
                 Box::new(error)
             },
-        )?;
+        )
+    })
+}
+
+/// Computes the GraphQL literal of each coerced variable once and stores it in
+/// `prepared.variable_literals`, so field argument coercion does not rebuild it per use.
+///
+/// `inspect` runs after each literal is computed, in variable definition order; the first
+/// error from either step stops preparation.
+pub(crate) fn prepare_variable_literals(
+    schema: &Valid<Schema>,
+    prepared: &mut PreparedRequest,
+    mut inspect: impl FnMut(
+        &PreparedRequest,
+        &Node<reed_compiler::ast::VariableDefinition>,
+        &JsonValue,
+        &Node<Value>,
+    ) -> Result<(), Box<GraphQLError>>,
+) -> Result<(), Box<GraphQLError>> {
+    let mut literals = std::collections::HashMap::with_capacity(prepared.operation.variables.len());
+    for definition in &prepared.operation.variables {
+        let Some(value) = prepared.variables.get(definition.name.as_str()) else {
+            continue;
+        };
+
+        let literal = variable_literal(schema, prepared, definition, value, &[])?;
+        inspect(prepared, definition, value, &literal)?;
+        literals.entry(definition.name.clone()).or_insert(literal);
     }
 
+    prepared.variable_literals = literals;
     Ok(())
 }
 
@@ -1148,14 +1170,10 @@ fn coerce_argument_values(
                         ));
                     }
                     Some(variable_value) => {
-                        let definition = prepared
-                            .operation
-                            .variables
-                            .iter()
-                            .find(|definition| definition.name.as_str() == variable_name.as_str())
-                            .expect("validated variable reference must have a definition");
-                        let literal =
-                            variable_literal(schema, prepared, definition, variable_value, path)?;
+                        let literal = prepared
+                            .variable_literals
+                            .get(variable_name)
+                            .expect("coerced variable must have a prepared literal");
                         (variable_value.clone(), literal.as_ref().clone())
                     }
                     None => match definition.default_value.as_ref() {
@@ -2375,6 +2393,55 @@ mod tests {
 
     async fn execute_list_with_null_item(field_type: &str) -> JsonValue {
         execute_value(field_type, json!(["A", null, "B"])).await
+    }
+
+    #[tokio::test]
+    async fn aliased_variable_arguments_execute_linearly() {
+        let schema = Schema::parse_and_validate(
+            "type Query { hello(name: String!): String }",
+            "schema.graphql",
+        )
+        .unwrap();
+        let dispatcher = ValueDispatcher(json!("hi"));
+        let options = super::ExecutionOptions {
+            token_limit: usize::MAX,
+            ..Default::default()
+        };
+        let mut elapsed = Vec::new();
+        for count in [10_000, 30_000] {
+            let definitions = (0..count)
+                .map(|index| format!("$v{index}: String!"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let fields = (0..count)
+                .map(|index| format!("a{index}: hello(name: $v{})", count - 1 - index))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let variables = (0..count)
+                .map(|index| (format!("v{index}").into(), JsonValue::from("name")))
+                .collect::<JsonMap>();
+            let request = Request::new(format!("query({definitions}) {{ {fields} }}"))
+                .with_variables(variables);
+
+            let start = std::time::Instant::now();
+            let response =
+                super::execute_with_options(&schema, &request, &dispatcher, &(), options).await;
+            elapsed.push(start.elapsed());
+
+            let response = to_value(response).unwrap();
+            assert!(
+                response.get("errors").is_none(),
+                "{:?}",
+                response.get("errors")
+            );
+            assert_eq!(response["data"].as_object().unwrap().len(), count);
+        }
+        let (small, large) = (elapsed[0], elapsed[1]);
+
+        assert!(
+            large < small * 5,
+            "executing 3x more variable arguments took {large:?} versus {small:?}"
+        );
     }
 
     #[tokio::test]

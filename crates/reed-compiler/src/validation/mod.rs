@@ -32,7 +32,6 @@ use crate::executable::ConflictingFieldName;
 use crate::executable::ConflictingFieldType;
 #[cfg(doc)]
 use crate::executable::ExecutableDocument;
-use crate::executable::VariableDefinition;
 use crate::parser::SourceMap;
 use crate::parser::SourceSpan;
 use crate::response::GraphQLError;
@@ -191,7 +190,7 @@ impl<'a> ExecutableValidationContext<'a> {
     /// Returns a context for operation validation.
     pub(crate) fn operation_context<'o>(
         &'o self,
-        variables: &'o [Node<VariableDefinition>],
+        variables: variable::VariableScope<'o>,
     ) -> OperationValidationContext<'o> {
         OperationValidationContext {
             executable: self,
@@ -208,7 +207,7 @@ pub(crate) struct OperationValidationContext<'a> {
     /// contexts.
     executable: &'a ExecutableValidationContext<'a>,
     /// The variables defined for this operation.
-    pub(crate) variables: &'a [Node<VariableDefinition>],
+    pub(crate) variables: variable::VariableScope<'a>,
     pub(crate) validated_fragments: HashSet<Name>,
 }
 

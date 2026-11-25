@@ -2,6 +2,7 @@ use crate::ast;
 use crate::coordinate::TypeAttributeCoordinate;
 use crate::schema;
 use crate::validation::diagnostics::DiagnosticData;
+use crate::validation::variable::VariableScope;
 use crate::validation::DiagnosticList;
 use crate::Node;
 
@@ -25,7 +26,7 @@ pub(crate) fn validate_values(
     schema: &crate::Schema,
     ty: &Node<ast::Type>,
     argument: &Node<ast::Argument>,
-    var_defs: &[Node<ast::VariableDefinition>],
+    var_defs: VariableScope<'_>,
 ) {
     value_of_correct_type(diagnostics, schema, ty, &argument.value, var_defs);
 }
@@ -35,7 +36,7 @@ pub(crate) fn value_of_correct_type(
     schema: &crate::Schema,
     ty: &Node<ast::Type>,
     arg_value: &Node<ast::Value>,
-    var_defs: &[Node<ast::VariableDefinition>],
+    var_defs: VariableScope<'_>,
 ) {
     validate_input_field_uniqueness(diagnostics, arg_value);
     value_type(diagnostics, schema, ty, arg_value, var_defs);
@@ -73,7 +74,7 @@ fn value_type(
     schema: &crate::Schema,
     ty: &Node<ast::Type>,
     arg_value: &Node<ast::Value>,
-    var_defs: &[Node<ast::VariableDefinition>],
+    var_defs: VariableScope<'_>,
 ) {
     let Some(type_definition) = schema.types.get(ty.inner_named_type()) else {
         return;
@@ -171,7 +172,7 @@ fn value_type(
             }
         }
         ast::Value::Variable(var_name) => {
-            if let Some(var_def) = var_defs.iter().find(|v| v.name == *var_name) {
+            if let Some(var_def) = var_defs.get(var_name) {
                 match &type_definition {
                     schema::ExtendedType::Scalar(_)
                     | schema::ExtendedType::Enum(_)
@@ -297,9 +298,8 @@ fn value_type(
 
                     if let Some((_, v)) = used_val {
                         if is_one_of {
-                            if let Some(var_def) = v
-                                .as_variable()
-                                .and_then(|name| var_defs.iter().find(|def| def.name == *name))
+                            if let Some(var_def) =
+                                v.as_variable().and_then(|name| var_defs.get(name))
                             {
                                 if !var_def.ty.is_non_null() || !var_def.ty.is_assignable_to(ty) {
                                     diagnostics.push(

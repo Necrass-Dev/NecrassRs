@@ -161,13 +161,15 @@ pub(crate) fn validate_operation(
     } else {
         None
     };
+    let variable_index = super::variable::VariableScope::index(&operation.variables);
+    let variables = super::variable::VariableScope::new(&variable_index);
 
     super::directive::validate_directives(
         diagnostics,
         context.schema(),
         operation.directives.iter(),
         operation.operation_type.into(),
-        &operation.variables,
+        variables,
     );
     super::variable::validate_variable_definitions(
         diagnostics,
@@ -181,7 +183,7 @@ pub(crate) fn validate_operation(
         document,
         against_type,
         &operation.selection_set,
-        &mut context.operation_context(&operation.variables),
+        &mut context.operation_context(variables),
     );
 }
 
