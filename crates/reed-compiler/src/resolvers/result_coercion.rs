@@ -54,10 +54,17 @@ pub(crate) async fn complete_value<'a>(
             }
         };
     }
+    let skip = matches!(
+        resolved,
+        MaybeAsync::Async(AsyncResolvedValue::SkipForPartialExecution)
+            | MaybeAsync::Sync(ResolvedValue::SkipForPartialExecution)
+    );
+    if !skip && !ctx.response_nodes.charge() {
+        return Err(PropagateNull);
+    }
     let resolved = match resolved {
         MaybeAsync::Async(AsyncResolvedValue::SkipForPartialExecution)
         | MaybeAsync::Sync(ResolvedValue::SkipForPartialExecution) => return Ok(None),
-
         MaybeAsync::Async(AsyncResolvedValue::Leaf(JsonValue::Null))
         | MaybeAsync::Sync(ResolvedValue::Leaf(JsonValue::Null)) => {
             if ty.is_non_null() {
@@ -194,7 +201,8 @@ async fn complete_list_value<'a, 'b>(
         }
         Type::List(inner_ty) | Type::NonNullList(inner_ty) => inner_ty,
     };
-    let mut completed_list = Vec::with_capacity(stream.size_hint().0);
+    let mut completed_list =
+        Vec::with_capacity(stream.size_hint().0.min(ctx.response_nodes.remaining()));
     let mut stream = stream.enumerate();
     while let Some((index, inner_result)) = stream.next().await {
         let inner_path = LinkedPathElement {
@@ -202,6 +210,9 @@ async fn complete_list_value<'a, 'b>(
             next: path,
         };
         let inner_resolved = inner_result.map_err(|err| {
+            if !ctx.response_nodes.charge() {
+                return PropagateNull;
+            }
             ctx.errors.push(GraphQLError::field_error(
                 format!("resolver error: {}", err.message),
                 Some(&inner_path),
@@ -225,6 +236,11 @@ async fn complete_list_value<'a, 'b>(
             Ok(Some(inner_value)) => completed_list.push(inner_value),
             // If the item is non-null, try to nullify the list
             Err(PropagateNull) => return try_nullify(ty, Err(PropagateNull)),
+        }
+        // A nullable item may absorb the propagation that an exceeded limit
+        // starts, so stop here rather than waiting for the next item.
+        if ctx.response_nodes.exceeded {
+            return Err(PropagateNull);
         }
     }
     Ok(Some(completed_list.into()))

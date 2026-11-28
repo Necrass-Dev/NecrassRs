@@ -16,6 +16,7 @@ use crate::resolvers::FieldError;
 use crate::resolvers::ObjectValue;
 use crate::resolvers::ResolveInfo;
 use crate::resolvers::ResolvedValue;
+use crate::resolvers::DEFAULT_RESPONSE_NODE_LIMIT;
 use crate::response::ExecutionResponse;
 use crate::response::JsonMap;
 use crate::schema::Implementers;
@@ -79,6 +80,8 @@ pub fn check_max_depth_with_limit(
 /// portion of a query and returns a partial response.
 ///
 /// * Consider calling [`check_max_depth`] before this function
+/// * At most [`DEFAULT_RESPONSE_NODE_LIMIT`] response values are generated;
+///   use [`partial_execute_with_node_limit`] to choose another limit
 /// * `implementers_map` is expected to be form
 ///   [`schema.implementers_map()`][Schema::implementers_map],
 ///   allowing it to be computed once and reused for many queries
@@ -119,6 +122,31 @@ pub fn partial_execute(
     operation: &Operation,
     variable_values: &Valid<JsonMap>,
 ) -> Result<ExecutionResponse, RequestError> {
+    partial_execute_with_node_limit(
+        schema,
+        implementers_map,
+        document,
+        operation,
+        variable_values,
+        DEFAULT_RESPONSE_NODE_LIMIT,
+    )
+}
+
+/// Like [`partial_execute`], but with a caller-chosen node limit.
+///
+/// `max_nodes` is the greatest number of response values introspection may
+/// generate. Each field value and each list item counts once, including
+/// `__typename` and values repeated under different aliases. The count is
+/// enforced while the response is generated, so exceeding it stops generation
+/// and returns a [request error](https://spec.graphql.org/draft/#request-error).
+pub fn partial_execute_with_node_limit(
+    schema: &Valid<Schema>,
+    implementers_map: &HashMap<Name, Implementers>,
+    document: &Valid<ExecutableDocument>,
+    operation: &Operation,
+    variable_values: &Valid<JsonMap>,
+    max_nodes: usize,
+) -> Result<ExecutionResponse, RequestError> {
     struct InitialValue<'a> {
         type_name: &'a str,
     }
@@ -146,5 +174,6 @@ pub fn partial_execute(
         .operation(operation)
         .coerced_variable_values(variable_values)
         .enable_schema_introspection(true)
+        .response_node_limit(max_nodes)
         .execute_sync(&initial_value)
 }

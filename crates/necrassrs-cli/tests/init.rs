@@ -78,8 +78,20 @@ fn init_creates_project_at_explicit_path_and_name() {
     assert!(main.contains("execute_with_options"));
     let options = fs::read_to_string(project.join("src/options.rs")).unwrap();
     assert!(options.contains("ExecutionOptions {"));
-    assert!(options.contains("..Default::default()"));
-    assert!(!options.contains("validation_work_multiplier:"));
+    for option in [
+        "introspection:",
+        "trace_scalars:",
+        "validation_work_multiplier:",
+        "token_limit:",
+        "introspection_list_depth_limit:",
+        "introspection_node_limit:",
+        "argument_work_limit:",
+        "field_limit:",
+        "list_item_limit:",
+    ] {
+        assert!(options.contains(option), "missing {option}");
+    }
+    assert!(!options.contains("..Default::default()"));
 
     let manifest = fs::read(project.join("Cargo.toml")).unwrap();
     let repeated = Command::new(env!("CARGO_BIN_EXE_necrass"))

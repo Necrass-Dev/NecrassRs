@@ -114,10 +114,14 @@ fn options(argument_work_limit: usize) -> ExecutionOptions {
     }
 }
 
-/// A three-item list variable: four argument values per use.
+/// A three-item list variable: seven argument work per use (four value nodes
+/// plus one byte for each string).
 fn list_variable() -> JsonMap {
     serde_json::from_value(json!({ "v": ["a", "b", "c"] })).unwrap()
 }
+
+/// Argument work admitting two uses of [`list_variable`] but not three.
+const TWO_USES: usize = 14;
 
 fn execute(
     dispatcher: &TestDispatcher,
@@ -161,7 +165,7 @@ fn aliases_beyond_the_limit_get_field_errors() {
         &dispatcher,
         "query($v: [String!]) { a: f(x: $v) b: f(x: $v) c: f(x: $v) }",
         list_variable(),
-        options(8),
+        options(TWO_USES),
     );
 
     assert_eq!(response["data"], json!({ "a": 0, "b": 0, "c": null }));
@@ -176,7 +180,7 @@ fn literal_arguments_are_charged() {
         &dispatcher,
         r#"{ a: f(x: ["a", "b", "c"]) b: f(x: ["a", "b", "c"]) c: f(x: ["a", "b", "c"]) }"#,
         JsonMap::new(),
-        options(8),
+        options(TWO_USES),
     );
 
     assert_eq!(response["data"], json!({ "a": 0, "b": 0, "c": null }));
@@ -190,7 +194,7 @@ fn limit_errors_on_non_null_fields_propagate_null() {
         &dispatcher,
         "query($v: [String!]) { a: g(x: $v) b: g(x: $v) c: g(x: $v) }",
         list_variable(),
-        options(8),
+        options(TWO_USES),
     );
 
     assert_eq!(response["data"], Value::Null, "{response}");
@@ -204,7 +208,7 @@ fn each_list_item_is_charged() {
         &dispatcher,
         "query($v: [String!]) { items { f(x: $v) } }",
         list_variable(),
-        options(8),
+        options(TWO_USES),
     );
 
     assert_eq!(
@@ -227,11 +231,40 @@ fn default_limit_bounds_list_item_amplification() {
         ExecutionOptions::default(),
     );
 
-    // Each call passes 100,001 values, so the default limit of 1,000,000 admits nine calls.
-    assert_eq!(dispatcher.calls(), 9);
+    // Each call passes 200,001 value nodes and 488,890 string bytes, so the
+    // default limit of 4,000,000 admits six calls.
+    assert_eq!(dispatcher.calls(), 6);
     let errors = response["errors"].as_array().unwrap();
-    assert_eq!(errors.len(), 10_000 - 9);
-    assert_eq!(errors[0]["path"], json!(["items", 9, "f"]));
+    assert_eq!(errors.len(), 10_000 - 6);
+    assert_eq!(errors[0]["path"], json!(["items", 6, "f"]));
+}
+
+#[test]
+fn string_bytes_are_charged() {
+    let dispatcher = TestDispatcher::new(0);
+    let variables = serde_json::from_value(json!({ "v": ["x".repeat(1 << 20)] })).unwrap();
+    let fields = (0..1_000)
+        .map(|index| format!("a{index}: f(x: $v)"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let response = execute(
+        &dispatcher,
+        &format!("query($v: [String!]) {{ {fields} }}"),
+        variables,
+        ExecutionOptions::default(),
+    );
+
+    // Each call passes 2 value nodes and 1 MiB of string bytes, so the default
+    // limit of 4,000,000 admits three calls.
+    assert_eq!(dispatcher.calls(), 3);
+    let errors = response["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1_000 - 3);
+    assert!(
+        errors[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with(LIMIT_EXCEEDED)
+    );
 }
 
 #[test]
@@ -282,7 +315,7 @@ fn each_subscription_event_has_its_own_budget() {
         &request,
         &dispatcher,
         &(),
-        options(8),
+        options(TWO_USES),
     )) else {
         panic!("subscription rejected");
     };
@@ -315,8 +348,8 @@ fn rejected_aliases_do_not_copy_their_variables() {
             ExecutionOptions::default(),
         );
         let elapsed = start.elapsed();
-        assert_eq!(dispatcher.calls(), 9);
-        assert_eq!(response["errors"].as_array().unwrap().len(), aliases - 9);
+        assert_eq!(dispatcher.calls(), 6);
+        assert_eq!(response["errors"].as_array().unwrap().len(), aliases - 6);
         elapsed
     };
 

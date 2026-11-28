@@ -88,6 +88,8 @@ pub(crate) struct PreparedRequest {
         std::collections::HashMap<reed_compiler::Name, Node<reed_compiler::ast::Value>>,
     /// Request-scoped argument coercion cache and work budget.
     pub(crate) argument_work: crate::execution::ArgumentWork,
+    /// Request-scoped field and list item budget.
+    pub(crate) execution_budget: crate::execution::ExecutionBudget,
 }
 
 pub(crate) struct PreparedOperation {
@@ -193,6 +195,7 @@ pub(crate) fn coerce_request_variables(
         variables,
         variable_literals: Default::default(),
         argument_work: Default::default(),
+        execution_budget: Default::default(),
     })
 }
 

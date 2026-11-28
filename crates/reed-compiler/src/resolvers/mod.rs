@@ -34,6 +34,7 @@ use crate::resolvers::execution::ExecutionContext;
 use crate::resolvers::execution::ExecutionMode;
 use crate::resolvers::execution::MaybeLazy;
 use crate::resolvers::execution::PropagateNull;
+use crate::resolvers::execution::ResponseNodes;
 use crate::response::ExecutionResponse;
 use crate::response::JsonMap;
 use crate::response::JsonValue;
@@ -62,7 +63,15 @@ pub struct Execution<'a> {
     implementers_map: Option<&'a HashMap<Name, Implementers>>,
     variable_values: Option<VariableValues<'a>>,
     enable_schema_introspection: Option<bool>,
+    response_node_limit: Option<usize>,
 }
+
+/// The response node limit applied when [`Execution::response_node_limit`] is not called.
+///
+/// Each field value and each list item counts as one node. The limit admits the
+/// standard full introspection query for schemas of roughly 350 object types
+/// with 10 fields of 2 arguments each.
+pub const DEFAULT_RESPONSE_NODE_LIMIT: usize = 100_000;
 
 /// Default to disabled:
 /// https://www.apollographql.com/blog/why-you-should-disable-graphql-introspection-in-production/
@@ -244,6 +253,7 @@ impl<'a> Execution<'a> {
             implementers_map: None,
             variable_values: None,
             enable_schema_introspection: None,
+            response_node_limit: None,
         }
     }
 
@@ -338,6 +348,21 @@ impl<'a> Execution<'a> {
         self
     }
 
+    /// Limits the number of values completed for the response.
+    ///
+    /// Each field value and each list item counts once, including values later
+    /// nulled by error propagation. Execution stops as soon as the limit is
+    /// exceeded and returns a [`RequestError`] instead of a partial response.
+    /// Defaults to [`DEFAULT_RESPONSE_NODE_LIMIT`].
+    pub fn response_node_limit(mut self, response_node_limit: usize) -> Self {
+        assert!(
+            self.response_node_limit.is_none(),
+            "response node limit already configured"
+        );
+        self.response_node_limit = Some(response_node_limit);
+        self
+    }
+
     /// Perform execution with synchronous resolvers
     pub fn execute_sync(
         &self,
@@ -419,6 +444,13 @@ impl<'a> Execution<'a> {
             errors: &mut errors,
             implementers_map,
             enable_schema_introspection,
+            response_nodes: ResponseNodes {
+                limit: self
+                    .response_node_limit
+                    .unwrap_or(DEFAULT_RESPONSE_NODE_LIMIT),
+                used: 0,
+                exceeded: false,
+            },
         };
         let mode = match operation.operation_type {
             executable::OperationType::Query | executable::OperationType::Subscription => {
@@ -435,6 +467,16 @@ impl<'a> Execution<'a> {
             &operation.selection_set.selections,
         )
         .await;
+        if context.response_nodes.exceeded {
+            return Err(RequestError {
+                message: format!(
+                    "Response exceeds the limit of {} values.",
+                    context.response_nodes.limit
+                ),
+                location: None,
+                is_suspected_validation_bug: false,
+            });
+        }
         let data = result
             // If `Result::ok` converts an error to `None` that’s a field error on a non-null,
             // field propagated all the way to the root,
