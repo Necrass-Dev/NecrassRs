@@ -189,7 +189,8 @@ pub struct ExecutionOptions {
     /// Defaults to 100,000. Every introspection field value and list item
     /// counts once, including `__typename` and values repeated under
     /// different aliases. The standard full introspection query needs about
-    /// 370 values per type for types with 10 fields of 2 arguments each.
+    /// 280 values per object type with 10 fields of 2 arguments each, so the
+    /// default admits schemas of roughly 350 such types.
     /// Generation stops as soon as the limit is exceeded and the request fails
     /// with a request error. This is controlled by the application, not by
     /// GraphQL request input.

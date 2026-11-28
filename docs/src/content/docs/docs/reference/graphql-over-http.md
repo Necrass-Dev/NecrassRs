@@ -170,10 +170,11 @@ limit is a syntax error: the maintained adapters return 400 with `errors` and no
 `data`. Applications can set `token_limit` with `ExecutionOptions`; requests
 cannot change it.
 
-During execution, each response may pass at most 1,000,000 argument values to
-resolvers by default. Every resolver call adds the size of its coerced
+During execution, each response may pass at most 4,000,000 units of argument
+work to resolvers by default. Every resolver call adds the size of its coerced
 arguments: each null, scalar, enum, list, and input object counts once,
-including the items of a list and the fields of an input object. A call is
+including the items of a list and the fields of an input object, and each
+string also counts its length in bytes. A call is
 charged each time it runs, so a large variable used under many aliases or by
 every item of a returned list is charged for every use. A field whose arguments
 would exceed the limit is not resolved; it fails with an
@@ -183,6 +184,35 @@ other field error. This is an execution error: the maintained adapters return
 a request error before its source is created. Each subscription event starts
 with a new budget.
 Applications can set `argument_work_limit` with `ExecutionOptions`; requests
+cannot change it.
+
+Each response may also execute at most 50,000 fields and complete at most
+50,000 list items by default. Every field in a selection set counts once for
+each object it is executed on, including `__typename` and fields repeated through
+aliases, fragment spreads, or list items. Every item of every returned list
+counts once, including the items of nested lists. Work is charged before it
+starts, so a fragment fan-out or an aliased list stops at the limit instead of
+running to completion. When either limit is exceeded, execution stops starting
+fields, drops resolvers that are still pending without waiting for them, and
+the response is replaced by `data: null` and a single
+`Field limit exceeded` or `List item limit exceeded` error. This is an execution error:
+the maintained adapters return 294 with `data` and `errors`. Top-level mutation
+fields are charged together before the first one runs, so a mutation over the
+field limit performs no root field; a later nested selection can still exceed
+the limit after earlier mutation fields have run, and those effects are not
+rolled back. Each subscription event starts with a new budget. Applications can
+set `field_limit` and `list_item_limit` with `ExecutionOptions`; requests cannot
+change them.
+
+Schema introspection may generate at most 100,000 values per response by
+default. Every introspection field value and list item counts once, including
+`__typename` and values repeated under different aliases of `__schema` or
+`__type`. The standard full introspection query needs about 280 values for
+each object type with ten fields of two arguments, so the default admits
+schemas of roughly 350 such types. Generation stops as soon as the limit is exceeded, with
+a `Response exceeds the limit of 100000 values` error. This is a GraphQL
+request error: the maintained adapters return 422 with `errors` and no `data`.
+Applications can set `introspection_node_limit` with `ExecutionOptions`; requests
 cannot change it.
 
 The runtime implements subscription execution and cancellation, but the adapters

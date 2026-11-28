@@ -69,8 +69,8 @@ pub struct Execution<'a> {
 /// The response node limit applied when [`Execution::response_node_limit`] is not called.
 ///
 /// Each field value and each list item counts as one node. The limit admits the
-/// standard full introspection query for schemas of roughly 270 types with
-/// typical field and argument counts.
+/// standard full introspection query for schemas of roughly 350 object types
+/// with 10 fields of 2 arguments each.
 pub const DEFAULT_RESPONSE_NODE_LIMIT: usize = 100_000;
 
 /// Default to disabled:
