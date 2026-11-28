@@ -62,6 +62,35 @@ pub(crate) struct ExecutionContext<'a> {
     pub(crate) errors: &'a mut Vec<GraphQLError>,
     pub(crate) implementers_map: MaybeLazy<'a, HashMap<Name, Implementers>>,
     pub(crate) enable_schema_introspection: bool,
+    pub(crate) response_nodes: ResponseNodes,
+}
+
+/// Counts completed response values against a limit.
+///
+/// Every value passed to `complete_value` is charged once, which covers each
+/// field value and each list item. Once the limit is exceeded, execution stops
+/// producing values and the caller reports a request error.
+pub(crate) struct ResponseNodes {
+    pub(crate) limit: usize,
+    pub(crate) used: usize,
+    pub(crate) exceeded: bool,
+}
+
+impl ResponseNodes {
+    /// Charges one value, returning `false` once the limit is exceeded.
+    pub(crate) fn charge(&mut self) -> bool {
+        if self.exceeded {
+            return false;
+        }
+        self.used = self.used.saturating_add(1);
+        self.exceeded = self.used > self.limit;
+        !self.exceeded
+    }
+
+    /// Values that may still be charged before the limit is exceeded.
+    pub(crate) fn remaining(&self) -> usize {
+        self.limit.saturating_sub(self.used)
+    }
 }
 
 pub(crate) enum MaybeLazy<'a, T> {
@@ -107,6 +136,9 @@ pub(crate) async fn execute_selection_set<'a>(
 
     let mut response_map = JsonMap::with_capacity(grouped_field_set.len());
     for (&response_key, fields) in &grouped_field_set {
+        if ctx.response_nodes.exceeded {
+            return Err(PropagateNull);
+        }
         // Indexing should not panic: `collect_fields` only creates a `Vec` to push to it
         let field_name = &fields[0].name;
         let Ok(field_def) = ctx.schema.type_field(&object_type.name, field_name) else {
@@ -244,7 +276,13 @@ async fn execute_field<'a>(
     let argument_values = match coerce_argument_values(ctx, path, field_def, field) {
         Ok(argument_values) => argument_values,
         Err(PropagateNull) if field_def.ty.is_non_null() => return Err(PropagateNull),
-        Err(PropagateNull) => return Ok(Some(JsonValue::Null)),
+        Err(PropagateNull) => {
+            // The null that replaces the field is a response value too.
+            if !ctx.response_nodes.charge() {
+                return Err(PropagateNull);
+            }
+            return Ok(Some(JsonValue::Null));
+        }
     };
     let is_field_of_root_query = || {
         ctx.schema
@@ -274,6 +312,10 @@ async fn execute_field<'a>(
     let completed_result = match resolved_result {
         Ok(resolved) => complete_value(ctx, path, mode, field.ty(), resolved, fields).await,
         Err(FieldError { message }) => {
+            // The null that replaces the failed value is a response value too.
+            if !ctx.response_nodes.charge() {
+                return Err(PropagateNull);
+            }
             ctx.errors.push(GraphQLError::field_error(
                 format!("resolver error: {message}"),
                 path,

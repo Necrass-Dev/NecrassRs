@@ -1538,6 +1538,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "libc",
+ "necrassrs",
 ]
 
 [[package]]
