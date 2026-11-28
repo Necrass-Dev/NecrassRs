@@ -1,6 +1,63 @@
 Changelog
 =========
 
+Version 0.4.8
+-------------
+
+To be released.
+
+### necrassrs
+
+ -  Fixed `ExecutionOptions::argument_work_limit` counting a string argument
+    as one value regardless of its length, so one large string variable
+    passed under many aliases was copied for every alias without reaching the
+    limit. Each string now also counts its length in bytes, and the default
+    limit is raised from 1,000,000 to 4,000,000 so that a string argument as
+    large as the default HTTP body limit still fits. Requests that pass many
+    long strings to resolvers may now reach the limit. [GHSA-gc4x-f785-hfm2]
+ -  Fixed a small request making execution do unbounded work. Fragment
+    spreads that double the selected fields at every level, aliases repeating a
+    long returned list, aliased `__typename` under list items, and aliases of
+    `__schema` could each make a request of a few kilobytes execute millions
+    of fields or use more than a gigabyte of memory. The new
+    `ExecutionOptions::field_limit` and `ExecutionOptions::list_item_limit`
+    bound the fields executed and the list items completed in one response,
+    each with a default of 50,000; work is charged before it starts, and a
+    response over either limit drops resolvers that are still pending and is
+    replaced by `data: null` and a single error.
+    Top-level mutation fields are charged together, so a mutation over the
+    field limit performs no root field. The new
+    `ExecutionOptions::introspection_node_limit` bounds the values schema
+    introspection generates, with a default of 100,000, and an operation over
+    it fails as a request error. Each subscription event has its own budget.
+    GraphQL requests cannot override these server settings. Responses that
+    legitimately exceed a default, such as 5,000 list items with ten fields
+    each, now fail until the application raises the limit. Existing
+    exhaustive `ExecutionOptions` struct literals must add these fields or
+    use `..Default::default()`. [GHSA-gc4x-f785-hfm2]
+
+[GHSA-gc4x-f785-hfm2]: https://github.com/Necrass-Dev/NecrassRs/security/advisories/GHSA-gc4x-f785-hfm2
+
+### necrassrs-cli
+
+ -  The starter's `src/options.rs` now lists every `ExecutionOptions` field
+    with its default value instead of `..Default::default()`, so each
+    execution limit can be adjusted in place. Upgrading NecrassRs with a new
+    option makes the file fail to compile until the new field is added.
+
+### reed-compiler
+
+ -  Added `Execution::response_node_limit`, which bounds the values completed
+    for one response, and `introspection::partial_execute_with_node_limit`.
+    Each field value and list item counts once, and execution stops as soon as
+    the limit is exceeded with a request error instead of a partial response.
+    Both `Execution` and `introspection::partial_execute` now apply
+    `resolvers::DEFAULT_RESPONSE_NODE_LIMIT`, 100,000 values, by default;
+    previously the response size was unbounded, so aliases of `__schema`
+    could generate gigabytes of introspection data. Callers that need larger
+    responses must set a higher limit. [GHSA-gc4x-f785-hfm2]
+
+
 Version 0.4.7
 -------------
 
