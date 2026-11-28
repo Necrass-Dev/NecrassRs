@@ -5,12 +5,12 @@ edition = "2024"
 
 [dependencies]
 actix-web = { version = "4.19", default-features = false, features = ["macros"] }
-necrassrs = "0.4.7"
-necrassrs-actix = "0.4.7"
+necrassrs = "0.4.8"
+necrassrs-actix = "0.4.8"
 
 [build-dependencies]
 miette = "7.6.0"
-necrassrs-build = "0.4.7"
+necrassrs-build = "0.4.8"
 
 [workspace]
 
