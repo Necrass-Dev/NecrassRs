@@ -54,6 +54,21 @@ validate_metadata() {
   ' <<<"$metadata")
   [[ -z "$bad_dependencies" ]] ||
     die "internal dependency requirements do not match $tag: $bad_dependencies"
+
+  # Packages are published in PACKAGES order. Resolving a packaged crate,
+  # including its dev-dependencies, requires them to be on crates.io already.
+  bad_dependencies=$(jq -r '
+    $ARGS.positional as $order
+    | .packages[] as $package
+    | ($order | index($package.name)) as $position
+    | select($position != null)
+    | $package.dependencies[]
+    | select(.path != null)
+    | select(.name as $name | ($order | index($name)) as $dependency | $dependency == null or $dependency >= $position)
+    | "\($package.name) -> \(.name)"
+  ' --args "${PACKAGES[@]}" <<<"$metadata")
+  [[ -z "$bad_dependencies" ]] ||
+    die "release packages depend on packages published after them: $bad_dependencies"
 }
 
 validate_templates() {

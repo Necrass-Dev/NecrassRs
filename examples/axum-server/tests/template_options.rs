@@ -1,8 +1,11 @@
 //! The starter template spells out every execution option with its default value.
+//!
+//! This check lives in an unpublished crate so that `necrassrs-cli` keeps no
+//! dependency on other workspace crates and can be published first.
 
 use necrassrs::ExecutionOptions;
 
-#[path = "../templates/shared/options.rs"]
+#[path = "../../../crates/necrassrs-cli/templates/shared/options.rs"]
 mod options;
 
 #[test]
